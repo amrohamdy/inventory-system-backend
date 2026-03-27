@@ -6,7 +6,10 @@ const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
-const { resolveHotelSubStatusForCreate } = require('../utils/resolveHotelSubStatus');
+const {
+    resolveHotelSubStatusForCreate,
+    resolveHotelSubStatusForUpdate,
+} = require('../utils/resolveHotelSubStatus');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -926,11 +929,13 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
     validateLicenseDateRange(nextLicenseStartDate, nextLicenseEndDate);
 
     const hasSubStatusInPayload = Object.prototype.hasOwnProperty.call(data, 'subStatus');
-    const nextSubStatus = (() => {
-        if (hasLicenseEndDateInPayload && nextLicenseEndDate === null) return 'ACTIVE';
-        if (hasSubStatusInPayload) return data.subStatus;
-        return tenant.subStatus;
-    })();
+    const nextSubStatus = resolveHotelSubStatusForUpdate({
+        currentSubStatus: tenant.subStatus,
+        payloadSubStatus: data.subStatus,
+        hasSubStatusInPayload,
+        nextLicenseEndDate: nextLicenseEndDate,
+        hasLicenseEndDateInPayload,
+    });
 
     // Normalize hierarchy branch flags:
     // - Child tenant => hasBranches=false, maxBranches=0

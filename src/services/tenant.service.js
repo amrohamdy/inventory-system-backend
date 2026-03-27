@@ -4,7 +4,10 @@ const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membe
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const logger = require('../utils/logger');
 const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
-const { resolveHotelSubStatusForCreate } = require('../utils/resolveHotelSubStatus');
+const {
+    resolveHotelSubStatusForCreate,
+    resolveHotelSubStatusForUpdate,
+} = require('../utils/resolveHotelSubStatus');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -341,10 +344,13 @@ const updateTenantLicense = async (id, data) => {
     }
 
     const hasSubStatusKey = Object.prototype.hasOwnProperty.call(data, 'subStatus');
-    let nextSubStatus = hasSubStatusKey ? data.subStatus : tenant.subStatus;
-    if (hasLicenseEndKey && nextLicenseEndDate === null) {
-        nextSubStatus = 'ACTIVE';
-    }
+    const nextSubStatus = resolveHotelSubStatusForUpdate({
+        currentSubStatus: tenant.subStatus,
+        payloadSubStatus: data.subStatus,
+        hasSubStatusInPayload: hasSubStatusKey,
+        nextLicenseEndDate: hasLicenseEndKey ? nextLicenseEndDate : tenant.licenseEndDate,
+        hasLicenseEndDateInPayload: hasLicenseEndKey,
+    });
 
     const updated = await prisma.tenant.update({
         where: { id },
