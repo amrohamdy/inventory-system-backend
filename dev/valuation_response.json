@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "qtyOnHand": 13,
+      "wacUnitCost": 50,
+      "totalValue": 650,
+      "lastUpdated": "2026-02-26T21:01:08.413Z"
+    }
+  ],
+  "summary": {
+    "totalQty": 13,
+    "totalValue": 650
+  },
+  "total": 1,
+  "page": 1,
+  "limit": 1,
+  "filters": {
+    "locationId": "363cee44-1ea1-42e2-a5db-6ab3b4c10383"
+  }
+}

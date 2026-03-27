@@ -1,0 +1,122 @@
+{
+  "data": [
+    {
+      "date": "2026-02-26T21:16:04.894Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "ISSUE",
+      "referenceNo": "M10-HACK-FIX",
+      "qtyIn": 0,
+      "qtyOut": 2,
+      "unitCost": 50,
+      "totalValue": 100,
+      "user": "Sarah Ahmed",
+      "notes": "-"
+    },
+    {
+      "date": "2026-02-26T21:01:08.399Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "COUNT_ADJUSTMENT",
+      "referenceNo": "CNT-2602-0004",
+      "qtyIn": 5,
+      "qtyOut": 0,
+      "unitCost": 50,
+      "totalValue": 250,
+      "user": "Youssef Karimi",
+      "notes": "-"
+    },
+    {
+      "date": "2026-02-26T20:19:57.209Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "COUNT_ADJUSTMENT",
+      "referenceNo": "CNT-2602-0003",
+      "qtyIn": 2,
+      "qtyOut": 0,
+      "unitCost": 50,
+      "totalValue": 100,
+      "user": "Youssef Karimi",
+      "notes": "-"
+    },
+    {
+      "date": "2026-02-26T20:16:19.764Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "COUNT_ADJUSTMENT",
+      "referenceNo": "CNT-2602-0002",
+      "qtyIn": 2,
+      "qtyOut": 0,
+      "unitCost": 50,
+      "totalValue": 100,
+      "user": "Youssef Karimi",
+      "notes": "-"
+    },
+    {
+      "date": "2026-02-26T19:55:06.515Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "BREAKAGE",
+      "referenceNo": "BRK-2602-0002",
+      "qtyIn": 0,
+      "qtyOut": 2,
+      "unitCost": 50,
+      "totalValue": 100,
+      "user": "Youssef Karimi",
+      "notes": "Glassware damaged during hotel event — accidental breakage"
+    },
+    {
+      "date": "2026-02-26T19:35:18.174Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "BREAKAGE",
+      "referenceNo": "BRK-2602-0001",
+      "qtyIn": 0,
+      "qtyOut": 2,
+      "unitCost": 50,
+      "totalValue": 100,
+      "user": "Youssef Karimi",
+      "notes": "Glassware damaged during hotel event — accidental breakage"
+    },
+    {
+      "date": "2026-02-26T19:34:21.581Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "movementType": "OPENING_BALANCE",
+      "referenceNo": "OB-2602-0002",
+      "qtyIn": 10,
+      "qtyOut": 0,
+      "unitCost": 50,
+      "totalValue": 500,
+      "user": "Sarah Ahmed",
+      "notes": "-"
+    }
+  ],
+  "summary": {
+    "totalQtyIn": 19,
+    "totalQtyOut": 6,
+    "totalValueImpacted": 1250
+  },
+  "total": 7,
+  "page": 1,
+  "limit": 7,
+  "filters": {
+    "dateFrom": "2026-01-28",
+    "dateTo": "2026-02-27",
+    "locationId": "363cee44-1ea1-42e2-a5db-6ab3b4c10383"
+  }
+}

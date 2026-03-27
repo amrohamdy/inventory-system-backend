@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Item Master — System Documentation</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Calibri, Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 30px;
+            color: #222;
+            line-height: 1.7;
+        }
+
+        h1 {
+            color: #1a56db;
+            border-bottom: 3px solid #1a56db;
+            padding-bottom: 10px;
+            font-size: 26px;
+        }
+
+        h2 {
+            color: #1e40af;
+            margin-top: 35px;
+            font-size: 20px;
+            border-left: 4px solid #1a56db;
+            padding-left: 12px;
+        }
+
+        h3 {
+            color: #374151;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+
+        th {
+            background: #1e3a5f;
+            color: white;
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 8px 14px;
+            border: 1px solid #ddd;
+        }
+
+        tr:nth-child(even) {
+            background: #f8fafc;
+        }
+
+        .highlight {
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+
+        .danger {
+            background: #fef2f2;
+            border: 1px solid #ef4444;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+
+        .success {
+            background: #f0fdf4;
+            border: 1px solid #22c55e;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+
+        .badge-yes {
+            background: #dcfce7;
+            color: #166534;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .badge-no {
+            background: #f3f4f6;
+            color: #6b7280;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .flow-box {
+            display: inline-block;
+            background: #eff6ff;
+            border: 1px solid #93c5fd;
+            border-radius: 8px;
+            padding: 8px 16px;
+            margin: 4px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .arrow {
+            font-size: 18px;
+            color: #3b82f6;
+            margin: 0 4px;
+        }
+
+        ul {
+            padding-left: 20px;
+        }
+
+        li {
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        .footer {
+            margin-top: 40px;
+            padding-top: 15px;
+            border-top: 1px solid #e5e7eb;
+            color: #9ca3af;
+            font-size: 12px;
+            text-align: center;
+        }
+
+        @media print {
+            body {
+                margin: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>📦 Item Master — System Documentation</h1>
+    <p style="color:#6b7280; font-size:14px;">OS&amp;E Cloud Inventory System — Module Reference</p>
+
+    <!-- ============================================================ -->
+    <h2>1. Purpose</h2>
+    <p>The <strong>Item Master</strong> is the central registry for all OS&amp;E (Operating Supplies &amp; Equipment)
+        items. Every item that will be received, stored, issued, transferred, counted, or reported on <strong>must first
+            exist in the Item Master</strong>.</p>
+
+    <div class="highlight">
+        <strong>Single Source of Truth</strong> for: item identity, classification, pricing, supplier linkage, and unit
+        of measure configuration.
+    </div>
+
+    <!-- ============================================================ -->
+    <h2>2. Key Features</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Feature</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>➕ Create / Edit Items</td>
+                <td>Full form with name, barcode, category, supplier, department, pricing</td>
+            </tr>
+            <tr>
+                <td>📷 Image Management</td>
+                <td>Per-item image upload + bulk ZIP upload matched by barcode</td>
+            </tr>
+            <tr>
+                <td>📐 Unit of Measure</td>
+                <td>BASE / PURCHASE / ISSUE units with conversion rates</td>
+            </tr>
+            <tr>
+                <td>📥 Excel Import</td>
+                <td>Upload items via Excel with preview &amp; validation wizard</td>
+            </tr>
+            <tr>
+                <td>📤 Excel Export</td>
+                <td>Export filtered item list to .xlsx</td>
+            </tr>
+            <tr>
+                <td>🔍 Search &amp; Filter</td>
+                <td>By name, barcode, category, active/inactive status</td>
+            </tr>
+            <tr>
+                <td>🔄 Activate / Deactivate</td>
+                <td>Soft delete — item stays in history but hidden from operations</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <h2>3. Item Fields</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th>Required</th>
+                <th>Purpose</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Item Name</td>
+                <td><span class="badge-yes">✅ Yes</span></td>
+                <td>Unique identifier within the system</td>
+            </tr>
+            <tr>
+                <td>Barcode</td>
+                <td><span class="badge-no">Auto-generated</span></td>
+                <td>For scanning and bulk image matching</td>
+            </tr>
+            <tr>
+                <td>Unit Price (SAR)</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Default price — used for reorder cost estimation</td>
+            </tr>
+            <tr>
+                <td>Department</td>
+                <td><span class="badge-yes">Recommended</span></td>
+                <td>Organizational ownership of the item</td>
+            </tr>
+            <tr>
+                <td>Default Store</td>
+                <td><span class="badge-yes">Recommended</span></td>
+                <td>Default receiving location (filtered by department)</td>
+            </tr>
+            <tr>
+                <td>Category</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Primary classification</td>
+            </tr>
+            <tr>
+                <td>Subcategory</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Secondary classification (dependent on category)</td>
+            </tr>
+            <tr>
+                <td>Supplier</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Default vendor for this item</td>
+            </tr>
+            <tr>
+                <td>Reorder Point</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Alert threshold — triggers notification when stock falls below</td>
+            </tr>
+            <tr>
+                <td>Reorder Qty</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Suggested order quantity when reorder is triggered</td>
+            </tr>
+            <tr>
+                <td>Description</td>
+                <td><span class="badge-no">Optional</span></td>
+                <td>Free-text notes</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <h2>4. Unit Structure Lock 🔒</h2>
+    <p>Unit modifications (BASE unit, conversion rates, unit structure) are <strong>locked</strong> when stock exists in
+        any location.</p>
+
+    <div class="danger">
+        <strong>❌ Stock &gt; 0 → BLOCKED</strong><br>
+        <em>"Cannot modify item units while stock exists. Please zero out stock via adjustment/count or create a new
+            item."</em>
+    </div>
+
+    <div class="success">
+        <strong>✅ Stock = 0 → ALLOWED</strong><br>
+        Unit changes are permitted when no stock exists in any location.
+    </div>
+
+    <h3>Why this policy?</h3>
+    <ul>
+        <li>Changing units with active stock <strong>corrupts inventory valuation</strong></li>
+        <li>Historical quantities become <strong>misinterpreted</strong> (e.g., 50 "Pieces" becomes 50 "Cartons")</li>
+        <li>Consumption and variance reports produce <strong>incorrect results</strong></li>
+        <li>This follows the same standard used by <strong>SAP, Oracle, and Odoo</strong></li>
+    </ul>
+
+    <!-- ============================================================ -->
+    <h2>5. Data Flow</h2>
+    <p>Item Master feeds <strong>all operational modules</strong>. No transaction can occur without an item being
+        registered first.</p>
+
+    <div style="text-align:center; margin: 20px 0;">
+        <div class="flow-box" style="background:#dbeafe; border-color:#3b82f6; font-size:15px; font-weight:700;">📦 Item
+            Master</div>
+        <br><br>
+        <span class="arrow">↓</span><br>
+        <div class="flow-box">📥 GRN Import</div>
+        <div class="flow-box">📋 Requisitions</div>
+        <div class="flow-box">📤 Store Issue</div>
+        <div class="flow-box">🔄 Transfers</div>
+        <br>
+        <div class="flow-box">📊 Stock Count</div>
+        <div class="flow-box">⚠️ Breakage &amp; Loss</div>
+        <div class="flow-box">📈 Par Levels</div>
+        <div class="flow-box">🛒 Reorder</div>
+        <br><br>
+        <span class="arrow">↓</span><br>
+        <div class="flow-box" style="background:#dcfce7; border-color:#22c55e; font-size:15px; font-weight:700;">📒
+            Inventory Ledger → Reports &amp; Valuation</div>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2>6. Built-in Controls</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Control</th>
+                <th>Type</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Duplicate Name Check</td>
+                <td>Validation</td>
+                <td>No two items can share the same name</td>
+            </tr>
+            <tr>
+                <td>Duplicate Barcode Check</td>
+                <td>Validation</td>
+                <td>No two items can share the same barcode</td>
+            </tr>
+            <tr>
+                <td>Department → Store Filter</td>
+                <td>UI Logic</td>
+                <td>Store dropdown is filtered by selected department</td>
+            </tr>
+            <tr>
+                <td>Category → Subcategory</td>
+                <td>UI Logic</td>
+                <td>Dependent dropdown relationship</td>
+            </tr>
+            <tr>
+                <td>Unit Structure Lock</td>
+                <td>Business Rule</td>
+                <td>Cannot modify units while stock &gt; 0</td>
+            </tr>
+            <tr>
+                <td>Delete Protection</td>
+                <td>Business Rule</td>
+                <td>Cannot delete item with active stock</td>
+            </tr>
+            <tr>
+                <td>Audit Trail</td>
+                <td>Compliance</td>
+                <td>All changes logged with before/after values</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <h2>7. Audit &amp; Compliance</h2>
+    <ul>
+        <li>✅ <strong>Immutable Audit Log</strong> — every create, update, and delete is recorded</li>
+        <li>✅ <strong>Before / After Snapshots</strong> — full JSON diff of what changed</li>
+        <li>✅ <strong>User Attribution</strong> — who made the change, when, from where</li>
+        <li>✅ <strong>Non-editable</strong> — audit records cannot be modified or deleted</li>
+        <li>✅ <strong>Accessible</strong> via Sidebar → Admin → Audit Log</li>
+    </ul>
+
+    <div class="footer">
+        OS&amp;E Cloud Inventory System — Item Master Documentation — Generated March 2026
+    </div>
+
+</body>
+
+</html>

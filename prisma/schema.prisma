@@ -1,0 +1,1349 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id                String              @id @default(uuid()) @db.Uuid
+  name              String
+  slug              String              @unique
+  subscriptionTier  String              @default("starter")
+  logoUrl           String?
+  address           String?
+  phone             String?
+  email             String?
+  isActive          Boolean             @default(true)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  planType          PlanType            @default(BASIC)
+  subStatus         TenantSubStatus     @default(TRIAL)
+  adminStatus       TenantAdminStatus   @default(ACTIVE)
+  licenseStartDate  DateTime            @default(now())
+  licenseEndDate    DateTime?
+  maxUsers          Int                 @default(10)
+  hasBranches       Boolean             @default(false)
+  maxBranches       Int                 @default(0)
+  parentId          String?             @db.Uuid
+  approvalRequests  ApprovalRequest[]
+  auditLogs         AuditLog[]
+  categories        Category[]
+  departments       Department[]
+  DocSequence       DocSequence[]
+  generatedReports  GeneratedReport[]
+  getPasses         GetPass[]
+  grnImports        GrnImport[]
+  importSessions    ImportSession[]
+  inventoryLedger   InventoryLedger[]
+  itemMappings      ItemMapping[]
+  items             Item[]
+  locations         Location[]
+  movementDocuments MovementDocument[]
+  periodCloses      PeriodClose[]
+  savedStockReports SavedStockReport[]
+  stockBalances     StockBalance[]
+  countSessions     StockCountSession[]
+  storeIssues       StoreIssue[]
+  storeRequisitions StoreRequisition[]
+  storeTransfers    StoreTransfer[]
+  subcategories     Subcategory[]
+  subscription      Subscription?
+  superAdminLogs    SuperAdminLog[]     @relation("SuperAdminLogTenant")
+  suppliers         Supplier[]
+  memberships       TenantMember[]
+  tenantSettings    TenantSetting[]
+  tenantUsage       TenantUsage?
+  parent            Tenant?             @relation("TenantHierarchy", fields: [parentId], references: [id])
+  children          Tenant[]            @relation("TenantHierarchy")
+  units             Unit[]
+  uomMappings       UomMapping[]
+  vendorMappings    VendorMapping[]
+
+  @@index([parentId])
+  @@index([hasBranches])
+  @@map("tenants")
+}
+
+model User {
+  id                 String              @id @default(uuid()) @db.Uuid
+  email              String              @unique
+  passwordHash       String
+  firstName          String
+  lastName           String
+  department         String?
+  phone              String?
+  isActive           Boolean             @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  approvalStepsActed ApprovalStep[]
+  auditLogs          AuditLog[]
+  generatedReports   GeneratedReport[]   @relation("ReportGeneratedBy")
+  getPassReturnsReg  GetPassReturn[]     @relation("GetPassReturnRegisteredBy")
+  getPassReturnsSec  GetPassReturn[]     @relation("GetPassReturnSecurityBy")
+  getPassesCheckout  GetPass[]           @relation("GetPassCheckedOutBy")
+  getPassesClosed    GetPass[]           @relation("GetPassClosedBy")
+  getPassesCreated   GetPass[]           @relation("GetPassCreatedBy")
+  getPassesDeptApp   GetPass[]           @relation("GetPassDeptApprover")
+  getPassesFinApp    GetPass[]           @relation("GetPassFinanceApprover")
+  getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
+  grnApproved        GrnImport[]         @relation("GrnApprovedBy")
+  grnImported        GrnImport[]         @relation("GrnImportedBy")
+  grnRejected        GrnImport[]         @relation("GrnRejectedBy")
+  importSessions     ImportSession[]
+  ledgerEntries      InventoryLedger[]   @relation("LedgerCreatedBy")
+  locationUsers      LocationUser[]
+  movementsCreated   MovementDocument[]  @relation("MovementCreatedBy")
+  refreshTokens      RefreshToken[]
+  stockReports       SavedStockReport[]
+  countSessions      StockCountSession[]
+  storeIssues        StoreIssue[]        @relation("IssueIssuedBy")
+  reqApproved        StoreRequisition[]  @relation("ReqApprovedBy")
+  reqRejected        StoreRequisition[]  @relation("ReqRejectedBy")
+  reqRequested       StoreRequisition[]  @relation("ReqRequestedBy")
+  trfApproved        StoreTransfer[]     @relation("TrfApprovedBy")
+  trfReceived        StoreTransfer[]     @relation("TrfReceivedBy")
+  trfRejected        StoreTransfer[]     @relation("TrfRejectedBy")
+  trfRequested       StoreTransfer[]     @relation("TrfRequestedBy")
+  adminLogs          SuperAdminLog[]     @relation("AdminLogUser")
+  memberships        TenantMember[]
+
+  @@map("users")
+}
+
+model TenantMember {
+  id           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String?     @db.Uuid
+  userId       String      @db.Uuid
+  role         UserRole
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @default(now()) @updatedAt
+  departmentId String?     @db.Uuid
+  department   Department? @relation(fields: [departmentId], references: [id])
+  tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@index([tenantId])
+  @@index([tenantId, role])
+  @@index([departmentId])
+  @@index([tenantId, departmentId])
+  @@map("tenant_members")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  token     String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Category {
+  id                 String             @id @default(uuid()) @db.Uuid
+  tenantId           String             @db.Uuid
+  name               String
+  description        String?
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  departmentId       String?            @db.Uuid
+  department         Department?        @relation("DepartmentCategories", fields: [departmentId], references: [id])
+  tenant             Tenant             @relation(fields: [tenantId], references: [id])
+  items              Item[]
+  locationCategories LocationCategory[]
+  subcategories      Subcategory[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([departmentId])
+  @@map("categories")
+}
+
+model Subcategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  categoryId  String   @db.Uuid
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  items       Item[]
+  category    Category @relation(fields: [categoryId], references: [id])
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, categoryId, name])
+  @@index([tenantId])
+  @@map("subcategories")
+}
+
+model Department {
+  id               String            @id @default(uuid()) @db.Uuid
+  tenantId         String            @db.Uuid
+  name             String
+  code             String
+  isActive         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  categories       Category[]        @relation("DepartmentCategories")
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  generatedReports GeneratedReport[]
+  GetPass          GetPass[]
+  items            Item[]
+  locations        Location[]
+  memberships      TenantMember[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("departments")
+}
+
+model Location {
+  id                      String                        @id @default(uuid()) @db.Uuid
+  tenantId                String                        @db.Uuid
+  name                    String
+  type                    LocationType                  @default(MAIN_STORE)
+  description             String?
+  isActive                Boolean                       @default(true)
+  createdAt               DateTime                      @default(now())
+  updatedAt               DateTime                      @updatedAt
+  departmentId            String?                       @db.Uuid
+  getPassLines            GetPassLine[]
+  grnImports              GrnImport[]
+  ledgerEntries           InventoryLedger[]
+  defaultItems            Item[]                        @relation("ItemDefaultStore")
+  locationCategories      LocationCategory[]
+  locationUsers           LocationUser[]
+  department              Department?                   @relation(fields: [departmentId], references: [id])
+  tenant                  Tenant                        @relation(fields: [tenantId], references: [id])
+  movementLines           MovementLine[]
+  savedReportLocationQtys SavedStockReportLocationQty[]
+  stockReports            SavedStockReport[]
+  stockBalances           StockBalance[]
+  countSessions           StockCountSession[]
+  storeRequisitions       StoreRequisition[]
+  transfersIn             StoreTransfer[]               @relation("TransferDest")
+  transfersOut            StoreTransfer[]               @relation("TransferSource")
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([departmentId])
+  @@map("locations")
+}
+
+model LocationCategory {
+  id         String   @id @default(uuid()) @db.Uuid
+  locationId String   @db.Uuid
+  categoryId String   @db.Uuid
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, categoryId])
+  @@map("location_categories")
+}
+
+model LocationUser {
+  id         String   @id @default(uuid()) @db.Uuid
+  locationId String   @db.Uuid
+  userId     String   @db.Uuid
+  location   Location @relation(fields: [locationId], references: [id])
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@unique([locationId, userId])
+  @@map("location_users")
+}
+
+model Unit {
+  id               String                 @id @default(uuid()) @db.Uuid
+  tenantId         String                 @db.Uuid
+  name             String
+  abbreviation     String
+  isActive         Boolean                @default(true)
+  createdAt        DateTime               @default(now())
+  description      String?
+  itemUnits        ItemUnit[]
+  issueLines       StoreIssueLine[]
+  requisitionLines StoreRequisitionLine[]
+  transferLines    StoreTransferLine[]
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("units")
+}
+
+model ItemUnit {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @db.Uuid
+  itemId         String   @db.Uuid
+  unitId         String   @db.Uuid
+  unitType       UnitType
+  conversionRate Decimal  @default(1) @db.Decimal(15, 6)
+  isDefault      Boolean  @default(false)
+  item           Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  unit           Unit     @relation(fields: [unitId], references: [id])
+
+  @@unique([itemId, unitType])
+  @@index([tenantId])
+  @@map("item_units")
+}
+
+model Supplier {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @db.Uuid
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  grnImports    GrnImport[]
+  items         Item[]
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+model Item {
+  id               String                 @id @default(uuid()) @db.Uuid
+  tenantId         String                 @db.Uuid
+  name             String
+  description      String?
+  categoryId       String?                @db.Uuid
+  subcategoryId    String?                @db.Uuid
+  supplierId       String?                @db.Uuid
+  barcode          String?
+  unitPrice        Decimal                @default(0) @db.Decimal(15, 4)
+  imageUrl         String?
+  isActive         Boolean                @default(true)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  code             String?
+  defaultStoreId   String?                @db.Uuid
+  departmentId     String?                @db.Uuid
+  reorderPoint     Int                    @default(0)
+  reorderQty       Int                    @default(0)
+  getPassLines     GetPassLine[]
+  ledgerEntries    InventoryLedger[]
+  itemUnits        ItemUnit[]
+  category         Category?              @relation(fields: [categoryId], references: [id])
+  defaultStore     Location?              @relation("ItemDefaultStore", fields: [defaultStoreId], references: [id])
+  department       Department?            @relation(fields: [departmentId], references: [id])
+  subcategory      Subcategory?           @relation(fields: [subcategoryId], references: [id])
+  supplier         Supplier?              @relation(fields: [supplierId], references: [id])
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id])
+  movementLines    MovementLine[]
+  stockReportLines SavedStockReportLine[]
+  stockBalances    StockBalance[]
+  countLines       StockCountLine[]
+  issueLines       StoreIssueLine[]
+  requisitionLines StoreRequisitionLine[]
+  transferLines    StoreTransferLine[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, categoryId])
+  @@index([tenantId, departmentId])
+  @@map("items")
+}
+
+model InventoryLedger {
+  id               String           @id @default(uuid()) @db.Uuid
+  tenantId         String           @db.Uuid
+  itemId           String           @db.Uuid
+  locationId       String           @db.Uuid
+  movementType     MovementType
+  qtyIn            Decimal          @default(0) @db.Decimal(15, 4)
+  qtyOut           Decimal          @default(0) @db.Decimal(15, 4)
+  unitCost         Decimal          @default(0) @db.Decimal(15, 4)
+  totalValue       Decimal          @default(0) @db.Decimal(15, 4)
+  referenceType    String?
+  referenceId      String?          @db.Uuid
+  referenceNo      String?
+  requiresApproval Boolean          @default(false)
+  approvalId       String?          @db.Uuid
+  notes            String?
+  createdBy        String           @db.Uuid
+  createdAt        DateTime         @default(now())
+  approvalRequest  ApprovalRequest? @relation(fields: [approvalId], references: [id])
+  createdByUser    User             @relation("LedgerCreatedBy", fields: [createdBy], references: [id])
+  item             Item             @relation(fields: [itemId], references: [id])
+  location         Location         @relation(fields: [locationId], references: [id])
+  tenant           Tenant           @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, itemId])
+  @@index([tenantId, locationId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, movementType])
+  @@index([tenantId, movementType, createdAt])
+  @@index([tenantId, locationId, itemId])
+  @@index([tenantId, locationId, itemId, createdAt])
+  @@index([tenantId, referenceId])
+  @@map("inventory_ledger")
+}
+
+model StockBalance {
+  tenantId     String   @db.Uuid
+  itemId       String   @db.Uuid
+  locationId   String   @db.Uuid
+  qtyOnHand    Decimal  @default(0) @db.Decimal(15, 4)
+  wacUnitCost  Decimal  @default(0) @db.Decimal(15, 4)
+  lastUpdated  DateTime @default(now()) @updatedAt
+  maxQty       Decimal  @default(0) @db.Decimal(15, 4)
+  minQty       Decimal  @default(0) @db.Decimal(15, 4)
+  reorderPoint Decimal  @default(0) @db.Decimal(15, 4)
+  item         Item     @relation(fields: [itemId], references: [id])
+  location     Location @relation(fields: [locationId], references: [id])
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@id([tenantId, itemId, locationId])
+  @@index([tenantId])
+  @@index([tenantId, locationId])
+  @@index([tenantId, itemId])
+  @@map("stock_balances")
+}
+
+model MovementDocument {
+  id               String              @id @default(uuid()) @db.Uuid
+  tenantId         String              @db.Uuid
+  documentNo       String
+  movementType     MovementType
+  status           MovementStatus      @default(DRAFT)
+  sourceLocationId String?             @db.Uuid
+  destLocationId   String?             @db.Uuid
+  documentDate     DateTime            @default(now())
+  supplierId       String?             @db.Uuid
+  department       String?
+  reason           String?
+  notes            String?
+  attachmentUrl    String?
+  createdBy        String              @db.Uuid
+  postedAt         DateTime?
+  voidedAt         DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  approvalRequests ApprovalRequest?
+  createdByUser    User                @relation("MovementCreatedBy", fields: [createdBy], references: [id])
+  tenant           Tenant              @relation(fields: [tenantId], references: [id])
+  lines            MovementLine[]
+  sessions         StockCountSession[]
+
+  @@unique([tenantId, documentNo])
+  @@index([tenantId, movementType])
+  @@index([tenantId, movementType, documentDate])
+  @@index([tenantId, status])
+  @@map("movement_documents")
+}
+
+model MovementLine {
+  id            String           @id @default(uuid()) @db.Uuid
+  documentId    String           @db.Uuid
+  itemId        String           @db.Uuid
+  locationId    String           @db.Uuid
+  unitId        String?          @db.Uuid
+  qtyRequested  Decimal          @db.Decimal(15, 4)
+  qtyInBaseUnit Decimal          @db.Decimal(15, 4)
+  unitCost      Decimal          @default(0) @db.Decimal(15, 4)
+  totalValue    Decimal          @default(0) @db.Decimal(15, 4)
+  notes         String?
+  document      MovementDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  item          Item             @relation(fields: [itemId], references: [id])
+  location      Location         @relation(fields: [locationId], references: [id])
+
+  @@index([documentId])
+  @@map("movement_lines")
+}
+
+model ApprovalRequest {
+  id                String              @id @default(uuid()) @db.Uuid
+  tenantId          String              @db.Uuid
+  requestType       ApprovalRequestType
+  status            ApprovalStatus      @default(PENDING)
+  documentId        String?             @unique @db.Uuid
+  currentStep       Int                 @default(0)
+  totalSteps        Int
+  createdBy         String              @db.Uuid
+  createdAt         DateTime            @default(now())
+  resolvedAt        DateTime?
+  document          MovementDocument?   @relation(fields: [documentId], references: [id])
+  tenant            Tenant              @relation(fields: [tenantId], references: [id])
+  steps             ApprovalStep[]
+  ledgerEntries     InventoryLedger[]
+  SavedStockReport  SavedStockReport?
+  StockCountSession StockCountSession?
+
+  @@index([tenantId, status])
+  @@map("approval_requests")
+}
+
+model ApprovalStep {
+  id           String             @id @default(uuid()) @db.Uuid
+  requestId    String             @db.Uuid
+  stepNumber   Int
+  requiredRole UserRole
+  status       ApprovalStepStatus @default(PENDING)
+  actedBy      String?            @db.Uuid
+  actedAt      DateTime?
+  comment      String?
+  actedByUser  User?              @relation(fields: [actedBy], references: [id])
+  request      ApprovalRequest    @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, stepNumber])
+  @@map("approval_steps")
+}
+
+model ImportSession {
+  id             String       @id @default(uuid()) @db.Uuid
+  tenantId       String       @db.Uuid
+  filename       String
+  status         ImportStatus @default(PENDING)
+  totalRows      Int          @default(0)
+  validRows      Int          @default(0)
+  errorRows      Int          @default(0)
+  warningRows    Int          @default(0)
+  columnMap      Json?
+  importedBy     String       @db.Uuid
+  importedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  rows           ImportRow[]
+  importedByUser User         @relation(fields: [importedBy], references: [id])
+  tenant         Tenant       @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("import_sessions")
+}
+
+model ImportRow {
+  id         String        @id @default(uuid()) @db.Uuid
+  sessionId  String        @db.Uuid
+  rowNumber  Int
+  rawData    Json
+  mappedData Json?
+  status     String        @default("PENDING")
+  errors     Json?
+  warnings   Json?
+  session    ImportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("import_rows")
+}
+
+model StockCountSession {
+  id                 String            @id @default(uuid()) @db.Uuid
+  tenantId           String            @db.Uuid
+  locationId         String            @db.Uuid
+  sessionNo          String
+  countDate          DateTime          @default(now())
+  notes              String?
+  createdBy          String            @db.Uuid
+  createdAt          DateTime          @default(now())
+  approvalRequestId  String?           @unique @db.Uuid
+  movementDocumentId String?           @db.Uuid
+  postedAt           DateTime?
+  snapshotAt         DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  status             MovementStatus    @default(DRAFT)
+  lines              StockCountLine[]
+  approvalRequest    ApprovalRequest?  @relation(fields: [approvalRequestId], references: [id])
+  createdByUser      User              @relation(fields: [createdBy], references: [id])
+  location           Location          @relation(fields: [locationId], references: [id])
+  MovementDocument   MovementDocument? @relation(fields: [movementDocumentId], references: [id])
+  tenant             Tenant            @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, sessionNo])
+  @@index([tenantId])
+  @@index([status])
+  @@index([tenantId, status, snapshotAt])
+  @@map("stock_count_sessions")
+}
+
+model StockCountLine {
+  id            String            @id @default(uuid()) @db.Uuid
+  sessionId     String            @db.Uuid
+  itemId        String            @db.Uuid
+  bookQty       Decimal           @db.Decimal(15, 4)
+  countedQty    Decimal?          @db.Decimal(15, 4)
+  varianceQty   Decimal?          @db.Decimal(15, 4)
+  wacUnitCost   Decimal           @db.Decimal(15, 4)
+  varianceValue Decimal?          @db.Decimal(15, 4)
+  notes         String?
+  qtyOnLoan     Decimal           @default(0) @db.Decimal(15, 4)
+  item          Item              @relation(fields: [itemId], references: [id])
+  session       StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, itemId])
+  @@index([sessionId])
+  @@map("stock_count_lines")
+}
+
+model PeriodClose {
+  id        String           @id @default(uuid()) @db.Uuid
+  tenantId  String           @db.Uuid
+  year      Int
+  month     Int?
+  status    String           @default("OPEN")
+  closedAt  DateTime?
+  closedBy  String?          @db.Uuid
+  notes     String?
+  createdAt DateTime         @default(now())
+  tenant    Tenant           @relation(fields: [tenantId], references: [id])
+  snapshots PeriodSnapshot[]
+
+  @@unique([tenantId, year, month])
+  @@index([tenantId])
+  @@map("period_closes")
+}
+
+model PeriodSnapshot {
+  id            String      @id @default(uuid()) @db.Uuid
+  periodCloseId String      @db.Uuid
+  itemId        String      @db.Uuid
+  locationId    String      @db.Uuid
+  closingQty    Decimal     @db.Decimal(15, 4)
+  closingValue  Decimal     @db.Decimal(15, 4)
+  wacUnitCost   Decimal     @db.Decimal(15, 4)
+  periodClose   PeriodClose @relation(fields: [periodCloseId], references: [id], onDelete: Cascade)
+
+  @@unique([periodCloseId, itemId, locationId])
+  @@index([periodCloseId])
+  @@map("period_snapshots")
+}
+
+model AuditLog {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @db.Uuid
+  entityType    String
+  entityId      String
+  action        AuditAction
+  changedBy     String      @db.Uuid
+  changedAt     DateTime    @default(now())
+  beforeValue   Json?
+  afterValue    Json?
+  ipAddress     String?
+  userAgent     String?
+  note          String?
+  changedByUser User        @relation(fields: [changedBy], references: [id])
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, changedAt])
+  @@index([tenantId, changedBy])
+  @@map("audit_log")
+}
+
+model DocSequence {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  prefix   String
+  year     Int
+  lastSeq  Int    @default(0)
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, prefix, year])
+  @@map("doc_sequence")
+}
+
+model GrnImport {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @db.Uuid
+  grnNumber          String
+  vendorId           String?   @db.Uuid
+  vendorNameSnapshot String
+  locationId         String    @db.Uuid
+  receivingDate      DateTime
+  pdfAttachmentUrl   String
+  status             GrnStatus @default(DRAFT)
+  rejectionReason    String?
+  notes              String?
+  importedBy         String    @db.Uuid
+  approvedBy         String?   @db.Uuid
+  rejectedBy         String?   @db.Uuid
+  postedAt           DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  approvedByUser     User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
+  importedByUser     User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
+  location           Location  @relation(fields: [locationId], references: [id])
+  rejectedByUser     User?     @relation("GrnRejectedBy", fields: [rejectedBy], references: [id])
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  vendor             Supplier? @relation(fields: [vendorId], references: [id])
+  lines              GrnLine[]
+
+  @@unique([tenantId, grnNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, vendorId])
+  @@index([tenantId, locationId])
+  @@map("grn_imports")
+}
+
+model GrnLine {
+  id                   String    @id @default(uuid()) @db.Uuid
+  grnImportId          String    @db.Uuid
+  futurelogItemCode    String
+  futurelogDescription String
+  futurelogUom         String
+  orderedQty           Decimal   @db.Decimal(15, 4)
+  receivedQty          Decimal   @db.Decimal(15, 4)
+  unitPrice            Decimal   @db.Decimal(15, 4)
+  internalItemId       String?   @db.Uuid
+  internalUomId        String?   @db.Uuid
+  conversionFactor     Decimal   @default(1) @db.Decimal(15, 6)
+  qtyInBaseUnit        Decimal   @default(0) @db.Decimal(15, 4)
+  isMapped             Boolean   @default(false)
+  grnImport            GrnImport @relation(fields: [grnImportId], references: [id], onDelete: Cascade)
+
+  @@index([grnImportId])
+  @@index([grnImportId, isMapped])
+  @@map("grn_lines")
+}
+
+model ItemMapping {
+  id                String   @id @default(uuid()) @db.Uuid
+  tenantId          String   @db.Uuid
+  futurelogItemCode String
+  futurelogItemName String
+  internalItemId    String   @db.Uuid
+  createdBy         String   @db.Uuid
+  updatedBy         String   @db.Uuid
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  tenant            Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, futurelogItemCode])
+  @@index([tenantId])
+  @@map("item_mappings")
+}
+
+model UomMapping {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @db.Uuid
+  futurelogUom     String
+  internalUomId    String   @db.Uuid
+  conversionFactor Decimal  @default(1) @db.Decimal(15, 6)
+  createdBy        String   @db.Uuid
+  updatedBy        String   @db.Uuid
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, futurelogUom])
+  @@index([tenantId])
+  @@map("uom_mappings")
+}
+
+model VendorMapping {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenantId            String   @db.Uuid
+  futurelogVendorName String
+  internalSupplierId  String   @db.Uuid
+  createdBy           String   @db.Uuid
+  updatedBy           String   @db.Uuid
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  tenant              Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, futurelogVendorName])
+  @@index([tenantId])
+  @@map("vendor_mappings")
+}
+
+model StoreRequisition {
+  id              String                 @id @default(uuid()) @db.Uuid
+  tenantId        String                 @db.Uuid
+  requisitionNo   String
+  departmentName  String
+  locationId      String                 @db.Uuid
+  requestedBy     String                 @db.Uuid
+  approvedBy      String?                @db.Uuid
+  rejectedBy      String?                @db.Uuid
+  requestDate     DateTime               @default(now())
+  requiredBy      DateTime?
+  status          RequisitionStatus      @default(DRAFT)
+  remarks         String?
+  rejectionReason String?
+  approvedAt      DateTime?
+  fullyIssuedAt   DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  issues          StoreIssue[]
+  lines           StoreRequisitionLine[]
+  approvedByUser  User?                  @relation("ReqApprovedBy", fields: [approvedBy], references: [id])
+  location        Location               @relation(fields: [locationId], references: [id])
+  rejectedByUser  User?                  @relation("ReqRejectedBy", fields: [rejectedBy], references: [id])
+  requestedByUser User                   @relation("ReqRequestedBy", fields: [requestedBy], references: [id])
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, requisitionNo])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, locationId])
+  @@map("store_requisitions")
+}
+
+model StoreRequisitionLine {
+  id             String           @id @default(uuid()) @db.Uuid
+  requisitionId  String           @db.Uuid
+  itemId         String           @db.Uuid
+  uomId          String           @db.Uuid
+  requestedQty   Decimal          @db.Decimal(15, 4)
+  totalIssuedQty Decimal          @default(0) @db.Decimal(15, 4)
+  notes          String?
+  issueLines     StoreIssueLine[]
+  item           Item             @relation(fields: [itemId], references: [id])
+  requisition    StoreRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  uom            Unit             @relation(fields: [uomId], references: [id])
+
+  @@index([requisitionId])
+  @@map("store_requisition_lines")
+}
+
+model StoreIssue {
+  id            String           @id @default(uuid()) @db.Uuid
+  tenantId      String           @db.Uuid
+  issueNo       String
+  requisitionId String           @db.Uuid
+  issueDate     DateTime         @default(now())
+  issuedBy      String           @db.Uuid
+  status        IssueStatus      @default(DRAFT)
+  notes         String?
+  attachmentUrl String?
+  postedAt      DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  lines         StoreIssueLine[]
+  issuedByUser  User             @relation("IssueIssuedBy", fields: [issuedBy], references: [id])
+  requisition   StoreRequisition @relation(fields: [requisitionId], references: [id])
+  tenant        Tenant           @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, issueNo])
+  @@index([tenantId])
+  @@index([tenantId, requisitionId])
+  @@map("store_issues")
+}
+
+model StoreIssueLine {
+  id                String               @id @default(uuid()) @db.Uuid
+  issueId           String               @db.Uuid
+  requisitionLineId String               @db.Uuid
+  itemId            String               @db.Uuid
+  uomId             String               @db.Uuid
+  issuedQty         Decimal              @db.Decimal(15, 4)
+  unitCost          Decimal              @default(0) @db.Decimal(15, 4)
+  totalValue        Decimal              @default(0) @db.Decimal(15, 4)
+  issue             StoreIssue           @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  item              Item                 @relation(fields: [itemId], references: [id])
+  requisitionLine   StoreRequisitionLine @relation(fields: [requisitionLineId], references: [id])
+  uom               Unit                 @relation(fields: [uomId], references: [id])
+
+  @@index([issueId])
+  @@index([requisitionLineId])
+  @@map("store_issue_lines")
+}
+
+model StoreTransfer {
+  id               String              @id @default(uuid()) @db.Uuid
+  tenantId         String              @db.Uuid
+  transferNo       String
+  sourceLocationId String              @db.Uuid
+  destLocationId   String              @db.Uuid
+  requestedBy      String              @db.Uuid
+  approvedBy       String?             @db.Uuid
+  rejectedBy       String?             @db.Uuid
+  receivedBy       String?             @db.Uuid
+  transferDate     DateTime            @default(now())
+  requiredBy       DateTime?
+  status           TransferStatus      @default(DRAFT)
+  reason           String?
+  rejectionReason  String?
+  notes            String?
+  approvedAt       DateTime?
+  dispatchedAt     DateTime?
+  receivedAt       DateTime?
+  closedAt         DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  lines            StoreTransferLine[]
+  approvedByUser   User?               @relation("TrfApprovedBy", fields: [approvedBy], references: [id])
+  destLocation     Location            @relation("TransferDest", fields: [destLocationId], references: [id])
+  receivedByUser   User?               @relation("TrfReceivedBy", fields: [receivedBy], references: [id])
+  rejectedByUser   User?               @relation("TrfRejectedBy", fields: [rejectedBy], references: [id])
+  requestedByUser  User                @relation("TrfRequestedBy", fields: [requestedBy], references: [id])
+  sourceLocation   Location            @relation("TransferSource", fields: [sourceLocationId], references: [id])
+  tenant           Tenant              @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, transferNo])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, sourceLocationId])
+  @@index([tenantId, destLocationId])
+  @@map("store_transfers")
+}
+
+model StoreTransferLine {
+  id           String        @id @default(uuid()) @db.Uuid
+  transferId   String        @db.Uuid
+  itemId       String        @db.Uuid
+  uomId        String        @db.Uuid
+  requestedQty Decimal       @db.Decimal(15, 4)
+  receivedQty  Decimal?      @db.Decimal(15, 4)
+  unitCost     Decimal       @default(0) @db.Decimal(15, 4)
+  totalValue   Decimal       @default(0) @db.Decimal(15, 4)
+  notes        String?
+  item         Item          @relation(fields: [itemId], references: [id])
+  transfer     StoreTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  uom          Unit          @relation(fields: [uomId], references: [id])
+
+  @@index([transferId])
+  @@map("store_transfer_lines")
+}
+
+model Subscription {
+  id                  String             @id @default(uuid()) @db.Uuid
+  tenantId            String             @unique @db.Uuid
+  planType            PlanType           @default(BASIC)
+  status              SubscriptionStatus @default(TRIAL)
+  startDate           DateTime           @default(now())
+  endDate             DateTime?
+  trialEndsAt         DateTime?
+  maxUsers            Int                @default(5)
+  maxStores           Int                @default(2)
+  maxDepartments      Int                @default(3)
+  maxMonthlyMovements Int                @default(500)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  tenant              Tenant             @relation(fields: [tenantId], references: [id])
+
+  @@map("subscriptions")
+}
+
+model TenantUsage {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @unique @db.Uuid
+  totalUsers         Int       @default(0)
+  totalActiveStores  Int       @default(0)
+  movementsThisMonth Int       @default(0)
+  movementsResetAt   DateTime  @default(now())
+  storageBytes       BigInt    @default(0)
+  lastActivityAt     DateTime?
+  updatedAt          DateTime  @updatedAt
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_usage")
+}
+
+model SuperAdminLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  adminUserId    String   @db.Uuid
+  action         String
+  targetTenantId String?  @db.Uuid
+  details        Json?
+  ipAddress      String?
+  createdAt      DateTime @default(now())
+  adminUser      User     @relation("AdminLogUser", fields: [adminUserId], references: [id])
+  targetTenant   Tenant?  @relation("SuperAdminLogTenant", fields: [targetTenantId], references: [id])
+
+  @@index([adminUserId])
+  @@index([targetTenantId])
+  @@index([createdAt])
+  @@map("super_admin_logs")
+}
+
+model TenantSetting {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  key       String
+  value     String
+  updatedBy String?  @db.Uuid
+  reason    String?
+  updatedAt DateTime @updatedAt
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("tenant_settings")
+}
+
+model GetPass {
+  id                 String        @id @default(uuid()) @db.Uuid
+  tenantId           String        @db.Uuid
+  passNo             String
+  transferType       GetPassType
+  departmentId       String?       @db.Uuid
+  borrowingEntity    String
+  expectedReturnDate DateTime?
+  status             GetPassStatus @default(DRAFT)
+  deptApprovedBy     String?       @db.Uuid
+  deptApprovedAt     DateTime?
+  financeApprovedBy  String?       @db.Uuid
+  financeApprovedAt  DateTime?
+  securityApprovedBy String?       @db.Uuid
+  securityApprovedAt DateTime?
+  checkedOutBy       String?       @db.Uuid
+  checkedOutAt       DateTime?
+  closedBy           String?       @db.Uuid
+  closedAt           DateTime?
+  reason             String?
+  notes              String?
+  createdBy          String        @db.Uuid
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  lines              GetPassLine[]
+  checkoutUser       User?         @relation("GetPassCheckedOutBy", fields: [checkedOutBy], references: [id])
+  closingUser        User?         @relation("GetPassClosedBy", fields: [closedBy], references: [id])
+  createdByUser      User          @relation("GetPassCreatedBy", fields: [createdBy], references: [id])
+  department         Department?   @relation(fields: [departmentId], references: [id])
+  deptApprover       User?         @relation("GetPassDeptApprover", fields: [deptApprovedBy], references: [id])
+  financeApprover    User?         @relation("GetPassFinanceApprover", fields: [financeApprovedBy], references: [id])
+  securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
+  tenant             Tenant        @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, passNo])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([departmentId])
+  @@map("get_passes")
+}
+
+model GetPassLine {
+  id           String            @id @default(uuid()) @db.Uuid
+  getPassId    String            @db.Uuid
+  itemId       String            @db.Uuid
+  locationId   String            @db.Uuid
+  qty          Decimal           @db.Decimal(15, 4)
+  qtyReturned  Decimal           @default(0) @db.Decimal(15, 4)
+  unitCost     Decimal           @default(0) @db.Decimal(15, 4)
+  conditionOut String?
+  status       GetPassLineStatus @default(PENDING)
+  notes        String?
+  getPass      GetPass           @relation(fields: [getPassId], references: [id], onDelete: Cascade)
+  item         Item              @relation(fields: [itemId], references: [id])
+  location     Location          @relation(fields: [locationId], references: [id])
+  returns      GetPassReturn[]
+
+  @@index([getPassId])
+  @@index([itemId])
+  @@index([locationId])
+  @@map("get_pass_lines")
+}
+
+model GetPassReturn {
+  id                 String      @id @default(uuid()) @db.Uuid
+  getPassLineId      String      @db.Uuid
+  qtyReturned        Decimal     @db.Decimal(15, 4)
+  conditionIn        String?
+  returnDate         DateTime    @default(now())
+  registeredBy       String      @db.Uuid
+  securityVerifiedBy String?     @db.Uuid
+  notes              String?
+  getPassLine        GetPassLine @relation(fields: [getPassLineId], references: [id], onDelete: Cascade)
+  registeredByUser   User        @relation("GetPassReturnRegisteredBy", fields: [registeredBy], references: [id])
+  securityUser       User?       @relation("GetPassReturnSecurityBy", fields: [securityVerifiedBy], references: [id])
+
+  @@index([getPassLineId])
+  @@index([returnDate])
+  @@map("get_pass_returns")
+}
+
+model SavedStockReport {
+  id                String                 @id @default(uuid()) @db.Uuid
+  tenantId          String                 @db.Uuid
+  reportNo          String
+  locationId        String                 @db.Uuid
+  status            MovementStatus         @default(DRAFT)
+  dateGenerated     DateTime               @default(now())
+  totalValue        Decimal                @default(0) @db.Decimal(15, 4)
+  notes             String?
+  createdBy         String                 @db.Uuid
+  approvalRequestId String?                @unique @db.Uuid
+  postedAt          DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  lines             SavedStockReportLine[]
+  approvalRequest   ApprovalRequest?       @relation(fields: [approvalRequestId], references: [id])
+  createdByUser     User                   @relation(fields: [createdBy], references: [id])
+  location          Location               @relation(fields: [locationId], references: [id])
+  tenant            Tenant                 @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, reportNo])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, locationId])
+  @@map("saved_stock_reports")
+}
+
+model SavedStockReportLine {
+  id           String                        @id @default(uuid()) @db.Uuid
+  reportId     String                        @db.Uuid
+  itemId       String                        @db.Uuid
+  openingQty   Decimal                       @default(0) @db.Decimal(15, 4)
+  openingValue Decimal                       @default(0) @db.Decimal(15, 4)
+  inwardQty    Decimal                       @default(0) @db.Decimal(15, 4)
+  inwardValue  Decimal                       @default(0) @db.Decimal(15, 4)
+  outwardQty   Decimal                       @default(0) @db.Decimal(15, 4)
+  outwardValue Decimal                       @default(0) @db.Decimal(15, 4)
+  closingQty   Decimal                       @default(0) @db.Decimal(15, 4)
+  closingValue Decimal                       @default(0) @db.Decimal(15, 4)
+  outOnPassQty Decimal                       @default(0) @db.Decimal(15, 4)
+  grnQty       Decimal                       @default(0) @db.Decimal(15, 4)
+  grnValue     Decimal                       @default(0) @db.Decimal(15, 4)
+  breakages    Decimal                       @default(0) @db.Decimal(15, 4)
+  item         Item                          @relation(fields: [itemId], references: [id])
+  report       SavedStockReport              @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  locationQtys SavedStockReportLocationQty[]
+
+  @@index([reportId])
+  @@map("saved_stock_report_lines")
+}
+
+model SavedStockReportLocationQty {
+  id          String               @id @default(uuid()) @db.Uuid
+  lineId      String               @db.Uuid
+  locationId  String               @db.Uuid
+  bookQty     Decimal              @default(0) @db.Decimal(15, 4)
+  countedQty  Decimal?             @db.Decimal(15, 4)
+  varianceQty Decimal              @default(0) @db.Decimal(15, 4)
+  line        SavedStockReportLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  location    Location             @relation(fields: [locationId], references: [id])
+
+  @@index([lineId])
+  @@index([locationId])
+  @@map("saved_stock_report_location_qtys")
+}
+
+model GeneratedReport {
+  id              String      @id @default(uuid()) @db.Uuid
+  tenantId        String      @db.Uuid
+  reportType      ReportType
+  reportName      String
+  departmentId    String?     @db.Uuid
+  startDate       DateTime?
+  endDate         DateTime?
+  data            Json
+  generatedBy     String      @db.Uuid
+  createdAt       DateTime    @default(now())
+  department      Department? @relation(fields: [departmentId], references: [id])
+  generatedByUser User        @relation("ReportGeneratedBy", fields: [generatedBy], references: [id])
+  tenant          Tenant      @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, reportType])
+  @@index([tenantId, departmentId])
+  @@map("generated_reports")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  ORG_MANAGER
+  STOREKEEPER
+  DEPT_MANAGER
+  COST_CONTROL
+  FINANCE_MANAGER
+  AUDITOR
+  SECURITY
+}
+
+enum PlanType {
+  BASIC
+  PRO
+  ENTERPRISE
+  CUSTOM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIAL
+  EXPIRED
+}
+
+enum TenantSubStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+}
+
+enum TenantAdminStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum MovementType {
+  OPENING_BALANCE
+  RECEIVE
+  ISSUE
+  TRANSFER_OUT
+  TRANSFER_IN
+  RETURN
+  ADJUSTMENT
+  BREAKAGE
+  COUNT_ADJUSTMENT
+  TRANSFER
+  LOAN_WRITE_OFF
+  GET_PASS_OUT
+  GET_PASS_RETURN
+}
+
+enum GetPassType {
+  TEMPORARY
+  CATERING
+  PERMANENT
+}
+
+enum GetPassStatus {
+  DRAFT
+  PENDING_DEPT
+  PENDING_FINANCE
+  PENDING_SECURITY
+  APPROVED
+  OUT
+  PARTIALLY_RETURNED
+  RETURNED
+  CLOSED
+  REJECTED
+}
+
+enum GetPassLineStatus {
+  PENDING
+  OUT
+  PARTIALLY_RETURNED
+  RETURNED
+  LOST
+}
+
+enum MovementStatus {
+  DRAFT
+  PENDING_APPROVAL
+  POSTED
+  VOID
+  REJECTED
+}
+
+enum UnitType {
+  BASE
+  PURCHASE
+  ISSUE
+}
+
+enum LocationType {
+  MAIN_STORE
+  OUTLET_STORE
+  DEPARTMENT
+}
+
+enum ApprovalRequestType {
+  ADJUSTMENT
+  BREAKAGE
+  COUNT_ADJUSTMENT
+  GRN_IMPORT
+  STORE_REQUISITION
+  STOCK_REPORT
+}
+
+enum RequisitionStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  PARTIALLY_ISSUED
+  FULLY_ISSUED
+  CLOSED
+  REJECTED
+}
+
+enum IssueStatus {
+  DRAFT
+  POSTED
+}
+
+enum TransferStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  IN_TRANSIT
+  RECEIVED
+  CLOSED
+  REJECTED
+}
+
+enum GrnStatus {
+  DRAFT
+  VALIDATED
+  PENDING_APPROVAL
+  APPROVED
+  POSTED
+  REJECTED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ApprovalStepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ImportStatus {
+  PENDING
+  VALIDATED
+  COMPLETED
+  FAILED
+}
+
+enum CountSessionStatus {
+  OPEN
+  SUBMITTED
+  APPROVED
+  CLOSED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  POST
+  VOID
+  APPROVE
+  REJECT
+  IMPORT
+  LOGIN
+  LOGOUT
+  SUBMIT
+  CLOSE_PERIOD
+  REOPEN_PERIOD
+  LOCK_OB
+  COUNT_APPROVE
+  COUNT_REJECT
+}
+
+enum ReportType {
+  SUMMARY
+  DETAIL
+  BREAKAGE
+  OMC
+  TRANSFERS
+  AGING
+}

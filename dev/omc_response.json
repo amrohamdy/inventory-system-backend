@@ -1,0 +1,35 @@
+{
+  "data": [
+    {
+      "itemId": "2161085a-735b-46ff-aaf5-2fa302749ec3",
+      "itemCode": "OSE-003",
+      "itemName": "King Bed Sheet Set",
+      "category": "Cleaning Supplies",
+      "uom": "-",
+      "obQty": 0,
+      "obVal": 0,
+      "inQty": 10,
+      "inVal": 250,
+      "outQty": 3,
+      "outVal": 75,
+      "cbQty": 7,
+      "cbVal": 175
+    }
+  ],
+  "totals": {
+    "totalObQty": 0,
+    "totalObVal": 0,
+    "totalInQty": 10,
+    "totalInVal": 250,
+    "totalOutQty": 3,
+    "totalOutVal": 75,
+    "totalCbQty": 7,
+    "totalCbVal": 175
+  },
+  "filters": {
+    "dateFrom": "2024-01-01",
+    "dateTo": "2027-12-31",
+    "locationId": "cbe28a1b-1875-46c3-87c2-4b4af829b199",
+    "categoryId": null
+  }
+}

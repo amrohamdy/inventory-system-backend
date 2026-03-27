@@ -1,0 +1,88 @@
+{
+  "success": true,
+  "data": {
+    "inventoryOverview": {
+      "totalValue": 6633.5,
+      "totalStores": 5,
+      "totalActiveItems": 39,
+      "totalQtyOnHand": 293,
+      "valueByStore": [
+        {
+          "locationName": "Engineering Store",
+          "value": 4958.5
+        },
+        {
+          "locationName": "Spa Store",
+          "value": 1500
+        },
+        {
+          "locationName": "Main Store",
+          "value": 175
+        }
+      ]
+    },
+    "monthlyPerformance": {
+      "consumptionValue": 0,
+      "consumptionDelta": -100,
+      "transfersCount": 0,
+      "lossValue": 0,
+      "lossDelta": -100,
+      "fillRate": 0,
+      "totalRequisitions": 0,
+      "fulfilledRequisitions": 0
+    },
+    "riskIndicators": {
+      "aging": [
+        {
+          "bucket": "0-30",
+          "count": 6,
+          "value": 6633.5
+        }
+      ],
+      "topConsumed": [],
+      "topSlow": [
+        {
+          "itemName": "King Bed Sheet Set",
+          "qtyOnHand": 7,
+          "value": 175,
+          "lastMovement": "2026-02-26T14:25:03.690Z"
+        },
+        {
+          "itemName": "All-Purpose Cleaner 5L",
+          "qtyOnHand": 90,
+          "value": 4500,
+          "lastMovement": "2026-02-28T13:12:59.634Z"
+        },
+        {
+          "itemName": "All-Purpose Cleaner 5L",
+          "qtyOnHand": 30,
+          "value": 1500,
+          "lastMovement": "2026-02-28T13:12:59.644Z"
+        },
+        {
+          "itemName": "Shower Cap",
+          "qtyOnHand": 54,
+          "value": 40.5,
+          "lastMovement": "2026-03-01T22:39:23.448Z"
+        },
+        {
+          "itemName": "Sewing Kit",
+          "qtyOnHand": 71,
+          "value": 213,
+          "lastMovement": "2026-03-01T22:39:23.484Z"
+        }
+      ],
+      "lossVsConsumptionPct": 0
+    },
+    "operationalHealth": {
+      "openReqs": 0,
+      "pendingTransfers": 0,
+      "pendingGrns": 0,
+      "pendingLoss": 0
+    },
+    "generatedAt": "2026-03-01T22:42:31.936Z"
+  },
+  "meta": {
+    "responseTimeMs": 14
+  }
+}

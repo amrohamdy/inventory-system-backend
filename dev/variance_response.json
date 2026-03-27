@@ -1,0 +1,84 @@
+{
+  "data": [
+    {
+      "sessionNo": "CNT-2602-0002",
+      "countDate": "2026-02-26T20:16:19.600Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "uom": "-",
+      "bookQty": 6,
+      "countedQty": 8,
+      "varianceQty": 2,
+      "wacUnitCost": 50,
+      "varianceValue": 100,
+      "status": "POSTED",
+      "notes": "End of month cycle count",
+      "postedBy": "Sarah Ahmed"
+    },
+    {
+      "sessionNo": "CNT-2602-0003",
+      "countDate": "2026-02-26T20:19:57.059Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "uom": "-",
+      "bookQty": 8,
+      "countedQty": 10,
+      "varianceQty": 2,
+      "wacUnitCost": 50,
+      "varianceValue": 100,
+      "status": "POSTED",
+      "notes": "End of month cycle count",
+      "postedBy": "Sarah Ahmed"
+    },
+    {
+      "sessionNo": "CNT-2602-0004",
+      "countDate": "2026-02-26T20:38:13.874Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "uom": "-",
+      "bookQty": 10,
+      "countedQty": 15,
+      "varianceQty": 5,
+      "wacUnitCost": 50,
+      "varianceValue": 250,
+      "status": "POSTED",
+      "notes": "cycle count validation",
+      "postedBy": "Sarah Ahmed"
+    },
+    {
+      "sessionNo": "CNT-2602-0005",
+      "countDate": "2026-02-26T20:51:20.146Z",
+      "locationName": "Engineering Store",
+      "itemCode": "OSE-007",
+      "itemName": "All-Purpose Cleaner 5L",
+      "category": "Cleaning Supplies",
+      "uom": "-",
+      "bookQty": 10,
+      "countedQty": 8,
+      "varianceQty": -2,
+      "wacUnitCost": 50,
+      "varianceValue": -100,
+      "status": "PENDING_APPROVAL",
+      "notes": "-",
+      "postedBy": "Sarah Ahmed"
+    }
+  ],
+  "totals": {
+    "totalBookQty": 34,
+    "totalCountedQty": 41,
+    "totalVarianceQty": 7,
+    "totalVarianceValue": 350,
+    "sessionCount": 4
+  },
+  "filters": {
+    "dateFrom": "2024-01-01",
+    "dateTo": "2027-12-31",
+    "locationId": null
+  }
+}
