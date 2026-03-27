@@ -15,12 +15,7 @@ const adminRoutes = require('./routes/superAdmin.routes');
 require('./utils/scheduler'); // Initialize cron jobs
 
 const app = express();
-app.use(cors({
-    origin: true, 
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-  }));
+
 
 // ─── Security Middleware ───────────────────────────────────────────────────
 app.use(helmet({
