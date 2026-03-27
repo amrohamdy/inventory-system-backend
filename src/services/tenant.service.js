@@ -4,6 +4,7 @@ const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membe
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const logger = require('../utils/logger');
 const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
+const { resolveHotelSubStatusForCreate } = require('../utils/resolveHotelSubStatus');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -163,11 +164,13 @@ const createTenant = async (data) => {
         }
 
         if (isBranchCreation) {
+            const hasLicenseEndKey = Object.prototype.hasOwnProperty.call(data, 'licenseEndDate');
             const hasBranchStatus =
                 (data.status !== undefined && data.status !== null && data.status !== '') ||
-                (data.subStatus !== undefined && data.subStatus !== null && data.subStatus !== '');
+                (data.subStatus !== undefined && data.subStatus !== null && data.subStatus !== '') ||
+                hasLicenseEndKey;
             const missingFields = [];
-            if (!hasBranchStatus) missingFields.push('status or subStatus');
+            if (!hasBranchStatus) missingFields.push('status, subStatus, or licenseEndDate');
             if (data.maxUsers === undefined || data.maxUsers === null || data.maxUsers === '') {
                 missingFields.push('maxUsers');
             }
@@ -181,15 +184,21 @@ const createTenant = async (data) => {
 
         const isOrgCreation = !parentId;
         const statusValue = data.status ?? data.subStatus;
-        const normalizedSubStatus = isOrgCreation ? 'ACTIVE' : (statusValue || 'TRIAL');
+        const normalizedSubStatus = isOrgCreation
+            ? 'ACTIVE'
+            : resolveHotelSubStatusForCreate({
+                subStatus: statusValue,
+                licenseEndDate: data.licenseEndDate,
+            });
         const normalizedAdminStatus = 'ACTIVE';
 
-        let resolvedLicenseEndDate = data.licenseEndDate ? new Date(data.licenseEndDate) : null;
-        if (!isOrgCreation && normalizedSubStatus === 'TRIAL') {
-            // Hotels only: default trial duration is 14 days if not explicitly provided.
-            if (!data.licenseEndDate) {
-                resolvedLicenseEndDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-            }
+        const rawLicenseEnd = data.licenseEndDate;
+        let resolvedLicenseEndDate =
+            rawLicenseEnd !== undefined && rawLicenseEnd !== null && rawLicenseEnd !== ''
+                ? new Date(rawLicenseEnd)
+                : null;
+        if (!isOrgCreation && normalizedSubStatus === 'TRIAL' && resolvedLicenseEndDate === null) {
+            resolvedLicenseEndDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
         }
 
         // Root orgs should allow hotels by default unless explicitly disabled.
@@ -322,14 +331,29 @@ const updateTenantLicense = async (id, data) => {
     const tenant = await prisma.tenant.findUnique({ where: { id } });
     if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
 
+    const hasLicenseEndKey = Object.prototype.hasOwnProperty.call(data, 'licenseEndDate');
+    let nextLicenseEndDate = tenant.licenseEndDate;
+    if (hasLicenseEndKey) {
+        nextLicenseEndDate =
+            data.licenseEndDate !== undefined && data.licenseEndDate !== null && data.licenseEndDate !== ''
+                ? new Date(data.licenseEndDate)
+                : null;
+    }
+
+    const hasSubStatusKey = Object.prototype.hasOwnProperty.call(data, 'subStatus');
+    let nextSubStatus = hasSubStatusKey ? data.subStatus : tenant.subStatus;
+    if (hasLicenseEndKey && nextLicenseEndDate === null) {
+        nextSubStatus = 'ACTIVE';
+    }
+
     const updated = await prisma.tenant.update({
         where: { id },
         data: {
             planType: data.planType !== undefined ? data.planType : tenant.planType,
-            subStatus: data.subStatus !== undefined ? data.subStatus : tenant.subStatus,
+            subStatus: nextSubStatus,
             maxUsers: data.maxUsers !== undefined ? Number(data.maxUsers) : tenant.maxUsers,
             licenseStartDate: data.licenseStartDate ? new Date(data.licenseStartDate) : tenant.licenseStartDate,
-            licenseEndDate: data.licenseEndDate ? new Date(data.licenseEndDate) : tenant.licenseEndDate,
+            licenseEndDate: hasLicenseEndKey ? nextLicenseEndDate : tenant.licenseEndDate,
             isActive: data.isActive !== undefined ? data.isActive : tenant.isActive
         }
     });

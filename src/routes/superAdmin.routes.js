@@ -4,7 +4,11 @@ const { authenticate } = require('../middleware/authenticate');
 const { requireSuperAdmin } = require('../middleware/requireSuperAdmin');
 const ctrl = require('../controllers/superAdmin.controller');
 const tenantRoutes = require('./tenant.routes');
-const { createSuperAdminTenantValidator, createFullOrganizationValidator } = require('../utils/validators');
+const {
+    createSuperAdminTenantValidator,
+    createFullOrganizationValidator,
+    updateSuperAdminTenantValidator,
+} = require('../utils/validators');
 
 // ─── All Super Admin routes require JWT + SUPER_ADMIN role ───────────────────
 router.use(authenticate, requireSuperAdmin);
@@ -14,7 +18,7 @@ router.get('/tenants', ctrl.listTenants);
 router.post('/tenants', createSuperAdminTenantValidator, ctrl.createTenant);
 router.post('/tenants/full-organization', createFullOrganizationValidator, ctrl.createFullOrganization);
 router.get('/tenants/:id', ctrl.getTenant);
-router.put('/tenants/:id', ctrl.updateTenant);
+router.put('/tenants/:id', updateSuperAdminTenantValidator, ctrl.updateTenant);
 router.post('/tenants/:id/activate', ctrl.activateTenant);
 router.post('/tenants/:id/suspend', ctrl.suspendTenant);
 router.put('/tenants/:id/subscription', ctrl.setSubscription);

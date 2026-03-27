@@ -2,7 +2,7 @@ const express = require('express');
 const tenantController = require('../controllers/tenant.controller');
 const { authenticate } = require('../middleware/authenticate');
 const { authorize } = require('../middleware/authorize');
-const { createTenantValidator } = require('../utils/validators');
+const { createTenantValidator, updateTenantLicenseValidator } = require('../utils/validators');
 
 const router = express.Router();
 
@@ -20,7 +20,7 @@ router.post('/', createTenantValidator, tenantController.createTenant);
 router.get('/:id', tenantController.getTenant);
 
 // PUT /api/admin/tenants/:id
-router.put('/:id', tenantController.updateTenant);
+router.put('/:id', updateTenantLicenseValidator, tenantController.updateTenant);
 
 // PATCH /api/admin/tenants/:id/toggle
 router.patch('/:id/toggle', tenantController.toggleTenant);

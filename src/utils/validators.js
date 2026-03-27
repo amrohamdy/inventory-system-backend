@@ -1,5 +1,14 @@
 const { body, query, param, validationResult } = require('express-validator');
 
+const applyLifetimeSubStatusDefault = (req) => {
+    const payload = req.body;
+    if (!Object.prototype.hasOwnProperty.call(payload, 'licenseEndDate')) return;
+    const led = payload.licenseEndDate;
+    if ((led === null || led === '') && !Object.prototype.hasOwnProperty.call(payload, 'subStatus')) {
+        req.body.subStatus = 'ACTIVE';
+    }
+};
+
 /**
  * Validate and extract errors from express-validator results
  */
@@ -91,20 +100,26 @@ const createTenantValidator = [
         .optional()
         .isIn(['TRIAL', 'ACTIVE'])
         .withMessage('subStatus must be one of TRIAL, ACTIVE.'),
-    body().custom((value) => {
-        const isOrg = !value?.parentId;
-        const requestedSubStatus = value?.status ?? value?.subStatus;
+    body().custom((value, { req }) => {
+        const body = req.body;
+        const isOrg = !body?.parentId;
+        let requestedSubStatus = body?.status ?? body?.subStatus;
         if (isOrg && requestedSubStatus && requestedSubStatus !== 'ACTIVE') {
             throw new Error('Organizations must be created with ACTIVE status.');
         }
         if (!isOrg) {
-            const subStatus = requestedSubStatus;
-            if (!subStatus) throw new Error('status or subStatus is required for hotel creation.');
-            if (subStatus === 'TRIAL') {
-                // licenseEndDate will be calculated server-side if omitted
-                // fall through to maxUsers check
+            const hasLicenseEndKey = Object.prototype.hasOwnProperty.call(body, 'licenseEndDate');
+            if (!requestedSubStatus && !hasLicenseEndKey) {
+                throw new Error('status/subStatus or licenseEndDate is required for hotel creation.');
             }
-            const mu = value.maxUsers;
+            if (hasLicenseEndKey && !body.subStatus && !body.status) {
+                req.body.subStatus = 'ACTIVE';
+            }
+            requestedSubStatus = body.status ?? body.subStatus;
+            if (requestedSubStatus === 'TRIAL') {
+                // licenseEndDate will be calculated server-side if omitted
+            }
+            const mu = body.maxUsers;
             if (mu === undefined || mu === null || mu === '') {
                 throw new Error('maxUsers is required for hotel creation.');
             }
@@ -138,14 +153,20 @@ const createSuperAdminTenantValidator = [
         .optional()
         .isIn(['TRIAL', 'ACTIVE'])
         .withMessage('subStatus must be one of TRIAL, ACTIVE.'),
-    body().custom((value) => {
-        const isOrg = !value?.parentId;
-        const subStatus = value?.subStatus;
-        if (isOrg && subStatus && subStatus !== 'ACTIVE') {
+    body().custom((value, { req }) => {
+        const body = req.body;
+        const isOrg = !body?.parentId;
+        if (isOrg && body.subStatus && body.subStatus !== 'ACTIVE') {
             throw new Error('Organizations must be created with ACTIVE subStatus.');
         }
         if (!isOrg) {
-            if (!subStatus) throw new Error('subStatus is required for hotel creation.');
+            const hasLicenseEndKey = Object.prototype.hasOwnProperty.call(body, 'licenseEndDate');
+            if (!body.subStatus && !hasLicenseEndKey) {
+                throw new Error('subStatus or licenseEndDate is required for hotel creation.');
+            }
+            if (hasLicenseEndKey && !body.subStatus) {
+                req.body.subStatus = 'ACTIVE';
+            }
         }
         return true;
     }),
@@ -190,6 +211,75 @@ const createFullOrganizationValidator = [
     body('hotel.adminUser.password').optional().isLength({ min: 8 }).withMessage('hotel.adminUser.password must be at least 8 characters.'),
     body('hotel.adminUser.firstName').optional().notEmpty().trim(),
     body('hotel.adminUser.lastName').optional().notEmpty().trim(),
+    body().custom((value, { req }) => {
+        const hotelIn = value.hotel || {};
+        const hasLicenseKey =
+            Object.prototype.hasOwnProperty.call(hotelIn, 'licenseEndDate') ||
+            Object.prototype.hasOwnProperty.call(value, 'licenseEndDate');
+        const hasExplicitSub =
+            (hotelIn.subStatus !== undefined && hotelIn.subStatus !== null && hotelIn.subStatus !== '') ||
+            (value.subStatus !== undefined && value.subStatus !== null && value.subStatus !== '');
+        if (hasLicenseKey && !hasExplicitSub) {
+            req.body.hotel = { ...hotelIn, ...(req.body.hotel || {}), subStatus: 'ACTIVE' };
+        }
+        return true;
+    }),
+    validate,
+];
+
+const updateTenantLicenseValidator = [
+    param('id').isUUID().withMessage('id must be a valid UUID.'),
+    body('planType').optional().isIn(['BASIC', 'PRO', 'ENTERPRISE', 'CUSTOM']).withMessage('Invalid planType.'),
+    body('subStatus')
+        .optional()
+        .isIn(['TRIAL', 'ACTIVE', 'EXPIRED'])
+        .withMessage('subStatus must be one of TRIAL, ACTIVE, EXPIRED.'),
+    body('maxUsers').optional().isInt({ min: 1 }).withMessage('maxUsers must be a positive integer.'),
+    body('licenseStartDate')
+        .optional({ nullable: true })
+        .isISO8601()
+        .withMessage('licenseStartDate must be a valid ISO date.'),
+    body('licenseEndDate')
+        .optional({ nullable: true })
+        .isISO8601()
+        .withMessage('licenseEndDate must be a valid ISO date.'),
+    body('isActive').optional().isBoolean(),
+    body().custom((value, { req }) => {
+        applyLifetimeSubStatusDefault(req);
+        return true;
+    }),
+    validate,
+];
+
+const updateSuperAdminTenantValidator = [
+    param('id').isUUID().withMessage('id must be a valid UUID.'),
+    body('name').optional().notEmpty().trim(),
+    body('phone').optional().trim(),
+    body('email').optional({ nullable: true }).isEmail().withMessage('email must be a valid email.').normalizeEmail(),
+    body('address').optional({ nullable: true }).trim(),
+    body('logoUrl').optional({ nullable: true }).trim(),
+    body('planType').optional().isIn(['BASIC', 'PRO', 'ENTERPRISE', 'CUSTOM']).withMessage('Invalid planType.'),
+    body('subStatus')
+        .optional()
+        .isIn(['TRIAL', 'ACTIVE', 'EXPIRED'])
+        .withMessage('subStatus must be one of TRIAL, ACTIVE, EXPIRED.'),
+    body('maxUsers').optional().isInt({ min: 1 }).withMessage('maxUsers must be a positive integer.'),
+    body('licenseStartDate')
+        .optional({ nullable: true })
+        .isISO8601()
+        .withMessage('licenseStartDate must be a valid ISO date.'),
+    body('licenseEndDate')
+        .optional({ nullable: true })
+        .isISO8601()
+        .withMessage('licenseEndDate must be a valid ISO date.'),
+    body('isActive').optional().isBoolean(),
+    body('parentId').optional({ nullable: true }).isUUID().withMessage('parentId must be a valid UUID.'),
+    body('hasBranches').optional().isBoolean(),
+    body('maxBranches').optional().isInt({ min: 0 }).withMessage('maxBranches must be a non-negative integer.'),
+    body().custom((value, { req }) => {
+        applyLifetimeSubStatusDefault(req);
+        return true;
+    }),
     validate,
 ];
 
@@ -235,5 +325,7 @@ module.exports = {
     createTenantValidator,
     createSuperAdminTenantValidator,
     createFullOrganizationValidator,
+    updateTenantLicenseValidator,
+    updateSuperAdminTenantValidator,
     updateOrganizationValidator,
 };

@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
+const { resolveHotelSubStatusForCreate } = require('../utils/resolveHotelSubStatus');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -217,7 +218,7 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         hasBranches = false,
         maxBranches = 0,
         planType = 'BASIC',
-        subStatus = 'TRIAL',
+        subStatus,
         licenseStartDate,
         licenseEndDate,
         maxUsers,
@@ -290,8 +291,9 @@ const createTenant = async (data, adminUserId, ipAddress) => {
 
     const isOrgCreation = !resolvedParentId;
 
-    // Organizations don't have trials (always ACTIVE).
-    const resolvedSubStatus = isOrgCreation ? 'ACTIVE' : subStatus;
+    const resolvedSubStatus = isOrgCreation
+        ? 'ACTIVE'
+        : resolveHotelSubStatusForCreate({ subStatus, licenseEndDate });
     const resolvedAdminStatus = 'ACTIVE';
 
     // Root org creation: strip/ignore subscription fields entirely.
@@ -452,7 +454,7 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     const hotelAdminEmailResolved = hotelAdminPayload.email ?? adminEmail;
     const hotelEmail = hotel.email ?? payload?.hotelEmail ?? (hotelAdminEmailResolved ? String(hotelAdminEmailResolved).toLowerCase() : null);
     const hotelPlanType = hotel.planType ?? payload?.planType ?? 'BASIC';
-    const hotelSubStatus = hotel.subStatus ?? payload?.subStatus ?? 'TRIAL';
+    const rawHotelSubStatus = hotel.subStatus ?? payload?.subStatus;
     const trialDays = Number(hotel.trialDays ?? payload?.trialDays) || 14;
     const hotelMaxUsers = hotel.maxUsers ?? payload?.maxUsers;
     const hotelLicenseStartDate = hotel.licenseStartDate ?? payload?.licenseStartDate;
@@ -467,10 +469,6 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     if (!adminEmail || !adminPassword) {
         throw Object.assign(new Error('adminUser.email and adminUser.password are required.'), { statusCode: 400 });
     }
-    if (!['TRIAL', 'ACTIVE'].includes(hotelSubStatus)) {
-        throw Object.assign(new Error('hotel.subStatus must be TRIAL or ACTIVE.'), { statusCode: 400 });
-    }
-
     // Pre-check uniqueness early for clearer errors.
     const existing = await prisma.tenant.findFirst({
         where: { OR: [{ slug: orgSlug }, { name: orgName }, { slug: hotelSlug }, { name: hotelName }] },
@@ -483,6 +481,18 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     const hotelAdminPassword = hotelAdminPayload.password ?? adminPassword;
     const hotelAdminFirstName = hotelAdminPayload.firstName ?? adminFirstName;
     const hotelAdminLastName = hotelAdminPayload.lastName ?? adminLastName ?? hotelName;
+
+    const hotelStartDate = resolveLicenseStartDateForCreate(hotelLicenseStartDate);
+    const hotelSubStatus = resolveHotelSubStatusForCreate({
+        subStatus: rawHotelSubStatus,
+        licenseEndDate: hotelLicenseEndDate,
+    });
+    const hotelEndDate = resolveLicenseEndDateForCreate({
+        licenseEndDate: hotelLicenseEndDate,
+        subStatus: hotelSubStatus,
+        trialDays,
+    });
+    validateLicenseDateRange(hotelStartDate, hotelEndDate);
 
     const created = await prisma.$transaction(async (tx) => {
         const findOrCreateUser = async ({
@@ -546,14 +556,6 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
         });
 
         // 3) Create First Hotel linked to Parent ID
-        const hotelStartDate = resolveLicenseStartDateForCreate(hotelLicenseStartDate);
-        const hotelEndDate = resolveLicenseEndDateForCreate({
-            licenseEndDate: hotelLicenseEndDate,
-            subStatus: hotelSubStatus,
-            trialDays,
-        });
-        validateLicenseDateRange(hotelStartDate, hotelEndDate);
-
         const hotelLimits = PLAN_DEFAULTS[hotelPlanType] || PLAN_DEFAULTS.BASIC;
         const hotelTenant = await tx.tenant.create({
             data: {
@@ -840,6 +842,7 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
             id: true,
             parentId: true,
             hasBranches: true,
+            subStatus: true,
             licenseStartDate: true,
             licenseEndDate: true,
             _count: { select: { children: true } },
@@ -922,6 +925,13 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
         : tenant.licenseEndDate;
     validateLicenseDateRange(nextLicenseStartDate, nextLicenseEndDate);
 
+    const hasSubStatusInPayload = Object.prototype.hasOwnProperty.call(data, 'subStatus');
+    const nextSubStatus = (() => {
+        if (hasLicenseEndDateInPayload && nextLicenseEndDate === null) return 'ACTIVE';
+        if (hasSubStatusInPayload) return data.subStatus;
+        return tenant.subStatus;
+    })();
+
     // Normalize hierarchy branch flags:
     // - Child tenant => hasBranches=false, maxBranches=0
     // - Root tenant => can use payload values.
@@ -933,7 +943,7 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
         ...(data.logoUrl !== undefined ? { logoUrl: data.logoUrl } : {}),
         // License fields
         ...(data.planType !== undefined ? { planType: data.planType } : {}),
-        ...(data.subStatus !== undefined ? { subStatus: data.subStatus } : {}),
+        ...(nextSubStatus !== tenant.subStatus ? { subStatus: nextSubStatus } : {}),
         ...(data.maxUsers !== undefined ? { maxUsers: Number(data.maxUsers) } : {}),
         ...(hasLicenseStartDateInPayload ? { licenseStartDate: nextLicenseStartDate } : {}),
         ...(hasLicenseEndDateInPayload ? { licenseEndDate: nextLicenseEndDate } : {}),
