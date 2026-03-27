@@ -52,7 +52,7 @@ async function main() {
 
     // 4. Create SUPER_ADMIN user
     const email = 'superadmin@ose.cloud';
-    const password = 'SuperAdmin@2026';
+    const password = 'superadmin@2026';
     const existing = await prisma.user.findUnique({ where: { email } });
 
     if (!existing) {
