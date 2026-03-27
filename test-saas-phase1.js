@@ -4,7 +4,7 @@
  * S1.  Non-SUPER_ADMIN → 403 on /api/admin/*
  * S2.  Create tenant → auto-creates subscription (TRIAL) + usage record
  * S3.  Suspend tenant → login blocked
- * S4.  Expired subscription → 402 on any tenant API call
+ * S4.  Expired subscription → 403 SUBSCRIPTION_EXPIRED on tenant API call
  * S5.  Plan limit exceeded (maxUsers) → 402
  * S6.  Movement after monthly limit → 402
  * S7.  Cross-tenant access attempt → blocked
@@ -113,8 +113,8 @@ async function run() {
         await req('POST', `/admin/tenants/${newTenantId}/activate`, {}, superToken);
     }
 
-    // ── S4: Expired subscription → 402 ───────────────────────────────────────
-    console.log('\n══ S4: Expired subscription → 402 ═══════════════════');
+    // ── S4: Expired subscription → 403 ───────────────────────────────────────
+    console.log('\n══ S4: Expired subscription → 403 ═══════════════════');
     if (newTenantId) {
         // Force expire the subscription
         await prisma.subscription.update({ where: { tenantId: newTenantId }, data: { status: 'EXPIRED' } });
@@ -126,7 +126,7 @@ async function run() {
             const s4Token = s4Login.body.data.accessToken;
             const s4Items = await req('GET', '/items', null, s4Token);
             console.log(`  GET /items with expired sub → HTTP ${s4Items.status}: ${s4Items.body?.code}`);
-            assert('S4: Expired subscription → 402', s4Items.status === 402);
+            assert('S4: Expired subscription → 403', s4Items.status === 403);
         }
         // Restore
         await prisma.subscription.update({ where: { tenantId: newTenantId }, data: { status: 'ACTIVE' } });

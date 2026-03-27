@@ -1,17 +1,35 @@
 const cron = require('node-cron');
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../config/database');
 const notificationService = require('../services/notification.service');
 const emailService = require('../services/email.service');
-const winston = require('winston');
+const { invalidateTenantCache } = require('../middleware/subscription');
+const logger = require('./logger');
 
-const prisma = new PrismaClient();
-const logger = winston.createLogger({
-    level: 'info',
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.json()
-    ),
-    transports: [new winston.transports.Console()],
+// Daily at midnight (server local time): sync subStatus for past-due licenses
+cron.schedule('0 0 * * *', async () => {
+    logger.info('[CRON] Starting subscription expiration sync...');
+    try {
+        const now = new Date();
+        const due = await prisma.tenant.findMany({
+            where: {
+                licenseEndDate: { not: null, lt: now },
+                subStatus: { not: 'EXPIRED' },
+            },
+            select: { id: true },
+        });
+        if (due.length === 0) {
+            logger.info('[CRON] Subscription expiration sync: no tenants to update.');
+            return;
+        }
+        await prisma.tenant.updateMany({
+            where: { id: { in: due.map((t) => t.id) } },
+            data: { subStatus: 'EXPIRED' },
+        });
+        due.forEach((t) => invalidateTenantCache(t.id));
+        logger.info(`[CRON] Subscription expiration sync: marked ${due.length} tenant(s) as EXPIRED.`);
+    } catch (error) {
+        logger.error('[CRON] Subscription expiration sync failed', { message: error.message, stack: error.stack });
+    }
 });
 
 // Run every day at 8:00 AM
@@ -37,7 +55,7 @@ cron.schedule('0 8 * * *', async () => {
             }
         }
     } catch (error) {
-        logger.error('[CRON] Failed to run Daily Stock Alert check', error);
+        logger.error('[CRON] Failed to run Daily Stock Alert check', { message: error.message, stack: error.stack });
     }
 });
 

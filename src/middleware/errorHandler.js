@@ -62,6 +62,7 @@ const errorHandler = (err, req, res, next) => {
     };
 
     if (err.code) {
+        responseBody.code = err.code;
         responseBody.error = err.code;
     }
 

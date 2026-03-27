@@ -4,15 +4,15 @@
  * Runs AFTER authenticate on every tenant API request (except /api/auth & /api/admin).
  * Checks:
  *  1. Administrative status (SUSPENDED → 403) and active flag (inactive → 403)
- *  2. Subscription status for hotels (EXPIRED → 402)
- *  2. Trial expiry (402)
- *  3. Plan limits on mutating requests (maxUsers, maxStores, maxMonthlyMovements)
- *  4. Read-only impersonation token blocks writes
+ *  2. Subscription: EXPIRED or past licenseEndDate → 403 SUBSCRIPTION_EXPIRED (no DB write here)
+ *  3. Read-only impersonation token blocks writes
+ *  4. Plan limits on mutating requests (maxUsers, …)
  */
 
 const prisma = require('../config/database');
 const logger = require('../utils/logger');
 const { countActiveSeats } = require('../utils/tenantMemberActive');
+const { isTenantSubscriptionExpired } = require('../utils/subscriptionLicense');
 
 // ─── Simple in-memory cache (60s TTL) ─────────────────────────────────────────
 const cache = new Map();
@@ -79,32 +79,16 @@ const enforceSubscription = async (req, res, next) => {
             });
         }
 
-        // 2. Check EXPIRED (hotels only: child tenants)
-        if (tenant.parentId && tenant.subStatus === 'EXPIRED') {
-            return res.status(402).json({
+        // 2. Subscription: DB EXPIRED or license end in the past (blocks immediately; cron syncs subStatus)
+        if (isTenantSubscriptionExpired(tenant)) {
+            return res.status(403).json({
                 success: false,
                 code: 'SUBSCRIPTION_EXPIRED',
                 message: 'Your subscription has expired. Please renew to continue.',
             });
         }
 
-        // 3. Check endDate
-        if (tenant.licenseEndDate && new Date(tenant.licenseEndDate) < new Date()) {
-            await prisma.tenant.update({
-                where: { id: tenantId },
-                data: { subStatus: 'EXPIRED' },
-            });
-            invalidateTenantCache(tenantId);
-            if (tenant.parentId) {
-                return res.status(402).json({
-                    success: false,
-                    code: 'SUBSCRIPTION_EXPIRED',
-                    message: 'Your subscription has expired. Please renew to continue.',
-                });
-            }
-        }
-
-        // 5. Check read-only impersonation token
+        // 3. Check read-only impersonation token
         if (req.user.readOnly && ['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
             return res.status(403).json({
                 success: false,
@@ -113,7 +97,7 @@ const enforceSubscription = async (req, res, next) => {
             });
         }
 
-        // 6. Enforce plan limits on mutating requests
+        // 4. Enforce plan limits on mutating requests
         if (['POST', 'PATCH', 'PUT'].includes(req.method)) {
             // User limit — check on user creation
             if (req.path.match(/\/users$/i) && req.method === 'POST') {

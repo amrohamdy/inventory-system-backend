@@ -3,6 +3,7 @@ const { hashPassword, comparePassword } = require('../utils/password');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, getRefreshTokenExpiry } = require('../utils/jwt');
 const logger = require('../utils/logger');
 const { getPermissionsForRole } = require('../middleware/authorize');
+const { isTenantSubscriptionExpired } = require('../utils/subscriptionLicense');
 
 /**
  * M01 — Auth Service
@@ -50,6 +51,7 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
                 parentId: true,
                 isActive: true,
                 subStatus: true,
+                licenseEndDate: true,
             },
         });
 
@@ -80,6 +82,12 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
 };
 
 const buildSuspensionError = (code) => Object.assign(new Error(code), { statusCode: 403, code });
+
+const buildSubscriptionExpiredError = () =>
+    Object.assign(new Error('Your subscription has expired. Please renew to continue.'), {
+        statusCode: 403,
+        code: 'SUBSCRIPTION_EXPIRED',
+    });
 const logAuthCheck = ({ email, tenant }) => {
     if (!tenant) return;
     const parentAdminStatus = tenant.parent?.adminStatus || 'N/A';
@@ -111,6 +119,17 @@ const ensureTenantNotSuspended = async (tenantId) => {
         if (parent && parent.adminStatus === 'SUSPENDED') {
             throw buildSuspensionError('ORGANIZATION_SUSPENDED');
         }
+    }
+};
+
+const ensureTenantSubscriptionNotExpired = async (tenantId) => {
+    if (!tenantId) return;
+    const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { licenseEndDate: true, subStatus: true },
+    });
+    if (isTenantSubscriptionExpired(tenant)) {
+        throw buildSubscriptionExpiredError();
     }
 };
 
@@ -231,10 +250,18 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         ...new Set(activeMembershipsWithInheritance.map((m) => m.tenantId).filter(Boolean)),
     ];
     let suspensionFailureCode = null;
+    let removedForSubscriptionExpiry = false;
     if (tenantIds.length > 0) {
         const tenants = await prisma.tenant.findMany({
             where: { id: { in: tenantIds } },
-            select: { id: true, parentId: true, adminStatus: true, subStatus: true, isActive: true },
+            select: {
+                id: true,
+                parentId: true,
+                adminStatus: true,
+                subStatus: true,
+                isActive: true,
+                licenseEndDate: true,
+            },
         });
         const tenantById = new Map(tenants.map((t) => [t.id, t]));
         const parentIds = [...new Set(tenants.map((t) => t.parentId).filter(Boolean))];
@@ -261,6 +288,10 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
                     return false;
                 }
             }
+            if (isTenantSubscriptionExpired(t)) {
+                removedForSubscriptionExpiry = true;
+                return false;
+            }
             return true;
         });
     }
@@ -270,6 +301,9 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
 
     if (totalMemberships === 0 && suspensionFailureCode) {
         throw buildSuspensionError(suspensionFailureCode);
+    }
+    if (totalMemberships === 0 && removedForSubscriptionExpiry) {
+        throw buildSubscriptionExpiredError();
     }
 
     if (totalMemberships > 1 && !normalizedTenantSlug) {
@@ -301,6 +335,7 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
                 parentId: true,
                 subStatus: true,
                 adminStatus: true,
+                licenseEndDate: true,
                 parent: {
                     select: {
                         id: true,
@@ -318,6 +353,9 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
             }
             if (attemptedTenant.parent?.adminStatus === 'SUSPENDED') {
                 throw buildSuspensionError('ORGANIZATION_SUSPENDED');
+            }
+            if (isTenantSubscriptionExpired(attemptedTenant)) {
+                throw buildSubscriptionExpiredError();
             }
         }
 
@@ -337,6 +375,7 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         }
 
         await ensureTenantNotSuspended(selectedMembership.tenantId);
+        await ensureTenantSubscriptionNotExpired(selectedMembership.tenantId);
 
         const result = await issueSessionForMembership({
             user,
@@ -359,12 +398,20 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
                     parentId: true,
                     subStatus: true,
                     adminStatus: true,
-                    parent: { select: { id: true, subStatus: true, adminStatus: true } },
+                    licenseEndDate: true,
+                    parent: {
+                        select: {
+                            id: true,
+                            subStatus: true,
+                            adminStatus: true,
+                        },
+                    },
                 },
             });
             logAuthCheck({ email: user.email, tenant: selectedTenant });
         }
         await ensureTenantNotSuspended(selected.tenantId);
+        await ensureTenantSubscriptionNotExpired(selected.tenantId);
         const result = await issueSessionForMembership({ user, membership: selected, ipAddress, userAgent });
         logger.info(`User logged in: ${user.email} [tenant: ${selected.tenant?.slug || 'super-admin'}]`);
         return result;
@@ -464,6 +511,7 @@ const refresh = async (refreshToken) => {
     if (membership.tenantId) {
         try {
             await ensureTenantNotSuspended(membership.tenantId);
+            await ensureTenantSubscriptionNotExpired(membership.tenantId);
         } catch (err) {
             // Revoke the presented refresh token to force logout.
             await prisma.refreshToken.updateMany({
@@ -569,7 +617,14 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
             slug: normalizedTenantSlug,
             isActive: true,
         },
-        select: { id: true, slug: true, name: true, parentId: true, subStatus: true },
+        select: {
+            id: true,
+            slug: true,
+            name: true,
+            parentId: true,
+            subStatus: true,
+            licenseEndDate: true,
+        },
     });
 
     if (!targetTenant) {
@@ -578,6 +633,9 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
 
     // Block switching to suspended tenant/org hierarchy with distinct codes.
     await ensureTenantNotSuspended(targetTenant.id);
+    if (isTenantSubscriptionExpired(targetTenant)) {
+        throw buildSubscriptionExpiredError();
+    }
 
     // Strict switch guard:
     // If user is an ORG_MANAGER of any root org, they may only switch to that org
