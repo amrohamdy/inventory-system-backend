@@ -22,22 +22,11 @@ app.use(helmet({
     // Allow images & assets to be loaded cross-origin (frontend on :5173, backend on :4000)
     crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
-const corsOrigins = process.env.CORS_ORIGIN?.trim()
-    ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean)
-    : ['http://localhost:5173', 'http://localhost:4200'];
-
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
+// Reflect any request Origin so credentialed cross-origin requests work from any host (not `*` — incompatible with credentials: true).
 app.use(cors({
-    // Callback: exact allow-list from env + localhost/127.0.0.1 on common dev ports (Origin differs: localhost vs 127.0.0.1)
-    origin(origin, callback) {
-        if (!origin) return callback(null, true);
-        if (corsOrigins.includes(origin)) return callback(null, true);
-        if (isDev && /^https?:\/\/(localhost|127\.0\.0\.1):(4200|5173)$/.test(origin)) {
-            return callback(null, true);
-        }
-        callback(null, false);
-    },
+    origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
