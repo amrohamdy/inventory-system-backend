@@ -113,5 +113,9 @@ router.use('/settings', settingRoutes);
 const superAdminRoutes = require('./superAdmin.routes');
 router.use('/super-admin', superAdminRoutes);
 
+// API v1 — organizations (root tenants)
+const organizationRoutes = require('./organization.routes');
+router.use('/v1/organizations', organizationRoutes);
+
 module.exports = router;
 

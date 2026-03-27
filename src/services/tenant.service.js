@@ -2,6 +2,8 @@ const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
+const logger = require('../utils/logger');
+const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -79,26 +81,35 @@ const listTenants = async (query = {}, userContext = null) => {
 };
 
 const createTenant = async (data) => {
-    // Check if slug or name exists
-    const existing = await prisma.tenant.findFirst({
-        where: {
-            OR: [
-                { name: data.name },
-                { slug: data.slug }
-            ]
-        }
+    const slugTaken = await prisma.tenant.findFirst({
+        where: { slug: data.slug },
+        select: { id: true },
     });
+    if (slugTaken) {
+        throw Object.assign(
+            new Error('A tenant with this slug already exists. Please choose a different slug.'),
+            { statusCode: 409 }
+        );
+    }
 
-    if (existing) {
-        throw Object.assign(new Error('Tenant name or slug already exists.'), { statusCode: 400 });
+    const nameTaken = await prisma.tenant.findFirst({
+        where: { name: data.name },
+        select: { id: true },
+    });
+    if (nameTaken) {
+        throw Object.assign(
+            new Error('A tenant with this name already exists. Please choose a different name.'),
+            { statusCode: 409 }
+        );
     }
 
     if (!data.adminUser?.email) {
         throw Object.assign(new Error('adminUser.email is required.'), { statusCode: 400 });
     }
 
-    // Create organization/branch and attach initial memberships in one transaction.
-    const result = await prisma.$transaction(async (tx) => {
+    let result;
+    try {
+        result = await prisma.$transaction(async (tx) => {
         const parentId = data.parentId || null;
         let parentOrgManagerIds = [];
         const isBranchCreation = Boolean(parentId);
@@ -106,10 +117,29 @@ const createTenant = async (data) => {
         if (parentId) {
             const parentTenant = await tx.tenant.findUnique({
                 where: { id: parentId },
-                select: { id: true },
+                select: {
+                    id: true,
+                    hasBranches: true,
+                    maxBranches: true,
+                    _count: { select: { children: true } },
+                },
             });
             if (!parentTenant) {
                 throw Object.assign(new Error('Parent organization not found.'), { statusCode: 404 });
+            }
+            if (!parentTenant.hasBranches) {
+                throw Object.assign(
+                    new Error(
+                        'This organization cannot add branches until branching is enabled for the parent organization.'
+                    ),
+                    { statusCode: 400 }
+                );
+            }
+            if (parentTenant.maxBranches > 0 && parentTenant._count.children >= parentTenant.maxBranches) {
+                throw Object.assign(
+                    new Error('Maximum number of branches reached for this organization'),
+                    { statusCode: 400 }
+                );
             }
 
             const parentOrgManagers = await tx.tenantMember.findMany({
@@ -133,15 +163,17 @@ const createTenant = async (data) => {
         }
 
         if (isBranchCreation) {
-            const requiredFields = ['status', 'maxUsers'];
-            const missingFields = requiredFields.filter((field) => {
-                const value = data[field];
-                return value === undefined || value === null || value === '';
-            });
-
+            const hasBranchStatus =
+                (data.status !== undefined && data.status !== null && data.status !== '') ||
+                (data.subStatus !== undefined && data.subStatus !== null && data.subStatus !== '');
+            const missingFields = [];
+            if (!hasBranchStatus) missingFields.push('status or subStatus');
+            if (data.maxUsers === undefined || data.maxUsers === null || data.maxUsers === '') {
+                missingFields.push('maxUsers');
+            }
             if (missingFields.length > 0) {
                 throw Object.assign(
-                    new Error(`Missing required fields for branch creation: ${missingFields.join(', ')}`),
+                    new Error(`Missing required fields for branch creation: ${missingFields.join(', ')}.`),
                     { statusCode: 400 }
                 );
             }
@@ -271,6 +303,17 @@ const createTenant = async (data) => {
 
         return tenant;
     });
+    } catch (err) {
+        logger.error('tenant.service createTenant: database error', {
+            message: err.message,
+            prismaCode: err.code,
+            prismaMeta: err.meta,
+            stack: err.stack,
+        });
+        const mapped = mapPrismaTenantUniqueConstraintError(err);
+        if (mapped) throw mapped;
+        throw err;
+    }
 
     return result;
 };

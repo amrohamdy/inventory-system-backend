@@ -5,6 +5,7 @@ const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
+const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -233,13 +234,17 @@ const createTenant = async (data, adminUserId, ipAddress) => {
     const adminFirstName = nestedAdmin?.firstName || flatAdminFirstName || 'Admin';
     const adminLastName = nestedAdmin?.lastName || flatAdminLastName;
 
-    // Check uniqueness
-    const existing = await prisma.tenant.findFirst({
-        where: { OR: [{ slug }, { name }] },
-    });
-    if (existing) {
+    const existingBySlug = await prisma.tenant.findFirst({ where: { slug }, select: { id: true } });
+    if (existingBySlug) {
         throw Object.assign(
-            new Error(`Tenant name or slug already exists.`),
+            new Error('A tenant with this slug already exists. Please choose a different slug.'),
+            { statusCode: 409 }
+        );
+    }
+    const existingByName = await prisma.tenant.findFirst({ where: { name }, select: { id: true } });
+    if (existingByName) {
+        throw Object.assign(
+            new Error('A tenant with this name already exists. Please choose a different name.'),
             { statusCode: 409 }
         );
     }
@@ -265,13 +270,15 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         }
         if (!parentTenant.hasBranches) {
             throw Object.assign(
-                new Error('This parent tenant is not authorized to have branches.'),
+                new Error(
+                    'This organization cannot add branches until branching is enabled for the parent organization.'
+                ),
                 { statusCode: 400 }
             );
         }
         if (parentTenant.maxBranches > 0 && parentTenant._count.children >= parentTenant.maxBranches) {
             throw Object.assign(
-                new Error('Branch limit reached for this parent.'),
+                new Error('Maximum number of branches reached for this organization'),
                 { statusCode: 400 }
             );
         }
@@ -299,7 +306,9 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         : (maxUsers !== undefined ? Number(maxUsers) : limits.maxUsers);
     validateLicenseDateRange(resolvedStartDate, resolvedEndDate);
 
-    const tenant = await prisma.$transaction(async (tx) => {
+    let tenant;
+    try {
+        tenant = await prisma.$transaction(async (tx) => {
         // 1. Create Tenant
         const t = await tx.tenant.create({
             data: {
@@ -404,6 +413,17 @@ const createTenant = async (data, adminUserId, ipAddress) => {
 
         return t;
     });
+    } catch (err) {
+        logger.error('superAdmin.service createTenant: database error', {
+            message: err.message,
+            prismaCode: err.code,
+            prismaMeta: err.meta,
+            stack: err.stack,
+        });
+        const mapped = mapPrismaTenantUniqueConstraintError(err);
+        if (mapped) throw mapped;
+        throw err;
+    }
 
     await logAdminAction(adminUserId, 'TENANT_CREATED', tenant.id, { name, slug, planType }, ipAddress);
     return tenant;
@@ -610,6 +630,206 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     }, ipAddress);
 
     return created;
+};
+
+/**
+ * PATCH organization (root tenant) + its ORG_MANAGER user in one transaction.
+ * @param {string} organizationId — root tenant id
+ * @param {object} payload — { organization?: { name, slug, maxBranches }, manager?: { firstName, lastName, email, password? }, adminUser?: {...} }
+ */
+const updateOrganization = async (organizationId, payload, adminUserId, ipAddress) => {
+    const orgIn = payload?.organization || {};
+    const managerIn = { ...(payload?.adminUser || {}), ...(payload?.manager || {}) };
+
+    const orgPatchKeys = ['name', 'slug', 'maxBranches'].filter((k) =>
+        Object.prototype.hasOwnProperty.call(orgIn, k)
+    );
+    const mgrPatchKeys = ['firstName', 'lastName', 'email', 'password'].filter((k) =>
+        Object.prototype.hasOwnProperty.call(managerIn, k)
+    );
+
+    if (orgPatchKeys.length === 0 && mgrPatchKeys.length === 0) {
+        throw Object.assign(new Error('Provide at least one field under organization or manager.'), { statusCode: 400 });
+    }
+
+    const org = await prisma.tenant.findUnique({
+        where: { id: organizationId },
+        select: {
+            id: true,
+            parentId: true,
+            name: true,
+            slug: true,
+            maxBranches: true,
+        },
+    });
+    if (!org) {
+        throw Object.assign(new Error('Organization not found.'), { statusCode: 404 });
+    }
+    if (org.parentId !== null) {
+        throw Object.assign(new Error('Not a root organization.'), { statusCode: 400 });
+    }
+
+    const activeBranchCount = await prisma.tenant.count({
+        where: { parentId: organizationId, isActive: true },
+    });
+
+    const nextMaxBranches = Object.prototype.hasOwnProperty.call(orgIn, 'maxBranches')
+        ? Number(orgIn.maxBranches) || 0
+        : org.maxBranches;
+
+    // Align with branch creation: maxBranches > 0 enforces a cap; 0 means no numeric cap.
+    if (nextMaxBranches > 0 && nextMaxBranches < activeBranchCount) {
+        throw Object.assign(
+            new Error(`maxBranches cannot be less than the current number of active branches (${activeBranchCount}).`),
+            { statusCode: 400 }
+        );
+    }
+
+    if (Object.prototype.hasOwnProperty.call(orgIn, 'slug')) {
+        const newSlug = String(orgIn.slug).trim();
+        if (!newSlug) {
+            throw Object.assign(new Error('organization.slug cannot be empty.'), { statusCode: 400 });
+        }
+        if (newSlug !== org.slug) {
+            const slugTaken = await prisma.tenant.findFirst({
+                where: { slug: newSlug, NOT: { id: organizationId } },
+                select: { id: true },
+            });
+            if (slugTaken) {
+                throw Object.assign(new Error('Organization slug already exists.'), { statusCode: 409 });
+            }
+        }
+    }
+
+    const managerRow = await prisma.tenantMember.findFirst({
+        where: { tenantId: organizationId, role: 'ORG_MANAGER', isActive: true },
+        orderBy: { createdAt: 'asc' },
+        include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
+    });
+    if (!managerRow?.user) {
+        throw Object.assign(new Error('No active organization manager found for this organization.'), { statusCode: 400 });
+    }
+
+    const managerUserId = managerRow.user.id;
+    let normalizedNewEmail;
+    if (Object.prototype.hasOwnProperty.call(managerIn, 'email')) {
+        normalizedNewEmail = String(managerIn.email).toLowerCase();
+        if (normalizedNewEmail !== managerRow.user.email.toLowerCase()) {
+            const emailOwner = await prisma.user.findUnique({
+                where: { email: normalizedNewEmail },
+                select: { id: true },
+            });
+            if (emailOwner && emailOwner.id !== managerUserId) {
+                throw Object.assign(new Error('Email already in use by another user.'), { statusCode: 409 });
+            }
+        }
+    }
+
+    const tenantData = {};
+    if (Object.prototype.hasOwnProperty.call(orgIn, 'name')) {
+        const n = String(orgIn.name).trim();
+        if (!n) {
+            throw Object.assign(new Error('organization.name cannot be empty.'), { statusCode: 400 });
+        }
+        tenantData.name = n;
+    }
+    if (Object.prototype.hasOwnProperty.call(orgIn, 'slug')) {
+        tenantData.slug = String(orgIn.slug).trim();
+    }
+    if (Object.prototype.hasOwnProperty.call(orgIn, 'maxBranches')) {
+        tenantData.maxBranches = nextMaxBranches;
+    }
+
+    const userData = {};
+    if (Object.prototype.hasOwnProperty.call(managerIn, 'firstName')) {
+        const v = String(managerIn.firstName).trim();
+        if (!v) {
+            throw Object.assign(new Error('manager.firstName cannot be empty.'), { statusCode: 400 });
+        }
+        userData.firstName = v;
+    }
+    if (Object.prototype.hasOwnProperty.call(managerIn, 'lastName')) {
+        const v = String(managerIn.lastName).trim();
+        if (!v) {
+            throw Object.assign(new Error('manager.lastName cannot be empty.'), { statusCode: 400 });
+        }
+        userData.lastName = v;
+    }
+    if (normalizedNewEmail !== undefined) {
+        userData.email = normalizedNewEmail;
+    }
+
+    const hasPasswordPatch = Object.prototype.hasOwnProperty.call(managerIn, 'password');
+    if (hasPasswordPatch) {
+        const raw = managerIn.password;
+        if (raw === null || raw === undefined || String(raw).length === 0) {
+            throw Object.assign(new Error('manager.password cannot be empty when provided.'), { statusCode: 400 });
+        }
+        if (String(raw).length < 8) {
+            throw Object.assign(new Error('manager.password must be at least 8 characters.'), { statusCode: 400 });
+        }
+    }
+
+    await prisma.$transaction(async (tx) => {
+        if (Object.keys(tenantData).length > 0) {
+            await tx.tenant.update({
+                where: { id: organizationId },
+                data: tenantData,
+            });
+        }
+        if (hasPasswordPatch) {
+            userData.passwordHash = await hashPassword(String(managerIn.password));
+        }
+        if (Object.keys(userData).length > 0) {
+            await tx.user.update({
+                where: { id: managerUserId },
+                data: userData,
+            });
+        }
+    });
+
+    invalidateTenantCache(organizationId);
+
+    await logAdminAction(adminUserId, 'ORGANIZATION_UPDATED', organizationId, {
+        organization: orgPatchKeys.length ? orgIn : undefined,
+        manager: mgrPatchKeys.length
+            ? {
+                ...managerIn,
+                password: undefined,
+                ...(hasPasswordPatch ? { passwordChanged: true } : {}),
+            }
+            : undefined,
+    }, ipAddress);
+
+    const [updatedOrg, updatedManager] = await Promise.all([
+        prisma.tenant.findUnique({
+            where: { id: organizationId },
+            select: {
+                id: true,
+                name: true,
+                slug: true,
+                email: true,
+                parentId: true,
+                isActive: true,
+                planType: true,
+                subStatus: true,
+                adminStatus: true,
+                hasBranches: true,
+                maxBranches: true,
+                maxUsers: true,
+                licenseStartDate: true,
+                licenseEndDate: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        }),
+        prisma.user.findUnique({
+            where: { id: managerUserId },
+            select: { id: true, firstName: true, lastName: true, email: true },
+        }),
+    ]);
+
+    return { ...updatedOrg, manager: updatedManager };
 };
 
 // ─── S1.4 — Update Tenant Info ────────────────────────────────────────────────
@@ -914,6 +1134,7 @@ module.exports = {
     getTenant,
     createTenant,
     createFullOrganization,
+    updateOrganization,
     updateTenant,
     activateTenant,
     suspendTenant,

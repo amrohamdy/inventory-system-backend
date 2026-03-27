@@ -9,6 +9,8 @@ const errorHandler = (err, req, res, next) => {
         path: req.path,
         method: req.method,
         tenantId: req.user?.tenantId,
+        prismaCode: err.code,
+        prismaMeta: err.meta,
         stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
     });
 

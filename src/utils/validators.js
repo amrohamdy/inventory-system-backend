@@ -99,10 +99,14 @@ const createTenantValidator = [
         }
         if (!isOrg) {
             const subStatus = requestedSubStatus;
-            if (!subStatus) throw new Error('status is required for hotel creation.');
+            if (!subStatus) throw new Error('status or subStatus is required for hotel creation.');
             if (subStatus === 'TRIAL') {
                 // licenseEndDate will be calculated server-side if omitted
-                return true;
+                // fall through to maxUsers check
+            }
+            const mu = value.maxUsers;
+            if (mu === undefined || mu === null || mu === '') {
+                throw new Error('maxUsers is required for hotel creation.');
             }
         }
         return true;
@@ -111,7 +115,10 @@ const createTenantValidator = [
         .optional()
         .isInt({ min: 1 })
         .withMessage('maxUsers must be a positive integer.'),
-    body('licenseStartDate').optional().isISO8601().withMessage('licenseStartDate must be a valid ISO date.'),
+    body('licenseStartDate')
+        .optional({ nullable: true })
+        .isISO8601()
+        .withMessage('licenseStartDate must be a valid ISO date.'),
     body('licenseEndDate').optional({ nullable: true }).isISO8601().withMessage('licenseEndDate must be a valid ISO date.'),
     body('planType').optional().isIn(['BASIC', 'PRO', 'ENTERPRISE', 'CUSTOM']).withMessage('Invalid planType.'),
     body('hasBranches').optional().isBoolean().withMessage('hasBranches must be boolean.'),
@@ -186,6 +193,36 @@ const createFullOrganizationValidator = [
     validate,
 ];
 
+const updateOrganizationValidator = [
+    param('id').isUUID().withMessage('id must be a valid UUID.'),
+    body('organization.name').optional().notEmpty().trim(),
+    body('organization.slug').optional().notEmpty().trim(),
+    body('organization.maxBranches').optional().isInt({ min: 0 }).withMessage('organization.maxBranches must be >= 0.'),
+    body('manager.firstName').optional().notEmpty().trim(),
+    body('manager.lastName').optional().notEmpty().trim(),
+    body('manager.email').optional().isEmail().withMessage('manager.email must be a valid email.').normalizeEmail(),
+    body('manager.password').optional().isLength({ min: 8 }).withMessage('manager.password must be at least 8 characters.'),
+    body('adminUser.firstName').optional().notEmpty().trim(),
+    body('adminUser.lastName').optional().notEmpty().trim(),
+    body('adminUser.email').optional().isEmail().withMessage('adminUser.email must be a valid email.').normalizeEmail(),
+    body('adminUser.password').optional().isLength({ min: 8 }).withMessage('adminUser.password must be at least 8 characters.'),
+    body().custom((value) => {
+        const org = value.organization || {};
+        const mgr = { ...(value.adminUser || {}), ...(value.manager || {}) };
+        const orgHas = ['name', 'slug', 'maxBranches'].some((k) =>
+            Object.prototype.hasOwnProperty.call(org, k)
+        );
+        const mgrHas = ['firstName', 'lastName', 'email', 'password'].some((k) =>
+            Object.prototype.hasOwnProperty.call(mgr, k)
+        );
+        if (!orgHas && !mgrHas) {
+            throw new Error('Provide at least one field under organization and/or manager (or adminUser).');
+        }
+        return true;
+    }),
+    validate,
+];
+
 module.exports = {
     validate,
     loginValidator,
@@ -198,4 +235,5 @@ module.exports = {
     createTenantValidator,
     createSuperAdminTenantValidator,
     createFullOrganizationValidator,
+    updateOrganizationValidator,
 };
