@@ -4,7 +4,7 @@ const { generateAccessToken } = require('../utils/jwt');
 const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
-const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
+const { countActiveSeats } = require('../utils/tenantMemberActive');
 const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
 const {
     resolveHotelSubStatusForCreate,
@@ -95,7 +95,7 @@ const getTenantUserIds = async (db, tenantId) => {
 };
 
 // ─── S1.1 — List Tenants (GET /api/super-admin/tenants) ─────────────────────
-/** Hierarchical roots + children; includes `adminStatus` for org/branch suspension UI. */
+/** Hierarchical roots with `branches` (direct child hotels); `activeUsersCount` = active seats per tenant (matches plan / maxUsers). */
 const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 20;
@@ -115,50 +115,43 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
     }
 
     const countQuery = { where };
+
+    const activeMembershipWhere = { isActive: true, user: { isActive: true } };
+    const tenantBranchSelect = {
+        id: true,
+        name: true,
+        slug: true,
+        email: true,
+        parentId: true,
+        isActive: true,
+        planType: true,
+        subStatus: true,
+        adminStatus: true,
+        licenseStartDate: true,
+        licenseEndDate: true,
+        maxUsers: true,
+        hasBranches: true,
+        maxBranches: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: {
+            select: {
+                locations: true,
+                memberships: { where: activeMembershipWhere },
+            },
+        },
+    };
+
     const findManyQuery = {
         where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limitNum,
         select: {
-            id: true,
-            name: true,
-            slug: true,
-            email: true,
-            parentId: true, // always null for roots, included for consistency
-            isActive: true,
-            planType: true,
-            subStatus: true,
-            adminStatus: true,
-            licenseStartDate: true,
-            licenseEndDate: true,
-            maxUsers: true,
-            hasBranches: true,
-            maxBranches: true,
-            createdAt: true,
-            updatedAt: true,
-            _count: { select: { locations: true } },
+            ...tenantBranchSelect,
             children: {
                 orderBy: { createdAt: 'desc' },
-                select: {
-                    id: true,
-                    name: true,
-                    slug: true,
-                    email: true,
-                    parentId: true,
-                    isActive: true,
-                    planType: true,
-                    subStatus: true,
-                    adminStatus: true,
-                    licenseStartDate: true,
-                    licenseEndDate: true,
-                    maxUsers: true,
-                    hasBranches: true,
-                    maxBranches: true,
-                    createdAt: true,
-                    updatedAt: true,
-                    _count: { select: { locations: true } },
-                },
+                select: { ...tenantBranchSelect },
             },
         },
     };
@@ -168,18 +161,16 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
         prisma.tenant.findMany(findManyQuery),
     ]);
 
-    const tenantIdsForCounts = roots.flatMap((root) => [
-        root.id,
-        ...(root.children || []).map((child) => child.id),
-    ]);
-    const activeSeatMap = await activeSeatCountsByTenantIds(prisma, tenantIdsForCounts);
-
-    const toTenantRow = (tenant) => ({
-        ...tenant,
-        email: tenant.email || null,
-        parentName: null,
-        usersCount: activeSeatMap.get(tenant.id) ?? 0,
-    });
+    const toTenantRow = (tenant) => {
+        const { children: _children, _count, ...rest } = tenant;
+        return {
+            ...rest,
+            email: rest.email || null,
+            parentName: null,
+            activeUsersCount: _count?.memberships ?? 0,
+            _count: { locations: _count?.locations ?? 0 },
+        };
+    };
 
     const rows = roots.map((root) => ({
         ...toTenantRow(root),
