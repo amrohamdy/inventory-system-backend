@@ -553,7 +553,6 @@ const getMe = async (userId, tenantId) => {
         },
         include: {
             tenant: { select: { id: true, name: true, slug: true, logoUrl: true } },
-            role: true,
         },
     });
     if (!membership) {
@@ -643,7 +642,6 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
         where: { userId, tenantId: targetTenant.id },
         include: {
             tenant: { select: { id: true, slug: true, name: true, parentId: true } },
-            role: true,
         },
     });
 
@@ -659,7 +657,7 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
             where: {
                 userId,
                 tenantId: targetTenant.parentId,
-                role: { code: 'ORG_MANAGER' },
+            role: { code: 'ORG_MANAGER' },
                 isActive: true,
                 tenant: { is: { isActive: true, parentId: null } },
             },

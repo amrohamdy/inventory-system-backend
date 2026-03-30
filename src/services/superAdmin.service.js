@@ -6,6 +6,10 @@ const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const { getPermissionsForMembership, membershipRoleCode, connectRole } = require('./rbac.service');
+const {
+    resolveHotelSubStatusForCreate,
+    effectiveSubStatusForTenantList,
+} = require('../utils/resolveHotelSubStatus');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -170,12 +174,16 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
     ]);
     const activeSeatMap = await activeSeatCountsByTenantIds(prisma, tenantIdsForCounts);
 
-    const toTenantRow = (tenant) => ({
-        ...tenant,
-        email: tenant.email || null,
-        parentName: null,
-        usersCount: activeSeatMap.get(tenant.id) ?? 0,
-    });
+    const toTenantRow = (tenant) => {
+        const { children: _children, ...rest } = tenant;
+        return {
+            ...rest,
+            email: rest.email || null,
+            parentName: null,
+            subStatus: effectiveSubStatusForTenantList(tenant),
+            usersCount: activeSeatMap.get(tenant.id) ?? 0,
+        };
+    };
 
     const rows = roots.map((root) => ({
         ...toTenantRow(root),
@@ -203,6 +211,7 @@ const getTenant = async (tenantId) => {
     const usersCount = await countActiveSeats(prisma, tenantId);
     return {
         ...tenant,
+        subStatus: effectiveSubStatusForTenantList(tenant),
         usersCount,
     };
 };
@@ -285,7 +294,10 @@ const createTenant = async (data, adminUserId, ipAddress) => {
     const isOrgCreation = !resolvedParentId;
 
     // Organizations don't have trials (always ACTIVE).
-    const resolvedSubStatus = isOrgCreation ? 'ACTIVE' : subStatus;
+    // Branch/hotel creation follows lifetime rule: licenseEndDate null => ACTIVE.
+    const resolvedSubStatus = isOrgCreation
+        ? 'ACTIVE'
+        : resolveHotelSubStatusForCreate({ subStatus, licenseEndDate });
     const resolvedAdminStatus = 'ACTIVE';
 
     // Root org creation: strip/ignore subscription fields entirely.
@@ -352,8 +364,8 @@ const createTenant = async (data, adminUserId, ipAddress) => {
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: t.id, userId: adminUser.id } },
                 create: {
-                    tenantId: t.id,
-                    userId: adminUser.id,
+                    tenant: { connect: { id: t.id } },
+                    user: { connect: { id: adminUser.id } },
                     role: connectRole('ADMIN'),
                     isActive: true,
                 },
@@ -391,8 +403,8 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                     tenantId_userId: { tenantId: t.id, userId: orgManagerMembership.userId },
                 },
                 create: {
-                    tenantId: t.id,
-                    userId: orgManagerMembership.userId,
+                    tenant: { connect: { id: t.id } },
+                    user: { connect: { id: orgManagerMembership.userId } },
                     role: connectRole('ADMIN'),
                     isActive: true,
                 },
@@ -433,7 +445,7 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     const hotelAdminEmailResolved = hotelAdminPayload.email ?? adminEmail;
     const hotelEmail = hotel.email ?? payload?.hotelEmail ?? (hotelAdminEmailResolved ? String(hotelAdminEmailResolved).toLowerCase() : null);
     const hotelPlanType = hotel.planType ?? payload?.planType ?? 'BASIC';
-    const hotelSubStatus = hotel.subStatus ?? payload?.subStatus ?? 'TRIAL';
+    const requestedHotelSubStatus = hotel.subStatus ?? payload?.subStatus ?? 'TRIAL';
     const trialDays = Number(hotel.trialDays ?? payload?.trialDays) || 14;
     const hotelMaxUsers = hotel.maxUsers ?? payload?.maxUsers;
     const hotelLicenseStartDate = hotel.licenseStartDate ?? payload?.licenseStartDate;
@@ -448,7 +460,7 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     if (!adminEmail || !adminPassword) {
         throw Object.assign(new Error('adminUser.email and adminUser.password are required.'), { statusCode: 400 });
     }
-    if (!['TRIAL', 'ACTIVE'].includes(hotelSubStatus)) {
+    if (!['TRIAL', 'ACTIVE'].includes(requestedHotelSubStatus)) {
         throw Object.assign(new Error('hotel.subStatus must be TRIAL or ACTIVE.'), { statusCode: 400 });
     }
 
@@ -528,6 +540,10 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
         // 3) Create First Hotel linked to Parent ID
         const hotelStartDate = resolveLicenseStartDateForCreate(hotelLicenseStartDate);
+        const hotelSubStatus = resolveHotelSubStatusForCreate({
+            subStatus: requestedHotelSubStatus,
+            licenseEndDate: hotelLicenseEndDate,
+        });
         const hotelEndDate = resolveLicenseEndDateForCreate({
             licenseEndDate: hotelLicenseEndDate,
             subStatus: hotelSubStatus,
@@ -557,7 +573,12 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
         // 4) Memberships: org manager on org; hotel admin on hotel (second user when emails differ)
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: orgTenant.id, userId: orgManagerUser.id } },
-            create: { tenantId: orgTenant.id, userId: orgManagerUser.id, role: connectRole('ORG_MANAGER'), isActive: true },
+            create: {
+                tenant: { connect: { id: orgTenant.id } },
+                user: { connect: { id: orgManagerUser.id } },
+                role: connectRole('ORG_MANAGER'),
+                isActive: true,
+            },
             update: { role: connectRole('ORG_MANAGER'), isActive: true },
         });
 
@@ -572,7 +593,12 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: hotelTenant.id, userId: hotelAdminUser.id } },
-                create: { tenantId: hotelTenant.id, userId: hotelAdminUser.id, role: connectRole('ADMIN'), isActive: true },
+                create: {
+                    tenant: { connect: { id: hotelTenant.id } },
+                    user: { connect: { id: hotelAdminUser.id } },
+                    role: connectRole('ADMIN'),
+                    isActive: true,
+                },
                 update: { role: connectRole('ADMIN'), isActive: true },
             });
 
@@ -591,7 +617,12 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: hotelTenant.id, userId: orgManagerUser.id } },
-            create: { tenantId: hotelTenant.id, userId: orgManagerUser.id, role: connectRole('ADMIN'), isActive: true },
+            create: {
+                tenant: { connect: { id: hotelTenant.id } },
+                user: { connect: { id: orgManagerUser.id } },
+                role: connectRole('ADMIN'),
+                isActive: true,
+            },
             update: { role: connectRole('ADMIN'), isActive: true },
         });
 

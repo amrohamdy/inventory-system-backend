@@ -75,20 +75,38 @@ async function main() {
         });
         console.log(`  ✅ SUPER_ADMIN user created: ${email} / ${password}`);
     } else {
-        await prisma.tenantMember.upsert({
-            where: { tenantId_userId: { tenantId: null, userId: existing.id } },
-            create: {
-                tenantId: null,
-                userId: existing.id,
-                role: { connect: { code: 'SUPER_ADMIN' } },
-                isActive: true,
-            },
-            update: {
-                role: { connect: { code: 'SUPER_ADMIN' } },
+        const pwHash = await hashPassword(password);
+        await prisma.user.update({
+            where: { id: existing.id },
+            data: {
+                passwordHash: pwHash,
                 isActive: true,
             },
         });
-        console.log(`  ℹ  SUPER_ADMIN user already exists: ${email}`);
+        const existingGlobalMembership = await prisma.tenantMember.findFirst({
+            where: { userId: existing.id, tenantId: null },
+            select: { id: true },
+        });
+
+        if (existingGlobalMembership) {
+            await prisma.tenantMember.update({
+                where: { id: existingGlobalMembership.id },
+                data: {
+                    role: { connect: { code: 'SUPER_ADMIN' } },
+                    isActive: true,
+                },
+            });
+        } else {
+            await prisma.tenantMember.create({
+                data: {
+                    tenantId: null,
+                    userId: existing.id,
+                    role: { connect: { code: 'SUPER_ADMIN' } },
+                    isActive: true,
+                },
+            });
+        }
+        console.log(`  ✅ SUPER_ADMIN user already exists — password reset to default: ${email} / ${password}`);
     }
 
     console.log('\n── Done. You can now login as SUPER_ADMIN at /api/auth/login ──');

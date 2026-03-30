@@ -40,7 +40,21 @@ function resolveHotelSubStatusForUpdate({
     return currentSubStatus;
 }
 
+/**
+ * Super-admin list/detail: lifetime (no end date) is never a time-bound trial in the UI.
+ * If DB still has TRIAL after switching to lifetime, expose ACTIVE.
+ */
+function effectiveSubStatusForTenantList(tenant) {
+    if (!tenant) return null;
+    const { subStatus, licenseEndDate } = tenant;
+    if (isLifetimeLicenseEnd(licenseEndDate) && subStatus === 'TRIAL') {
+        return 'ACTIVE';
+    }
+    return subStatus;
+}
+
 module.exports = {
     resolveHotelSubStatusForCreate,
     resolveHotelSubStatusForUpdate,
+    effectiveSubStatusForTenantList,
 };
