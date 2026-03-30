@@ -1,0 +1,11 @@
+# Railway — config-as-code
+# https://docs.railway.app/reference/config-as-code
+#
+# Production DB sync: use migrations (prisma migrate deploy), NOT `db push`.
+# `db push --accept-data-loss` is for local/dev only and is unsafe on production.
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm run start:prod"
