@@ -67,8 +67,7 @@ async function main() {
         });
         await prisma.tenantMember.create({
             data: {
-                tenantId: null,
-                userId: user.id,
+                user: { connect: { id: user.id } },
                 role: { connect: { code: 'SUPER_ADMIN' } },
                 isActive: true,
             },
@@ -99,8 +98,7 @@ async function main() {
         } else {
             await prisma.tenantMember.create({
                 data: {
-                    tenantId: null,
-                    userId: existing.id,
+                    user: { connect: { id: existing.id } },
                     role: { connect: { code: 'SUPER_ADMIN' } },
                     isActive: true,
                 },
