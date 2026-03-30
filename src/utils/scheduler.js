@@ -38,7 +38,7 @@ cron.schedule('0 8 * * *', async () => {
     try {
         // Find active tenant admins
         const tenants = await prisma.tenantMember.findMany({
-            where: { role: 'ADMIN', isActive: true, tenantId: { not: null }, user: { isActive: true } },
+            where: { role: { code: 'ADMIN' }, isActive: true, tenantId: { not: null }, user: { isActive: true } },
             select: { tenantId: true, user: { select: { email: true } } },
             distinct: ['tenantId']
         });

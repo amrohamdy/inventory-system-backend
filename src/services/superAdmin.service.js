@@ -4,12 +4,8 @@ const { generateAccessToken } = require('../utils/jwt');
 const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
-const { countActiveSeats } = require('../utils/tenantMemberActive');
-const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
-const {
-    resolveHotelSubStatusForCreate,
-    resolveHotelSubStatusForUpdate,
-} = require('../utils/resolveHotelSubStatus');
+const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
+const { getPermissionsForMembership, membershipRoleCode, connectRole } = require('./rbac.service');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -95,7 +91,7 @@ const getTenantUserIds = async (db, tenantId) => {
 };
 
 // ─── S1.1 — List Tenants (GET /api/super-admin/tenants) ─────────────────────
-/** Hierarchical roots with `branches` (direct child hotels); `activeUsersCount` = active seats per tenant (matches plan / maxUsers). */
+/** Hierarchical roots + children; includes `adminStatus` for org/branch suspension UI. */
 const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 20;
@@ -115,43 +111,50 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
     }
 
     const countQuery = { where };
-
-    const activeMembershipWhere = { isActive: true, user: { isActive: true } };
-    const tenantBranchSelect = {
-        id: true,
-        name: true,
-        slug: true,
-        email: true,
-        parentId: true,
-        isActive: true,
-        planType: true,
-        subStatus: true,
-        adminStatus: true,
-        licenseStartDate: true,
-        licenseEndDate: true,
-        maxUsers: true,
-        hasBranches: true,
-        maxBranches: true,
-        createdAt: true,
-        updatedAt: true,
-        _count: {
-            select: {
-                locations: true,
-                memberships: { where: activeMembershipWhere },
-            },
-        },
-    };
-
     const findManyQuery = {
         where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limitNum,
         select: {
-            ...tenantBranchSelect,
+            id: true,
+            name: true,
+            slug: true,
+            email: true,
+            parentId: true, // always null for roots, included for consistency
+            isActive: true,
+            planType: true,
+            subStatus: true,
+            adminStatus: true,
+            licenseStartDate: true,
+            licenseEndDate: true,
+            maxUsers: true,
+            hasBranches: true,
+            maxBranches: true,
+            createdAt: true,
+            updatedAt: true,
+            _count: { select: { locations: true } },
             children: {
                 orderBy: { createdAt: 'desc' },
-                select: { ...tenantBranchSelect },
+                select: {
+                    id: true,
+                    name: true,
+                    slug: true,
+                    email: true,
+                    parentId: true,
+                    isActive: true,
+                    planType: true,
+                    subStatus: true,
+                    adminStatus: true,
+                    licenseStartDate: true,
+                    licenseEndDate: true,
+                    maxUsers: true,
+                    hasBranches: true,
+                    maxBranches: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    _count: { select: { locations: true } },
+                },
             },
         },
     };
@@ -161,16 +164,18 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
         prisma.tenant.findMany(findManyQuery),
     ]);
 
-    const toTenantRow = (tenant) => {
-        const { children: _children, _count, ...rest } = tenant;
-        return {
-            ...rest,
-            email: rest.email || null,
-            parentName: null,
-            activeUsersCount: _count?.memberships ?? 0,
-            _count: { locations: _count?.locations ?? 0 },
-        };
-    };
+    const tenantIdsForCounts = roots.flatMap((root) => [
+        root.id,
+        ...(root.children || []).map((child) => child.id),
+    ]);
+    const activeSeatMap = await activeSeatCountsByTenantIds(prisma, tenantIdsForCounts);
+
+    const toTenantRow = (tenant) => ({
+        ...tenant,
+        email: tenant.email || null,
+        parentName: null,
+        usersCount: activeSeatMap.get(tenant.id) ?? 0,
+    });
 
     const rows = roots.map((root) => ({
         ...toTenantRow(root),
@@ -212,7 +217,7 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         hasBranches = false,
         maxBranches = 0,
         planType = 'BASIC',
-        subStatus,
+        subStatus = 'TRIAL',
         licenseStartDate,
         licenseEndDate,
         maxUsers,
@@ -229,17 +234,13 @@ const createTenant = async (data, adminUserId, ipAddress) => {
     const adminFirstName = nestedAdmin?.firstName || flatAdminFirstName || 'Admin';
     const adminLastName = nestedAdmin?.lastName || flatAdminLastName;
 
-    const existingBySlug = await prisma.tenant.findFirst({ where: { slug }, select: { id: true } });
-    if (existingBySlug) {
+    // Check uniqueness
+    const existing = await prisma.tenant.findFirst({
+        where: { OR: [{ slug }, { name }] },
+    });
+    if (existing) {
         throw Object.assign(
-            new Error('A tenant with this slug already exists. Please choose a different slug.'),
-            { statusCode: 409 }
-        );
-    }
-    const existingByName = await prisma.tenant.findFirst({ where: { name }, select: { id: true } });
-    if (existingByName) {
-        throw Object.assign(
-            new Error('A tenant with this name already exists. Please choose a different name.'),
+            new Error(`Tenant name or slug already exists.`),
             { statusCode: 409 }
         );
     }
@@ -265,15 +266,13 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         }
         if (!parentTenant.hasBranches) {
             throw Object.assign(
-                new Error(
-                    'This organization cannot add branches until branching is enabled for the parent organization.'
-                ),
+                new Error('This parent tenant is not authorized to have branches.'),
                 { statusCode: 400 }
             );
         }
         if (parentTenant.maxBranches > 0 && parentTenant._count.children >= parentTenant.maxBranches) {
             throw Object.assign(
-                new Error('Maximum number of branches reached for this organization'),
+                new Error('Branch limit reached for this parent.'),
                 { statusCode: 400 }
             );
         }
@@ -285,9 +284,8 @@ const createTenant = async (data, adminUserId, ipAddress) => {
 
     const isOrgCreation = !resolvedParentId;
 
-    const resolvedSubStatus = isOrgCreation
-        ? 'ACTIVE'
-        : resolveHotelSubStatusForCreate({ subStatus, licenseEndDate });
+    // Organizations don't have trials (always ACTIVE).
+    const resolvedSubStatus = isOrgCreation ? 'ACTIVE' : subStatus;
     const resolvedAdminStatus = 'ACTIVE';
 
     // Root org creation: strip/ignore subscription fields entirely.
@@ -302,9 +300,7 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         : (maxUsers !== undefined ? Number(maxUsers) : limits.maxUsers);
     validateLicenseDateRange(resolvedStartDate, resolvedEndDate);
 
-    let tenant;
-    try {
-        tenant = await prisma.$transaction(async (tx) => {
+    const tenant = await prisma.$transaction(async (tx) => {
         // 1. Create Tenant
         const t = await tx.tenant.create({
             data: {
@@ -358,11 +354,11 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                 create: {
                     tenantId: t.id,
                     userId: adminUser.id,
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
                 update: {
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
             });
@@ -370,7 +366,7 @@ const createTenant = async (data, adminUserId, ipAddress) => {
             const orgManagerMembership = await tx.tenantMember.findFirst({
                 where: {
                     tenantId: resolvedParentId,
-                    role: 'ORG_MANAGER',
+                    role: { code: 'ORG_MANAGER' },
                     isActive: true,
                     user: { isActive: true },
                 },
@@ -397,11 +393,11 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                 create: {
                     tenantId: t.id,
                     userId: orgManagerMembership.userId,
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
                 update: {
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
             });
@@ -409,17 +405,6 @@ const createTenant = async (data, adminUserId, ipAddress) => {
 
         return t;
     });
-    } catch (err) {
-        logger.error('superAdmin.service createTenant: database error', {
-            message: err.message,
-            prismaCode: err.code,
-            prismaMeta: err.meta,
-            stack: err.stack,
-        });
-        const mapped = mapPrismaTenantUniqueConstraintError(err);
-        if (mapped) throw mapped;
-        throw err;
-    }
 
     await logAdminAction(adminUserId, 'TENANT_CREATED', tenant.id, { name, slug, planType }, ipAddress);
     return tenant;
@@ -448,7 +433,7 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     const hotelAdminEmailResolved = hotelAdminPayload.email ?? adminEmail;
     const hotelEmail = hotel.email ?? payload?.hotelEmail ?? (hotelAdminEmailResolved ? String(hotelAdminEmailResolved).toLowerCase() : null);
     const hotelPlanType = hotel.planType ?? payload?.planType ?? 'BASIC';
-    const rawHotelSubStatus = hotel.subStatus ?? payload?.subStatus;
+    const hotelSubStatus = hotel.subStatus ?? payload?.subStatus ?? 'TRIAL';
     const trialDays = Number(hotel.trialDays ?? payload?.trialDays) || 14;
     const hotelMaxUsers = hotel.maxUsers ?? payload?.maxUsers;
     const hotelLicenseStartDate = hotel.licenseStartDate ?? payload?.licenseStartDate;
@@ -463,6 +448,10 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     if (!adminEmail || !adminPassword) {
         throw Object.assign(new Error('adminUser.email and adminUser.password are required.'), { statusCode: 400 });
     }
+    if (!['TRIAL', 'ACTIVE'].includes(hotelSubStatus)) {
+        throw Object.assign(new Error('hotel.subStatus must be TRIAL or ACTIVE.'), { statusCode: 400 });
+    }
+
     // Pre-check uniqueness early for clearer errors.
     const existing = await prisma.tenant.findFirst({
         where: { OR: [{ slug: orgSlug }, { name: orgName }, { slug: hotelSlug }, { name: hotelName }] },
@@ -475,18 +464,6 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     const hotelAdminPassword = hotelAdminPayload.password ?? adminPassword;
     const hotelAdminFirstName = hotelAdminPayload.firstName ?? adminFirstName;
     const hotelAdminLastName = hotelAdminPayload.lastName ?? adminLastName ?? hotelName;
-
-    const hotelStartDate = resolveLicenseStartDateForCreate(hotelLicenseStartDate);
-    const hotelSubStatus = resolveHotelSubStatusForCreate({
-        subStatus: rawHotelSubStatus,
-        licenseEndDate: hotelLicenseEndDate,
-    });
-    const hotelEndDate = resolveLicenseEndDateForCreate({
-        licenseEndDate: hotelLicenseEndDate,
-        subStatus: hotelSubStatus,
-        trialDays,
-    });
-    validateLicenseDateRange(hotelStartDate, hotelEndDate);
 
     const created = await prisma.$transaction(async (tx) => {
         const findOrCreateUser = async ({
@@ -550,6 +527,14 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
         });
 
         // 3) Create First Hotel linked to Parent ID
+        const hotelStartDate = resolveLicenseStartDateForCreate(hotelLicenseStartDate);
+        const hotelEndDate = resolveLicenseEndDateForCreate({
+            licenseEndDate: hotelLicenseEndDate,
+            subStatus: hotelSubStatus,
+            trialDays,
+        });
+        validateLicenseDateRange(hotelStartDate, hotelEndDate);
+
         const hotelLimits = PLAN_DEFAULTS[hotelPlanType] || PLAN_DEFAULTS.BASIC;
         const hotelTenant = await tx.tenant.create({
             data: {
@@ -572,8 +557,8 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
         // 4) Memberships: org manager on org; hotel admin on hotel (second user when emails differ)
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: orgTenant.id, userId: orgManagerUser.id } },
-            create: { tenantId: orgTenant.id, userId: orgManagerUser.id, role: 'ORG_MANAGER', isActive: true },
-            update: { role: 'ORG_MANAGER', isActive: true },
+            create: { tenantId: orgTenant.id, userId: orgManagerUser.id, role: connectRole('ORG_MANAGER'), isActive: true },
+            update: { role: connectRole('ORG_MANAGER'), isActive: true },
         });
 
         if (separateHotelAdmin) {
@@ -587,8 +572,8 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: hotelTenant.id, userId: hotelAdminUser.id } },
-                create: { tenantId: hotelTenant.id, userId: hotelAdminUser.id, role: 'ADMIN', isActive: true },
-                update: { role: 'ADMIN', isActive: true },
+                create: { tenantId: hotelTenant.id, userId: hotelAdminUser.id, role: connectRole('ADMIN'), isActive: true },
+                update: { role: connectRole('ADMIN'), isActive: true },
             });
 
             return {
@@ -606,8 +591,8 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: hotelTenant.id, userId: orgManagerUser.id } },
-            create: { tenantId: hotelTenant.id, userId: orgManagerUser.id, role: 'ADMIN', isActive: true },
-            update: { role: 'ADMIN', isActive: true },
+            create: { tenantId: hotelTenant.id, userId: orgManagerUser.id, role: connectRole('ADMIN'), isActive: true },
+            update: { role: connectRole('ADMIN'), isActive: true },
         });
 
         return {
@@ -628,206 +613,6 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     return created;
 };
 
-/**
- * PATCH organization (root tenant) + its ORG_MANAGER user in one transaction.
- * @param {string} organizationId — root tenant id
- * @param {object} payload — { organization?: { name, slug, maxBranches }, manager?: { firstName, lastName, email, password? }, adminUser?: {...} }
- */
-const updateOrganization = async (organizationId, payload, adminUserId, ipAddress) => {
-    const orgIn = payload?.organization || {};
-    const managerIn = { ...(payload?.adminUser || {}), ...(payload?.manager || {}) };
-
-    const orgPatchKeys = ['name', 'slug', 'maxBranches'].filter((k) =>
-        Object.prototype.hasOwnProperty.call(orgIn, k)
-    );
-    const mgrPatchKeys = ['firstName', 'lastName', 'email', 'password'].filter((k) =>
-        Object.prototype.hasOwnProperty.call(managerIn, k)
-    );
-
-    if (orgPatchKeys.length === 0 && mgrPatchKeys.length === 0) {
-        throw Object.assign(new Error('Provide at least one field under organization or manager.'), { statusCode: 400 });
-    }
-
-    const org = await prisma.tenant.findUnique({
-        where: { id: organizationId },
-        select: {
-            id: true,
-            parentId: true,
-            name: true,
-            slug: true,
-            maxBranches: true,
-        },
-    });
-    if (!org) {
-        throw Object.assign(new Error('Organization not found.'), { statusCode: 404 });
-    }
-    if (org.parentId !== null) {
-        throw Object.assign(new Error('Not a root organization.'), { statusCode: 400 });
-    }
-
-    const activeBranchCount = await prisma.tenant.count({
-        where: { parentId: organizationId, isActive: true },
-    });
-
-    const nextMaxBranches = Object.prototype.hasOwnProperty.call(orgIn, 'maxBranches')
-        ? Number(orgIn.maxBranches) || 0
-        : org.maxBranches;
-
-    // Align with branch creation: maxBranches > 0 enforces a cap; 0 means no numeric cap.
-    if (nextMaxBranches > 0 && nextMaxBranches < activeBranchCount) {
-        throw Object.assign(
-            new Error(`maxBranches cannot be less than the current number of active branches (${activeBranchCount}).`),
-            { statusCode: 400 }
-        );
-    }
-
-    if (Object.prototype.hasOwnProperty.call(orgIn, 'slug')) {
-        const newSlug = String(orgIn.slug).trim();
-        if (!newSlug) {
-            throw Object.assign(new Error('organization.slug cannot be empty.'), { statusCode: 400 });
-        }
-        if (newSlug !== org.slug) {
-            const slugTaken = await prisma.tenant.findFirst({
-                where: { slug: newSlug, NOT: { id: organizationId } },
-                select: { id: true },
-            });
-            if (slugTaken) {
-                throw Object.assign(new Error('Organization slug already exists.'), { statusCode: 409 });
-            }
-        }
-    }
-
-    const managerRow = await prisma.tenantMember.findFirst({
-        where: { tenantId: organizationId, role: 'ORG_MANAGER', isActive: true },
-        orderBy: { createdAt: 'asc' },
-        include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
-    });
-    if (!managerRow?.user) {
-        throw Object.assign(new Error('No active organization manager found for this organization.'), { statusCode: 400 });
-    }
-
-    const managerUserId = managerRow.user.id;
-    let normalizedNewEmail;
-    if (Object.prototype.hasOwnProperty.call(managerIn, 'email')) {
-        normalizedNewEmail = String(managerIn.email).toLowerCase();
-        if (normalizedNewEmail !== managerRow.user.email.toLowerCase()) {
-            const emailOwner = await prisma.user.findUnique({
-                where: { email: normalizedNewEmail },
-                select: { id: true },
-            });
-            if (emailOwner && emailOwner.id !== managerUserId) {
-                throw Object.assign(new Error('Email already in use by another user.'), { statusCode: 409 });
-            }
-        }
-    }
-
-    const tenantData = {};
-    if (Object.prototype.hasOwnProperty.call(orgIn, 'name')) {
-        const n = String(orgIn.name).trim();
-        if (!n) {
-            throw Object.assign(new Error('organization.name cannot be empty.'), { statusCode: 400 });
-        }
-        tenantData.name = n;
-    }
-    if (Object.prototype.hasOwnProperty.call(orgIn, 'slug')) {
-        tenantData.slug = String(orgIn.slug).trim();
-    }
-    if (Object.prototype.hasOwnProperty.call(orgIn, 'maxBranches')) {
-        tenantData.maxBranches = nextMaxBranches;
-    }
-
-    const userData = {};
-    if (Object.prototype.hasOwnProperty.call(managerIn, 'firstName')) {
-        const v = String(managerIn.firstName).trim();
-        if (!v) {
-            throw Object.assign(new Error('manager.firstName cannot be empty.'), { statusCode: 400 });
-        }
-        userData.firstName = v;
-    }
-    if (Object.prototype.hasOwnProperty.call(managerIn, 'lastName')) {
-        const v = String(managerIn.lastName).trim();
-        if (!v) {
-            throw Object.assign(new Error('manager.lastName cannot be empty.'), { statusCode: 400 });
-        }
-        userData.lastName = v;
-    }
-    if (normalizedNewEmail !== undefined) {
-        userData.email = normalizedNewEmail;
-    }
-
-    const hasPasswordPatch = Object.prototype.hasOwnProperty.call(managerIn, 'password');
-    if (hasPasswordPatch) {
-        const raw = managerIn.password;
-        if (raw === null || raw === undefined || String(raw).length === 0) {
-            throw Object.assign(new Error('manager.password cannot be empty when provided.'), { statusCode: 400 });
-        }
-        if (String(raw).length < 8) {
-            throw Object.assign(new Error('manager.password must be at least 8 characters.'), { statusCode: 400 });
-        }
-    }
-
-    await prisma.$transaction(async (tx) => {
-        if (Object.keys(tenantData).length > 0) {
-            await tx.tenant.update({
-                where: { id: organizationId },
-                data: tenantData,
-            });
-        }
-        if (hasPasswordPatch) {
-            userData.passwordHash = await hashPassword(String(managerIn.password));
-        }
-        if (Object.keys(userData).length > 0) {
-            await tx.user.update({
-                where: { id: managerUserId },
-                data: userData,
-            });
-        }
-    });
-
-    invalidateTenantCache(organizationId);
-
-    await logAdminAction(adminUserId, 'ORGANIZATION_UPDATED', organizationId, {
-        organization: orgPatchKeys.length ? orgIn : undefined,
-        manager: mgrPatchKeys.length
-            ? {
-                ...managerIn,
-                password: undefined,
-                ...(hasPasswordPatch ? { passwordChanged: true } : {}),
-            }
-            : undefined,
-    }, ipAddress);
-
-    const [updatedOrg, updatedManager] = await Promise.all([
-        prisma.tenant.findUnique({
-            where: { id: organizationId },
-            select: {
-                id: true,
-                name: true,
-                slug: true,
-                email: true,
-                parentId: true,
-                isActive: true,
-                planType: true,
-                subStatus: true,
-                adminStatus: true,
-                hasBranches: true,
-                maxBranches: true,
-                maxUsers: true,
-                licenseStartDate: true,
-                licenseEndDate: true,
-                createdAt: true,
-                updatedAt: true,
-            },
-        }),
-        prisma.user.findUnique({
-            where: { id: managerUserId },
-            select: { id: true, firstName: true, lastName: true, email: true },
-        }),
-    ]);
-
-    return { ...updatedOrg, manager: updatedManager };
-};
-
 // ─── S1.4 — Update Tenant Info ────────────────────────────────────────────────
 const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
     const tenant = await prisma.tenant.findUnique({
@@ -836,7 +621,6 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
             id: true,
             parentId: true,
             hasBranches: true,
-            subStatus: true,
             licenseStartDate: true,
             licenseEndDate: true,
             _count: { select: { children: true } },
@@ -919,15 +703,6 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
         : tenant.licenseEndDate;
     validateLicenseDateRange(nextLicenseStartDate, nextLicenseEndDate);
 
-    const hasSubStatusInPayload = Object.prototype.hasOwnProperty.call(data, 'subStatus');
-    const nextSubStatus = resolveHotelSubStatusForUpdate({
-        currentSubStatus: tenant.subStatus,
-        payloadSubStatus: data.subStatus,
-        hasSubStatusInPayload,
-        nextLicenseEndDate: nextLicenseEndDate,
-        hasLicenseEndDateInPayload,
-    });
-
     // Normalize hierarchy branch flags:
     // - Child tenant => hasBranches=false, maxBranches=0
     // - Root tenant => can use payload values.
@@ -939,7 +714,7 @@ const updateTenant = async (tenantId, data, adminUserId, ipAddress) => {
         ...(data.logoUrl !== undefined ? { logoUrl: data.logoUrl } : {}),
         // License fields
         ...(data.planType !== undefined ? { planType: data.planType } : {}),
-        ...(nextSubStatus !== tenant.subStatus ? { subStatus: nextSubStatus } : {}),
+        ...(data.subStatus !== undefined ? { subStatus: data.subStatus } : {}),
         ...(data.maxUsers !== undefined ? { maxUsers: Number(data.maxUsers) } : {}),
         ...(hasLicenseStartDateInPayload ? { licenseStartDate: nextLicenseStartDate } : {}),
         ...(hasLicenseEndDateInPayload ? { licenseEndDate: nextLicenseEndDate } : {}),
@@ -1069,8 +844,8 @@ const impersonateTenant = async (tenantId, adminUserId, ipAddress) => {
 
     // Find first admin user in tenant for the token payload
     const adminMembership = await prisma.tenantMember.findFirst({
-        where: { tenantId, role: 'ADMIN', isActive: true, user: { isActive: true } },
-        include: { user: true },
+        where: { tenantId, role: { code: 'ADMIN' }, isActive: true, user: { isActive: true } },
+        include: { user: true, role: true },
     });
     if (!adminMembership) {
         throw Object.assign(
@@ -1079,11 +854,20 @@ const impersonateTenant = async (tenantId, adminUserId, ipAddress) => {
         );
     }
 
+    const rc = membershipRoleCode(adminMembership);
+    const permissions = await getPermissionsForMembership({
+        roleId: adminMembership.roleId,
+        roleCode: rc,
+    });
+
     const token = generateAccessToken({
         userId: adminMembership.user.id,
         tenantId,
-        role: adminMembership.role,
+        role: rc,
         email: adminMembership.user.email,
+        roleId: adminMembership.roleId,
+        permissions,
+        permissionVersion: adminMembership.user.permissionVersion ?? 0,
         readOnly: true,
         impersonatedBy: adminUserId,
     });
@@ -1140,7 +924,6 @@ module.exports = {
     getTenant,
     createTenant,
     createFullOrganization,
-    updateOrganization,
     updateTenant,
     activateTenant,
     suspendTenant,

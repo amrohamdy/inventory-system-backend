@@ -5,6 +5,7 @@ const {
     countActiveSeats,
     assertSingletonRoleAvailable,
 } = require('../utils/tenantMemberActive');
+const { membershipRoleCode, connectRole } = require('./rbac.service');
 
 /**
  * M01 — User Management Service (Admin operations)
@@ -17,7 +18,7 @@ const listUsers = async (tenantId, { page = 1, limit = 20, role, isActive, searc
 
     const where = {
         tenantId,
-        ...(role ? { role } : {}),
+        ...(role ? { role: { code: role } } : {}),
         ...(isActive !== undefined ? { isActive: isActive === 'true' } : {}),
         ...(search ? {
             user: {
@@ -54,8 +55,9 @@ const listUsers = async (tenantId, { page = 1, limit = 20, role, isActive, searc
                         name: true,
                     },
                 },
+                role: true,
             },
-            orderBy: [{ role: 'asc' }, { user: { firstName: 'asc' } }],
+            orderBy: [{ role: { code: 'asc' } }, { user: { firstName: 'asc' } }],
             skip,
             take: limitNum,
         }),
@@ -68,7 +70,7 @@ const listUsers = async (tenantId, { page = 1, limit = 20, role, isActive, searc
 
     const users = memberships.map((membership) => ({
         ...membership.user,
-        role: membership.role,
+        role: membershipRoleCode(membership),
         departmentId: membership.department?.id || null,
         department: membership.department?.name || membership.user.department || null,
         isActive: membership.isActive && membership.user.isActive,
@@ -88,7 +90,7 @@ const getAdminTenantIds = async (db, userId) => {
     const adminMemberships = await db.tenantMember.findMany({
         where: {
             userId,
-            role: 'ADMIN',
+            role: { code: 'ADMIN' },
             isActive: true,
             tenantId: { not: null },
         },
@@ -228,12 +230,12 @@ const createUser = async (tenantId, data, requestingUserId) => {
             create: {
                 tenantId,
                 userId: targetUser.id,
-                role: data.role,
+                role: connectRole(data.role),
                 isActive: true,
                 departmentId: departmentRecord?.id || null,
             },
             update: {
-                role: data.role,
+                role: connectRole(data.role),
                 isActive: true,
                 departmentId: departmentRecord?.id || null,
             },
@@ -246,6 +248,7 @@ const createUser = async (tenantId, data, requestingUserId) => {
                 department: {
                     select: { id: true, name: true },
                 },
+                role: true,
             },
         });
 
@@ -254,7 +257,7 @@ const createUser = async (tenantId, data, requestingUserId) => {
             email: membership.user.email,
             firstName: membership.user.firstName,
             lastName: membership.user.lastName,
-            role: membership.role,
+            role: membershipRoleCode(membership),
             departmentId: membership.department?.id || null,
             department: membership.department?.name || null,
             phone: membership.user.phone,
@@ -269,7 +272,7 @@ const createUser = async (tenantId, data, requestingUserId) => {
 const updateUser = async (tenantId, userId, data) => {
     const membership = await prisma.tenantMember.findUnique({
         where: { tenantId_userId: { tenantId, userId } },
-        include: { user: true },
+        include: { user: true, role: true },
     });
     if (!membership) {
         throw Object.assign(new Error('User not found.'), { statusCode: 404 });
@@ -291,7 +294,7 @@ const updateUser = async (tenantId, userId, data) => {
         let updatedMembership = membership;
         const membershipUpdate = {};
         if (data.isActive !== undefined) membershipUpdate.isActive = data.isActive;
-        if (data.role !== undefined) membershipUpdate.role = data.role;
+        if (data.role !== undefined) membershipUpdate.role = connectRole(data.role);
         const nextMembershipActive =
             data.isActive !== undefined ? Boolean(data.isActive) : membership.isActive;
         const willBeEffectivelyActive = nextMembershipActive && membership.user.isActive;
@@ -306,7 +309,7 @@ const updateUser = async (tenantId, userId, data) => {
             updatedMembership = await tx.tenantMember.update({
                 where: { tenantId_userId: { tenantId, userId } },
                 data: membershipUpdate,
-                include: { user: true },
+                include: { user: true, role: true },
             });
         }
 
@@ -315,7 +318,7 @@ const updateUser = async (tenantId, userId, data) => {
             email: updatedUser.email,
             firstName: updatedUser.firstName,
             lastName: updatedUser.lastName,
-            role: updatedMembership.role,
+            role: membershipRoleCode(updatedMembership),
             department: updatedUser.department,
             phone: updatedUser.phone,
             isActive: updatedMembership.isActive && updatedUser.isActive,
@@ -348,10 +351,17 @@ const updateUserRole = async (tenantId, userId, role, requestingUserId) => {
         });
     }
 
-    const updated = await prisma.tenantMember.update({
-        where: { tenantId_userId: { tenantId, userId } },
-        data: { role },
-        include: { user: true },
+    const updated = await prisma.$transaction(async (tx) => {
+        const m = await tx.tenantMember.update({
+            where: { tenantId_userId: { tenantId, userId } },
+            data: { role: connectRole(role) },
+            include: { user: true, role: true },
+        });
+        await tx.user.update({
+            where: { id: userId },
+            data: { permissionVersion: { increment: 1 } },
+        });
+        return m;
     });
 
     return {
@@ -359,7 +369,7 @@ const updateUserRole = async (tenantId, userId, role, requestingUserId) => {
         email: updated.user.email,
         firstName: updated.user.firstName,
         lastName: updated.user.lastName,
-        role: updated.role,
+        role: membershipRoleCode(updated),
     };
 };
 
@@ -368,6 +378,7 @@ const getUserById = async (tenantId, userId) => {
         where: { tenantId_userId: { tenantId, userId } },
         include: {
             department: { select: { id: true, name: true } },
+            role: true,
             user: {
                 select: {
                     id: true,
@@ -393,7 +404,7 @@ const getUserById = async (tenantId, userId) => {
 
     return {
         ...membership.user,
-        role: membership.role,
+        role: membershipRoleCode(membership),
         departmentId: membership.department?.id || null,
         department: membership.department?.name || membership.user.department || null,
         isActive: membership.isActive && membership.user.isActive,

@@ -54,6 +54,7 @@ model Tenant {
   superAdminLogs    SuperAdminLog[]     @relation("SuperAdminLogTenant")
   suppliers         Supplier[]
   memberships       TenantMember[]
+  roles               Role[]
   tenantSettings    TenantSetting[]
   tenantUsage       TenantUsage?
   parent            Tenant?             @relation("TenantHierarchy", fields: [parentId], references: [id])
@@ -77,6 +78,7 @@ model User {
   phone              String?
   isActive           Boolean             @default(true)
   lastLoginAt        DateTime?
+  permissionVersion  Int                 @default(0)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   approvalStepsActed ApprovalStep[]
@@ -114,11 +116,51 @@ model User {
   @@map("users")
 }
 
+model Role {
+  id              String           @id @default(uuid()) @db.Uuid
+  code            String           @unique
+  name            String
+  tenantId        String?          @db.Uuid
+  isActive        Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships     TenantMember[]
+  rolePermissions RolePermission[]
+  approvalSteps   ApprovalStep[]
+
+  @@index([tenantId])
+  @@map("roles")
+}
+
+model Permission {
+  id              String           @id @default(uuid()) @db.Uuid
+  code            String           @unique
+  name            String?
+  description     String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
 model TenantMember {
   id           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId     String?     @db.Uuid
   userId       String      @db.Uuid
-  role         UserRole
+  roleId       String      @db.Uuid
   isActive     Boolean     @default(true)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @default(now()) @updatedAt
@@ -126,11 +168,12 @@ model TenantMember {
   department   Department? @relation(fields: [departmentId], references: [id])
   tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role        @relation(fields: [roleId], references: [id])
 
   @@unique([tenantId, userId])
   @@index([userId])
   @@index([tenantId])
-  @@index([tenantId, role])
+  @@index([tenantId, roleId])
   @@index([departmentId])
   @@index([tenantId, departmentId])
   @@map("tenant_members")
@@ -479,12 +522,14 @@ model ApprovalRequest {
   requestType       ApprovalRequestType
   status            ApprovalStatus      @default(PENDING)
   documentId        String?             @unique @db.Uuid
+  storeTransferId   String?             @unique @db.Uuid
   currentStep       Int                 @default(0)
   totalSteps        Int
   createdBy         String              @db.Uuid
   createdAt         DateTime            @default(now())
   resolvedAt        DateTime?
   document          MovementDocument?   @relation(fields: [documentId], references: [id])
+  storeTransfer     StoreTransfer?      @relation(fields: [storeTransferId], references: [id])
   tenant            Tenant              @relation(fields: [tenantId], references: [id])
   steps             ApprovalStep[]
   ledgerEntries     InventoryLedger[]
@@ -496,18 +541,20 @@ model ApprovalRequest {
 }
 
 model ApprovalStep {
-  id           String             @id @default(uuid()) @db.Uuid
-  requestId    String             @db.Uuid
-  stepNumber   Int
-  requiredRole UserRole
-  status       ApprovalStepStatus @default(PENDING)
-  actedBy      String?            @db.Uuid
-  actedAt      DateTime?
-  comment      String?
-  actedByUser  User?              @relation(fields: [actedBy], references: [id])
-  request      ApprovalRequest    @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id             String             @id @default(uuid()) @db.Uuid
+  requestId      String             @db.Uuid
+  stepNumber     Int
+  requiredRoleId String             @db.Uuid
+  status         ApprovalStepStatus @default(PENDING)
+  actedBy        String?            @db.Uuid
+  actedAt        DateTime?
+  comment        String?
+  actedByUser    User?              @relation(fields: [actedBy], references: [id])
+  request        ApprovalRequest    @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requiredRole   Role               @relation(fields: [requiredRoleId], references: [id])
 
   @@unique([requestId, stepNumber])
+  @@index([requiredRoleId])
   @@map("approval_steps")
 }
 
@@ -890,6 +937,7 @@ model StoreTransfer {
   requestedByUser  User                @relation("TrfRequestedBy", fields: [requestedBy], references: [id])
   sourceLocation   Location            @relation("TransferSource", fields: [sourceLocationId], references: [id])
   tenant           Tenant              @relation(fields: [tenantId], references: [id])
+  approvalRequest  ApprovalRequest?
 
   @@unique([tenantId, transferNo])
   @@index([tenantId])
@@ -1151,18 +1199,6 @@ model GeneratedReport {
   @@map("generated_reports")
 }
 
-enum UserRole {
-  SUPER_ADMIN
-  ADMIN
-  ORG_MANAGER
-  STOREKEEPER
-  DEPT_MANAGER
-  COST_CONTROL
-  FINANCE_MANAGER
-  AUDITOR
-  SECURITY
-}
-
 enum PlanType {
   BASIC
   PRO
@@ -1257,11 +1293,15 @@ enum ApprovalRequestType {
   GRN_IMPORT
   STORE_REQUISITION
   STOCK_REPORT
+  STORE_TRANSFER
 }
 
 enum RequisitionStatus {
   DRAFT
   SUBMITTED
+  PENDING_DEPT
+  PENDING_FINANCE
+  PENDING_FINAL
   APPROVED
   PARTIALLY_ISSUED
   FULLY_ISSUED
@@ -1277,6 +1317,9 @@ enum IssueStatus {
 enum TransferStatus {
   DRAFT
   SUBMITTED
+  PENDING_DEPT
+  PENDING_FINANCE
+  PENDING_FINAL
   APPROVED
   IN_TRANSIT
   RECEIVED
@@ -1304,6 +1347,7 @@ enum ApprovalStepStatus {
   PENDING
   APPROVED
   REJECTED
+  CANCELLED
 }
 
 enum ImportStatus {

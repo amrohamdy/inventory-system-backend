@@ -172,7 +172,7 @@ const submitForApproval = async (grnId, tenantId, userId) => {
     // Finding admin/manager for email
     try {
         const approvers = await prisma.tenantMember.findMany({
-            where: { tenantId, role: { in: ['ADMIN'] }, isActive: true, user: { isActive: true } },
+            where: { tenantId, role: { code: { in: ['ADMIN'] } }, isActive: true, user: { isActive: true } },
             select: { user: { select: { email: true } } }
         });
         const submitter = await prisma.user.findUnique({ where: { id: userId } });

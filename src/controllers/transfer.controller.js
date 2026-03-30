@@ -11,9 +11,9 @@ const getTransfer = async (req, res) => { try { ok(res, await svc.getTransfer(re
 const updateTransfer = async (req, res) => { try { ok(res, await svc.updateTransfer(req.params.id, req.user.tenantId, req.body)); } catch (e) { err(res, e); } };
 const deleteTransfer = async (req, res) => { try { await svc.deleteTransfer(req.params.id, req.user.tenantId); res.json({ success: true, message: 'Transfer deleted.' }); } catch (e) { err(res, e); } };
 
-const submitTransfer = async (req, res) => { try { ok(res, await svc.submitTransfer(req.params.id, req.user.tenantId)); } catch (e) { err(res, e); } };
-const approveTransfer = async (req, res) => { try { ok(res, await svc.approveTransfer(req.params.id, req.user.tenantId, req.user.id)); } catch (e) { err(res, e); } };
-const rejectTransfer = async (req, res) => { try { ok(res, await svc.rejectTransfer(req.params.id, req.user.tenantId, req.user.id, req.body.reason)); } catch (e) { err(res, e); } };
+const submitTransfer = async (req, res) => { try { ok(res, await svc.submitTransfer(req.params.id, req.user.tenantId, req.user.id)); } catch (e) { err(res, e); } };
+const approveTransfer = async (req, res) => { try { ok(res, await svc.approveTransfer(req.params.id, req.user.tenantId, req.user.id, req.user.role)); } catch (e) { err(res, e); } };
+const rejectTransfer = async (req, res) => { try { ok(res, await svc.rejectTransfer(req.params.id, req.user.tenantId, req.user.id, req.user.role, req.body.reason)); } catch (e) { err(res, e); } };
 const dispatchTransfer = async (req, res) => { try { ok(res, await svc.dispatchTransfer(req.params.id, req.user.tenantId, req.user.id)); } catch (e) { err(res, e); } };
 const receiveTransfer = async (req, res) => { try { ok(res, await svc.receiveTransfer(req.params.id, req.user.tenantId, req.user.id, req.body.receivedLines)); } catch (e) { err(res, e); } };
 

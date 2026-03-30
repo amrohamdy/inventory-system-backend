@@ -2,6 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const XLSX = require('xlsx');
 const emailService = require('./email.service');
+const { connectRole } = require('./rbac.service');
 
 // ── GET STOCK REPORT ──────────────────────────────────────────────────────────
 const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
@@ -750,7 +751,7 @@ const saveStockReport = async (tenantId, userId, data) => {
                 createdBy: userId,
                 steps: {
                     create: [
-                        { stepNumber: 1, requiredRole: 'FINANCE_MANAGER', status: 'PENDING' }
+                        { stepNumber: 1, requiredRole: connectRole('FINANCE_MANAGER'), status: 'PENDING' }
                     ]
                 }
             }
@@ -782,7 +783,7 @@ const submitStockReport = async (id, tenantId, userId) => {
         // Email Finance Manager
         try {
             const approvers = await prisma.tenantMember.findMany({
-                where: { tenantId, role: 'FINANCE_MANAGER', isActive: true, user: { isActive: true } },
+                where: { tenantId, role: { code: 'FINANCE_MANAGER' }, isActive: true, user: { isActive: true } },
                 select: { user: { select: { email: true } } }
             });
             const submitter = await prisma.user.findUnique({ where: { id: userId } });

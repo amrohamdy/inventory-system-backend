@@ -8,7 +8,7 @@ router.use(protect);
 
 router
     .route('/')
-    .post(authorize('superadmin', 'admin', 'inventory_manager', 'storekeeper'), movementController.createMovement)
+    .post(authorize('SUPER_ADMIN', 'ADMIN', 'STOREKEEPER'), movementController.createMovement)
     .get(movementController.getMovements);
 
 router
@@ -18,6 +18,6 @@ router
 
 router
     .route('/:id/post')
-    .post(authorize('superadmin', 'admin', 'inventory_manager'), movementController.postMovement);
+    .post(authorize('SUPER_ADMIN', 'ADMIN', 'STOREKEEPER'), movementController.postMovement);
 
 module.exports = router;

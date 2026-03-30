@@ -3,6 +3,11 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
+const {
+    createStoreTransferApprovalRequest,
+    processStoreTransferApproval,
+    transferStatusForActiveStep,
+} = require('./approvalChain.service');
 
 // ─── Auto-number ──────────────────────────────────────────────────────────────
 
@@ -41,7 +46,17 @@ const assertStatus = (trf, ...allowed) => {
 };
 
 const assertLocked = (trf) => {
-    const immutable = ['IN_TRANSIT', 'RECEIVED', 'CLOSED', 'REJECTED'];
+    const immutable = [
+        'PENDING_DEPT',
+        'PENDING_FINANCE',
+        'PENDING_FINAL',
+        'SUBMITTED',
+        'APPROVED',
+        'IN_TRANSIT',
+        'RECEIVED',
+        'CLOSED',
+        'REJECTED',
+    ];
     if (immutable.includes(trf.status))
         throw Object.assign(
             new Error(`Transfer is locked (status: ${trf.status}) and cannot be modified`),
@@ -119,57 +134,80 @@ const deleteTransfer = async (id, tenantId) => {
 
 // ─── State Machine ────────────────────────────────────────────────────────────
 
-const submitTransfer = async (id, tenantId) => {
+const submitTransfer = async (id, tenantId, userId) => {
     const trf = await findTransfer(id, tenantId);
     assertStatus(trf, 'DRAFT');
-    const updatedTrf = await prisma.storeTransfer.update({
-        where: { id },
-        data: { status: 'SUBMITTED', updatedAt: new Date() },
+
+    const updatedTrf = await prisma.$transaction(async (tx) => {
+        await tx.storeTransfer.update({
+            where: { id },
+            data: { status: transferStatusForActiveStep(1), updatedAt: new Date() },
+        });
+        await createStoreTransferApprovalRequest(tx, {
+            tenantId,
+            transferId: id,
+            createdBy: userId,
+        });
+        return tx.storeTransfer.findFirst({
+            where: { id, tenantId },
+            include: {
+                lines: true,
+                sourceLocation: { select: { name: true } },
+                destLocation: { select: { name: true } },
+            },
+        });
     });
 
-    // Send email to appropriate approver
     try {
         const approvers = await prisma.tenantMember.findMany({
             where: {
                 tenantId,
-                role: { in: ['ADMIN', 'DEPT_MANAGER'] },
+                role: { code: { in: ['DEPT_MANAGER'] } },
                 isActive: true,
                 user: { isActive: true },
             },
-            select: { user: { select: { email: true } } }
+            select: { user: { select: { email: true } } },
         });
         const submitter = await prisma.user.findUnique({ where: { id: trf.requestedBy } });
 
         const pseudoApproval = {
             type: 'TRANSFER',
             createdAt: updatedTrf.createdAt,
-            notes: `Transfer Number: ${updatedTrf.transferNo}`
+            notes: `Transfer Number: ${updatedTrf.transferNo}`,
         };
         for (const app of approvers) {
             await emailService.sendApprovalPendingNotification(pseudoApproval, submitter, app.user.email);
         }
     } catch (err) {
-        console.error("Failed to send transfer approval email:", err);
+        console.error('Failed to send transfer approval email:', err);
     }
     return updatedTrf;
 };
 
-const approveTransfer = async (id, tenantId, userId) => {
+const approveTransfer = async (id, tenantId, userId, userRole) => {
     const trf = await findTransfer(id, tenantId);
-    assertStatus(trf, 'SUBMITTED');
-    return prisma.storeTransfer.update({
-        where: { id },
-        data: { status: 'APPROVED', approvedBy: userId, approvedAt: new Date(), updatedAt: new Date() },
+    assertStatus(trf, 'PENDING_DEPT', 'PENDING_FINANCE', 'PENDING_FINAL', 'SUBMITTED');
+    return processStoreTransferApproval({
+        transferId: id,
+        tenantId,
+        userId,
+        userRole,
+        action: 'APPROVE',
+        comment: null,
     });
 };
 
-const rejectTransfer = async (id, tenantId, userId, reason) => {
+const rejectTransfer = async (id, tenantId, userId, userRole, reason) => {
     if (!reason) throw Object.assign(new Error('Rejection reason required'), { status: 400 });
     const trf = await findTransfer(id, tenantId);
-    assertStatus(trf, 'SUBMITTED');
-    return prisma.storeTransfer.update({
-        where: { id },
-        data: { status: 'REJECTED', rejectedBy: userId, rejectionReason: reason, updatedAt: new Date() },
+    assertStatus(trf, 'PENDING_DEPT', 'PENDING_FINANCE', 'PENDING_FINAL', 'SUBMITTED');
+    return processStoreTransferApproval({
+        transferId: id,
+        tenantId,
+        userId,
+        userRole,
+        action: 'REJECT',
+        comment: reason,
     });
 };
 
@@ -349,6 +387,14 @@ const getTransfer = async (id, tenantId) => {
                 include: {
                     item: { select: { name: true } },
                     uom: { select: { abbreviation: true } },
+                },
+            },
+            approvalRequest: {
+                include: {
+                    steps: {
+                        orderBy: { stepNumber: 'asc' },
+                        include: { requiredRole: { select: { code: true, name: true } } },
+                    },
                 },
             },
         },

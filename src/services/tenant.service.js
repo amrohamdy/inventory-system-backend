@@ -2,12 +2,7 @@ const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
-const logger = require('../utils/logger');
-const { mapPrismaTenantUniqueConstraintError } = require('../utils/prismaTenantCreateErrors');
-const {
-    resolveHotelSubStatusForCreate,
-    resolveHotelSubStatusForUpdate,
-} = require('../utils/resolveHotelSubStatus');
+const { membershipRoleCode, connectRole } = require('./rbac.service');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -34,7 +29,7 @@ const listTenants = async (query = {}, userContext = null) => {
         });
 
         const orgTenantIds = memberships
-            .filter((membership) => membership.role === 'ORG_MANAGER')
+            .filter((membership) => membershipRoleCode(membership) === 'ORG_MANAGER')
             .map((membership) => membership.tenantId)
             .filter(Boolean);
 
@@ -53,7 +48,7 @@ const listTenants = async (query = {}, userContext = null) => {
             ];
         } else {
             visibleTenantIds = memberships
-                .filter((membership) => membership.role === 'ADMIN')
+                .filter((membership) => membershipRoleCode(membership) === 'ADMIN')
                 .map((membership) => membership.tenantId)
                 .filter(Boolean);
         }
@@ -85,35 +80,26 @@ const listTenants = async (query = {}, userContext = null) => {
 };
 
 const createTenant = async (data) => {
-    const slugTaken = await prisma.tenant.findFirst({
-        where: { slug: data.slug },
-        select: { id: true },
+    // Check if slug or name exists
+    const existing = await prisma.tenant.findFirst({
+        where: {
+            OR: [
+                { name: data.name },
+                { slug: data.slug }
+            ]
+        }
     });
-    if (slugTaken) {
-        throw Object.assign(
-            new Error('A tenant with this slug already exists. Please choose a different slug.'),
-            { statusCode: 409 }
-        );
-    }
 
-    const nameTaken = await prisma.tenant.findFirst({
-        where: { name: data.name },
-        select: { id: true },
-    });
-    if (nameTaken) {
-        throw Object.assign(
-            new Error('A tenant with this name already exists. Please choose a different name.'),
-            { statusCode: 409 }
-        );
+    if (existing) {
+        throw Object.assign(new Error('Tenant name or slug already exists.'), { statusCode: 400 });
     }
 
     if (!data.adminUser?.email) {
         throw Object.assign(new Error('adminUser.email is required.'), { statusCode: 400 });
     }
 
-    let result;
-    try {
-        result = await prisma.$transaction(async (tx) => {
+    // Create organization/branch and attach initial memberships in one transaction.
+    const result = await prisma.$transaction(async (tx) => {
         const parentId = data.parentId || null;
         let parentOrgManagerIds = [];
         const isBranchCreation = Boolean(parentId);
@@ -121,35 +107,16 @@ const createTenant = async (data) => {
         if (parentId) {
             const parentTenant = await tx.tenant.findUnique({
                 where: { id: parentId },
-                select: {
-                    id: true,
-                    hasBranches: true,
-                    maxBranches: true,
-                    _count: { select: { children: true } },
-                },
+                select: { id: true },
             });
             if (!parentTenant) {
                 throw Object.assign(new Error('Parent organization not found.'), { statusCode: 404 });
-            }
-            if (!parentTenant.hasBranches) {
-                throw Object.assign(
-                    new Error(
-                        'This organization cannot add branches until branching is enabled for the parent organization.'
-                    ),
-                    { statusCode: 400 }
-                );
-            }
-            if (parentTenant.maxBranches > 0 && parentTenant._count.children >= parentTenant.maxBranches) {
-                throw Object.assign(
-                    new Error('Maximum number of branches reached for this organization'),
-                    { statusCode: 400 }
-                );
             }
 
             const parentOrgManagers = await tx.tenantMember.findMany({
                 where: {
                     tenantId: parentId,
-                    role: 'ORG_MANAGER',
+                    role: { code: 'ORG_MANAGER' },
                     isActive: true,
                 },
                 select: { userId: true },
@@ -167,19 +134,15 @@ const createTenant = async (data) => {
         }
 
         if (isBranchCreation) {
-            const hasLicenseEndKey = Object.prototype.hasOwnProperty.call(data, 'licenseEndDate');
-            const hasBranchStatus =
-                (data.status !== undefined && data.status !== null && data.status !== '') ||
-                (data.subStatus !== undefined && data.subStatus !== null && data.subStatus !== '') ||
-                hasLicenseEndKey;
-            const missingFields = [];
-            if (!hasBranchStatus) missingFields.push('status, subStatus, or licenseEndDate');
-            if (data.maxUsers === undefined || data.maxUsers === null || data.maxUsers === '') {
-                missingFields.push('maxUsers');
-            }
+            const requiredFields = ['status', 'maxUsers'];
+            const missingFields = requiredFields.filter((field) => {
+                const value = data[field];
+                return value === undefined || value === null || value === '';
+            });
+
             if (missingFields.length > 0) {
                 throw Object.assign(
-                    new Error(`Missing required fields for branch creation: ${missingFields.join(', ')}.`),
+                    new Error(`Missing required fields for branch creation: ${missingFields.join(', ')}`),
                     { statusCode: 400 }
                 );
             }
@@ -187,21 +150,15 @@ const createTenant = async (data) => {
 
         const isOrgCreation = !parentId;
         const statusValue = data.status ?? data.subStatus;
-        const normalizedSubStatus = isOrgCreation
-            ? 'ACTIVE'
-            : resolveHotelSubStatusForCreate({
-                subStatus: statusValue,
-                licenseEndDate: data.licenseEndDate,
-            });
+        const normalizedSubStatus = isOrgCreation ? 'ACTIVE' : (statusValue || 'TRIAL');
         const normalizedAdminStatus = 'ACTIVE';
 
-        const rawLicenseEnd = data.licenseEndDate;
-        let resolvedLicenseEndDate =
-            rawLicenseEnd !== undefined && rawLicenseEnd !== null && rawLicenseEnd !== ''
-                ? new Date(rawLicenseEnd)
-                : null;
-        if (!isOrgCreation && normalizedSubStatus === 'TRIAL' && resolvedLicenseEndDate === null) {
-            resolvedLicenseEndDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+        let resolvedLicenseEndDate = data.licenseEndDate ? new Date(data.licenseEndDate) : null;
+        if (!isOrgCreation && normalizedSubStatus === 'TRIAL') {
+            // Hotels only: default trial duration is 14 days if not explicitly provided.
+            if (!data.licenseEndDate) {
+                resolvedLicenseEndDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+            }
         }
 
         // Root orgs should allow hotels by default unless explicitly disabled.
@@ -267,11 +224,11 @@ const createTenant = async (data) => {
                 create: {
                     tenantId: tenant.id,
                     userId: adminUser.id,
-                    role: 'ORG_MANAGER',
+                    role: connectRole('ORG_MANAGER'),
                     isActive: true,
                 },
                 update: {
-                    role: 'ORG_MANAGER',
+                    role: connectRole('ORG_MANAGER'),
                     isActive: true,
                 },
             });
@@ -284,11 +241,11 @@ const createTenant = async (data) => {
                     create: {
                         tenantId: tenant.id,
                         userId: orgManagerUserId,
-                        role: 'ORG_MANAGER',
+                        role: connectRole('ORG_MANAGER'),
                         isActive: true,
                     },
                     update: {
-                        role: 'ORG_MANAGER',
+                        role: connectRole('ORG_MANAGER'),
                         isActive: true,
                     },
                 });
@@ -303,11 +260,11 @@ const createTenant = async (data) => {
                 create: {
                     tenantId: tenant.id,
                     userId: adminUser.id,
-                    role: branchAdminRole,
+                    role: connectRole(branchAdminRole),
                     isActive: true,
                 },
                 update: {
-                    role: branchAdminRole,
+                    role: connectRole(branchAdminRole),
                     isActive: true,
                 },
             });
@@ -315,17 +272,6 @@ const createTenant = async (data) => {
 
         return tenant;
     });
-    } catch (err) {
-        logger.error('tenant.service createTenant: database error', {
-            message: err.message,
-            prismaCode: err.code,
-            prismaMeta: err.meta,
-            stack: err.stack,
-        });
-        const mapped = mapPrismaTenantUniqueConstraintError(err);
-        if (mapped) throw mapped;
-        throw err;
-    }
 
     return result;
 };
@@ -334,32 +280,14 @@ const updateTenantLicense = async (id, data) => {
     const tenant = await prisma.tenant.findUnique({ where: { id } });
     if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
 
-    const hasLicenseEndKey = Object.prototype.hasOwnProperty.call(data, 'licenseEndDate');
-    let nextLicenseEndDate = tenant.licenseEndDate;
-    if (hasLicenseEndKey) {
-        nextLicenseEndDate =
-            data.licenseEndDate !== undefined && data.licenseEndDate !== null && data.licenseEndDate !== ''
-                ? new Date(data.licenseEndDate)
-                : null;
-    }
-
-    const hasSubStatusKey = Object.prototype.hasOwnProperty.call(data, 'subStatus');
-    const nextSubStatus = resolveHotelSubStatusForUpdate({
-        currentSubStatus: tenant.subStatus,
-        payloadSubStatus: data.subStatus,
-        hasSubStatusInPayload: hasSubStatusKey,
-        nextLicenseEndDate: hasLicenseEndKey ? nextLicenseEndDate : tenant.licenseEndDate,
-        hasLicenseEndDateInPayload: hasLicenseEndKey,
-    });
-
     const updated = await prisma.tenant.update({
         where: { id },
         data: {
             planType: data.planType !== undefined ? data.planType : tenant.planType,
-            subStatus: nextSubStatus,
+            subStatus: data.subStatus !== undefined ? data.subStatus : tenant.subStatus,
             maxUsers: data.maxUsers !== undefined ? Number(data.maxUsers) : tenant.maxUsers,
             licenseStartDate: data.licenseStartDate ? new Date(data.licenseStartDate) : tenant.licenseStartDate,
-            licenseEndDate: hasLicenseEndKey ? nextLicenseEndDate : tenant.licenseEndDate,
+            licenseEndDate: data.licenseEndDate ? new Date(data.licenseEndDate) : tenant.licenseEndDate,
             isActive: data.isActive !== undefined ? data.isActive : tenant.isActive
         }
     });

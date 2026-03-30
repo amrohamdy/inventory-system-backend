@@ -16,7 +16,7 @@ const assertOrgManagerAssignmentWithinOrgHierarchy = async (db, { userId, target
     const orgManagerOrgMemberships = await db.tenantMember.findMany({
         where: {
             userId,
-            role: 'ORG_MANAGER',
+            role: { code: 'ORG_MANAGER' },
             isActive: true,
             tenantId: { not: null },
             tenant: { is: { parentId: null, isActive: true } },

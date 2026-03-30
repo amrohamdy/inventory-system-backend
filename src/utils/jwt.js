@@ -19,6 +19,9 @@ const generateAccessToken = (payload) => {
             tenantId: payload.tenantId,
             role: payload.role,
             email: payload.email,
+            ...(payload.roleId ? { roleId: payload.roleId } : {}),
+            ...(Array.isArray(payload.permissions) ? { permissions: payload.permissions } : {}),
+            ...(payload.permissionVersion !== undefined ? { permissionVersion: payload.permissionVersion } : {}),
             // SaaS Phase 1: impersonation claims (only included when present)
             ...(payload.readOnly ? { readOnly: true } : {}),
             ...(payload.impersonatedBy ? { impersonatedBy: payload.impersonatedBy } : {}),

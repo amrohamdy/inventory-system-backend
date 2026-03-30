@@ -100,7 +100,7 @@ const buildEvidenceJSON = async (session, tenantId) => {
         },
         approvalHistory: session.approvalRequest ? session.approvalRequest.steps.map(s => ({
             step: s.stepNumber,
-            role: s.requiredRole,
+            role: s.requiredRole?.code ?? s.requiredRole,
             status: s.status,
             actedBy: s.actedByUser ? `${s.actedByUser.firstName} ${s.actedByUser.lastName}` : null,
             actedAt: s.actedAt,

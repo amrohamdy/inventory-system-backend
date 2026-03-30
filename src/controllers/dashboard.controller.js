@@ -27,7 +27,7 @@ const assertCanViewOrganizationSummary = async (req, parentTenantId) => {
         where: {
             userId: req.user.id,
             tenantId: parentTenantId,
-            role: 'ORG_MANAGER',
+            role: { code: 'ORG_MANAGER' },
             isActive: true,
         },
     });

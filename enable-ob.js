@@ -21,15 +21,21 @@ async function main() {
         });
 
         // Find an admin user to use as updatedBy
-        const admin = await prisma.user.findFirst({
-            where: { tenantId: tenant.id, role: { in: ['SUPER_ADMIN', 'ADMIN'] } },
-            select: { id: true, email: true },
+        const adminMembership = await prisma.tenantMember.findFirst({
+            where: {
+                tenantId: tenant.id,
+                role: { code: { in: ['SUPER_ADMIN', 'ADMIN'] } },
+                isActive: true,
+                user: { isActive: true },
+            },
+            include: { user: { select: { id: true, email: true } } },
         });
 
-        if (!admin) {
+        if (!adminMembership) {
             console.log(`[${tenant.slug}] ⚠️  No admin user found — skipping`);
             continue;
         }
+        const admin = adminMembership.user;
 
         console.log(`[${tenant.slug}] Current setting: ${current?.value || 'NOT SET'} | Non-OB posted movements: ${postedNonOB}`);
 

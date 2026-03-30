@@ -1,14 +1,16 @@
 /**
- * M01 — Role-Based Authorization Middleware
+ * M01 — Role-Based Authorization Middleware (DB-backed permissions via JWT)
  * Usage: authorize('ADMIN', 'COST_CONTROL')  →  only those roles can proceed
  */
+const { normalizeRole } = require('../services/rbac.service');
+
 const authorize = (...roles) => {
     return (req, res, next) => {
         if (!req.user) {
             return res.status(401).json({ success: false, message: 'Authentication required.' });
         }
 
-        const normalizedRoles = roles.map(r => normalizeRole(r));
+        const normalizedRoles = roles.map((r) => normalizeRole(r));
         const userRole = normalizeRole(req.user.role);
         const canActAsAdmin = userRole === 'ORG_MANAGER' && normalizedRoles.includes('ADMIN');
 
@@ -24,7 +26,8 @@ const authorize = (...roles) => {
 };
 
 /**
- * Canonical permission matrix (Excel-aligned)
+ * Canonical permission matrix keys (Excel-aligned). Aliases resolve to these.
+ * Kept for documentation and tests; enforcement uses JWT `permissions` from DB.
  */
 const PERMISSIONS = {
     BASIC_DATA_EDIT: ['ADMIN'],
@@ -62,10 +65,9 @@ const PERMISSIONS = {
 
     USERS_COMPANY_MANAGE: ['ADMIN'],
     SETTINGS_MANAGE: ['ADMIN'],
-    AUDIT_LOG_VIEW: ['ADMIN', 'FINANCE_MANAGER', 'AUDITOR', 'SECURITY'],
+    AUDIT_LOG_VIEW: ['ADMIN', 'FINANCE_MANAGER', 'AUDITOR'],
 };
 
-// Backward compatibility for existing routes still using old keys.
 const PERMISSION_ALIASES = {
     MANAGE_MASTER_DATA: 'BASIC_DATA_EDIT',
     VIEW_MASTER_DATA: 'BASIC_DATA_VIEW',
@@ -90,14 +92,12 @@ const PERMISSION_ALIASES = {
     REGISTER_GET_PASS_RETURN: 'GET_PASS_APPROVE_RETURN',
 };
 
-const normalizeRole = (role = '') => {
-    const normalized = String(role).toUpperCase();
-    // compatibility during migration
-    return normalized === 'SECURITY_MANAGER' ? 'SECURITY' : normalized;
-};
-
 const resolvePermissionKey = (permission) => PERMISSION_ALIASES[permission] || permission;
 
+/**
+ * Legacy sync helper: compute permission list from role code using static matrix.
+ * Prefer JWT `permissions` at runtime; used when building responses without DB.
+ */
 const getPermissionsForRole = (role) => {
     const normalizedRole = normalizeRole(role);
     if (!normalizedRole) return [];
@@ -106,7 +106,6 @@ const getPermissionsForRole = (role) => {
         .map(([permission]) => permission);
     if (permissions.length > 0) return permissions;
 
-    // ORG_MANAGER/SUPER_ADMIN are tenant-level admin contexts.
     if (normalizedRole === 'ORG_MANAGER' || normalizedRole === 'SUPER_ADMIN') {
         return Object.entries(PERMISSIONS)
             .filter(([, roles]) => roles.includes('ADMIN'))
@@ -116,12 +115,16 @@ const getPermissionsForRole = (role) => {
 };
 
 /**
- * Check a specific permission
- * Usage: hasPermission(req.user.role, 'CREATE_MOVEMENT')
+ * Check permission using JWT `permissions` when present; otherwise static matrix fallback.
+ * Accepts `{ role, permissions }` or a legacy role string as first argument.
  */
-const hasPermission = (role, permission) => {
-    const normalizedRole = normalizeRole(role);
+const hasPermission = (userOrRole, permission) => {
+    const user = typeof userOrRole === 'string' ? { role: userOrRole } : userOrRole;
     const resolvedPermission = resolvePermissionKey(permission);
+    if (user && Array.isArray(user.permissions) && user.permissions.length > 0) {
+        return user.permissions.includes(resolvedPermission);
+    }
+    const normalizedRole = normalizeRole(user?.role);
     const allowedRoles = PERMISSIONS[resolvedPermission] || [];
     if (allowedRoles.includes(normalizedRole)) return true;
     if (normalizedRole === 'ORG_MANAGER' || normalizedRole === 'SUPER_ADMIN') {
@@ -130,13 +133,9 @@ const hasPermission = (role, permission) => {
     return false;
 };
 
-/**
- * Middleware: check specific permission key
- * Usage: requirePermission('MANAGE_MASTER_DATA')
- */
 const requirePermission = (permission) => {
     return (req, res, next) => {
-        if (!req.user || !hasPermission(req.user.role, permission)) {
+        if (!req.user || !hasPermission(req.user, permission)) {
             return res.status(403).json({
                 success: false,
                 message: `Access denied. Insufficient permissions.`,
@@ -147,4 +146,11 @@ const requirePermission = (permission) => {
     };
 };
 
-module.exports = { authorize, hasPermission, requirePermission, PERMISSIONS, getPermissionsForRole };
+module.exports = {
+    authorize,
+    hasPermission,
+    requirePermission,
+    PERMISSIONS,
+    getPermissionsForRole,
+    resolvePermissionKey,
+};

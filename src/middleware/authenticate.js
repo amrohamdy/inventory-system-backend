@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/database');
 const logger = require('../utils/logger');
+const { membershipRoleCode, getPermissionsForMembership } = require('../services/rbac.service');
 const { enforcetenantScope } = require('./tenantScope');
 const { enforceSubscription } = require('./subscription');
 
@@ -59,6 +60,23 @@ const authenticate = async (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+        const userRow = await prisma.user.findUnique({
+            where: { id: decoded.userId },
+            select: { permissionVersion: true },
+        });
+        if (
+            userRow &&
+            decoded.permissionVersion !== undefined &&
+            userRow.permissionVersion !== decoded.permissionVersion
+        ) {
+            return res.status(401).json({
+                success: false,
+                message: 'Session expired. Please login again.',
+                code: 'PERMISSIONS_STALE',
+            });
+        }
+
         const suspension = await getTenantSuspensionFromTokenContext(decoded.tenantId);
         if (decoded.tenantId && suspension?.tenant) {
             console.log(
@@ -86,7 +104,7 @@ const authenticate = async (req, res, next) => {
                 userId: decoded.userId,
                 tenantId: decoded.tenantId || null,
             },
-            select: { isActive: true, role: true, tenantId: true },
+            select: { isActive: true, role: true, roleId: true, tenantId: true },
         });
 
         // If there is no direct membership for this tenant context, allow ORG_MANAGER
@@ -109,17 +127,18 @@ const authenticate = async (req, res, next) => {
                     where: {
                         userId: decoded.userId,
                         tenantId: targetTenant.parentId,
-                        role: 'ORG_MANAGER',
+                        role: { code: 'ORG_MANAGER' },
                         isActive: true,
                         tenant: { is: { isActive: true, parentId: null } },
                     },
-                    select: { isActive: true, role: true, tenantId: true },
+                    select: { isActive: true, role: true, roleId: true, tenantId: true },
                 });
 
                 if (parentOrgMembership) {
                     membership = {
                         tenantId: targetTenant.id,
-                        role: 'ORG_MANAGER',
+                        role: parentOrgMembership.role,
+                        roleId: parentOrgMembership.roleId,
                         isActive: true,
                         isInherited: true,
                     };
@@ -142,7 +161,7 @@ const authenticate = async (req, res, next) => {
         }
 
         let scopedTenantId = decoded.tenantId;
-        const isOrgManager = membership?.role === 'ORG_MANAGER';
+        const isOrgManager = membership && membershipRoleCode(membership) === 'ORG_MANAGER';
         const requestedTenantIdHeader = typeof req.headers['x-tenant-id'] === 'string'
             ? req.headers['x-tenant-id'].trim()
             : '';
@@ -169,10 +188,21 @@ const authenticate = async (req, res, next) => {
             scopedTenantId = allowedTenant.id;
         }
 
+        const roleCode = membership ? membershipRoleCode(membership) : decoded.role;
+        let permissions = Array.isArray(decoded.permissions) ? decoded.permissions : [];
+        if (permissions.length === 0 && membership) {
+            permissions = await getPermissionsForMembership({
+                roleId: membership.roleId,
+                roleCode,
+            });
+        }
+
         req.user = {
             id: decoded.userId,
             tenantId: scopedTenantId,
-            role: membership?.role || decoded.role,
+            role: roleCode,
+            roleId: membership?.roleId ?? decoded.roleId,
+            permissions,
             email: decoded.email,
             readOnly: decoded.readOnly || false,
             impersonatedBy: decoded.impersonatedBy || null,

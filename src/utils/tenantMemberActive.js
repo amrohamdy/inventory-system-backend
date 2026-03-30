@@ -54,7 +54,7 @@ const assertSingletonRoleAvailable = async (db, { tenantId, role, excludeUserId 
     const existing = await db.tenantMember.findFirst({
         where: {
             tenantId,
-            role,
+            role: { code: role },
             isActive: true,
             user: { isActive: true },
             ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),

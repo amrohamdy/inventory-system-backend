@@ -2,8 +2,7 @@ const prisma = require('../config/database');
 const { hashPassword, comparePassword } = require('../utils/password');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, getRefreshTokenExpiry } = require('../utils/jwt');
 const logger = require('../utils/logger');
-const { getPermissionsForRole } = require('../middleware/authorize');
-const { isTenantSubscriptionExpired } = require('../utils/subscriptionLicense');
+const { getPermissionsForMembership, membershipRoleCode, getRoleIdByCode } = require('./rbac.service');
 
 /**
  * M01 — Auth Service
@@ -14,7 +13,7 @@ const formatMembershipOption = (membership) => ({
     tenantSlug: membership.tenant?.slug || null,
     tenantName: membership.tenant?.name || null,
     parentId: membership.tenant?.parentId || null,
-    role: membership.role,
+    role: membershipRoleCode(membership),
     isInherited: Boolean(membership.isInherited),
     isSuperAdmin: membership.tenantId === null,
 });
@@ -28,9 +27,13 @@ const buildAccountInactiveError = () => Object.assign(
 );
 
 const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
+    const orgManagerRoleId = await getRoleIdByCode('ORG_MANAGER');
     const mergedMemberships = activeMemberships.map((membership) => ({ ...membership }));
     const parentOrgMemberships = activeMemberships.filter(
-        (membership) => membership.role === 'ORG_MANAGER' && membership.tenant?.parentId === null && membership.tenantId
+        (membership) =>
+            membershipRoleCode(membership) === 'ORG_MANAGER' &&
+            membership.tenant?.parentId === null &&
+            membership.tenantId
     );
 
     if (parentOrgMemberships.length === 0) return mergedMemberships;
@@ -51,7 +54,6 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
                 parentId: true,
                 isActive: true,
                 subStatus: true,
-                licenseEndDate: true,
             },
         });
 
@@ -60,7 +62,8 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
             if (existingIndex >= 0) {
                 mergedMemberships[existingIndex] = {
                     ...mergedMemberships[existingIndex],
-                    role: 'ORG_MANAGER',
+                    role: orgManagerRoleId ? { id: orgManagerRoleId, code: 'ORG_MANAGER' } : { code: 'ORG_MANAGER' },
+                    roleId: orgManagerRoleId || undefined,
                     tenant: { ...(mergedMemberships[existingIndex].tenant || {}), ...child },
                     isInherited: true,
                     isActive: true,
@@ -70,7 +73,8 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
 
             mergedMemberships.push({
                 tenantId: child.id,
-                role: 'ORG_MANAGER',
+                role: orgManagerRoleId ? { id: orgManagerRoleId, code: 'ORG_MANAGER' } : { code: 'ORG_MANAGER' },
+                roleId: orgManagerRoleId || undefined,
                 tenant: child,
                 isActive: true,
                 isInherited: true,
@@ -82,12 +86,6 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
 };
 
 const buildSuspensionError = (code) => Object.assign(new Error(code), { statusCode: 403, code });
-
-const buildSubscriptionExpiredError = () =>
-    Object.assign(new Error('Your subscription has expired. Please renew to continue.'), {
-        statusCode: 403,
-        code: 'SUBSCRIPTION_EXPIRED',
-    });
 const logAuthCheck = ({ email, tenant }) => {
     if (!tenant) return;
     const parentAdminStatus = tenant.parent?.adminStatus || 'N/A';
@@ -122,28 +120,26 @@ const ensureTenantNotSuspended = async (tenantId) => {
     }
 };
 
-const ensureTenantSubscriptionNotExpired = async (tenantId) => {
-    if (!tenantId) return;
-    const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { licenseEndDate: true, subStatus: true },
-    });
-    if (isTenantSubscriptionExpired(tenant)) {
-        throw buildSubscriptionExpiredError();
-    }
-};
-
 const issueSessionForMembership = async ({
     user,
     membership,
     ipAddress,
     userAgent,
 }) => {
+    const roleCode = membershipRoleCode(membership);
+    let roleId = membership.roleId ?? membership.role?.id;
+    if (!roleId && roleCode) {
+        roleId = await getRoleIdByCode(roleCode);
+    }
+    const permissions = await getPermissionsForMembership({ roleId, roleCode });
     const tokenPayload = {
         userId: user.id,
         tenantId: membership.tenantId,
-        role: membership.role,
+        role: roleCode,
         email: user.email,
+        ...(roleId ? { roleId } : {}),
+        permissions,
+        permissionVersion: user.permissionVersion ?? 0,
     };
     const accessToken = generateAccessToken(tokenPayload);
     const refreshToken = generateRefreshToken(tokenPayload);
@@ -171,8 +167,8 @@ const issueSessionForMembership = async ({
             email: user.email,
             firstName: user.firstName,
             lastName: user.lastName,
-            role: membership.role,
-            permissions: getPermissionsForRole(membership.role),
+            role: roleCode,
+            permissions,
             department: user.department,
             tenantId: membership.tenantId,
             tenantName: membership.tenant?.name || null,
@@ -200,7 +196,7 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
 
     const memberships = await prisma.tenantMember.findMany({
         where: { userId: user.id },
-        include: { tenant: true },
+        include: { tenant: true, role: true },
     });
 
     console.log('DEBUG: Found memberships count:', memberships.length);
@@ -217,7 +213,7 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
             activeMemberships
                 .filter(
                     (m) =>
-                        m.role === 'ORG_MANAGER' &&
+                        membershipRoleCode(m) === 'ORG_MANAGER' &&
                         m.tenantId &&
                         m.tenant &&
                         m.tenant.parentId === null
@@ -250,18 +246,10 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         ...new Set(activeMembershipsWithInheritance.map((m) => m.tenantId).filter(Boolean)),
     ];
     let suspensionFailureCode = null;
-    let removedForSubscriptionExpiry = false;
     if (tenantIds.length > 0) {
         const tenants = await prisma.tenant.findMany({
             where: { id: { in: tenantIds } },
-            select: {
-                id: true,
-                parentId: true,
-                adminStatus: true,
-                subStatus: true,
-                isActive: true,
-                licenseEndDate: true,
-            },
+            select: { id: true, parentId: true, adminStatus: true, subStatus: true, isActive: true },
         });
         const tenantById = new Map(tenants.map((t) => [t.id, t]));
         const parentIds = [...new Set(tenants.map((t) => t.parentId).filter(Boolean))];
@@ -288,10 +276,6 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
                     return false;
                 }
             }
-            if (isTenantSubscriptionExpired(t)) {
-                removedForSubscriptionExpiry = true;
-                return false;
-            }
             return true;
         });
     }
@@ -301,9 +285,6 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
 
     if (totalMemberships === 0 && suspensionFailureCode) {
         throw buildSuspensionError(suspensionFailureCode);
-    }
-    if (totalMemberships === 0 && removedForSubscriptionExpiry) {
-        throw buildSubscriptionExpiredError();
     }
 
     if (totalMemberships > 1 && !normalizedTenantSlug) {
@@ -335,7 +316,6 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
                 parentId: true,
                 subStatus: true,
                 adminStatus: true,
-                licenseEndDate: true,
                 parent: {
                     select: {
                         id: true,
@@ -353,9 +333,6 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
             }
             if (attemptedTenant.parent?.adminStatus === 'SUSPENDED') {
                 throw buildSuspensionError('ORGANIZATION_SUSPENDED');
-            }
-            if (isTenantSubscriptionExpired(attemptedTenant)) {
-                throw buildSubscriptionExpiredError();
             }
         }
 
@@ -375,7 +352,6 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         }
 
         await ensureTenantNotSuspended(selectedMembership.tenantId);
-        await ensureTenantSubscriptionNotExpired(selectedMembership.tenantId);
 
         const result = await issueSessionForMembership({
             user,
@@ -398,20 +374,12 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
                     parentId: true,
                     subStatus: true,
                     adminStatus: true,
-                    licenseEndDate: true,
-                    parent: {
-                        select: {
-                            id: true,
-                            subStatus: true,
-                            adminStatus: true,
-                        },
-                    },
+                    parent: { select: { id: true, subStatus: true, adminStatus: true } },
                 },
             });
             logAuthCheck({ email: user.email, tenant: selectedTenant });
         }
         await ensureTenantNotSuspended(selected.tenantId);
-        await ensureTenantSubscriptionNotExpired(selected.tenantId);
         const result = await issueSessionForMembership({ user, membership: selected, ipAddress, userAgent });
         logger.info(`User logged in: ${user.email} [tenant: ${selected.tenant?.slug || 'super-admin'}]`);
         return result;
@@ -462,7 +430,7 @@ const refresh = async (refreshToken) => {
                 isActive: true,
                 tenant: { is: { isActive: true } },
             },
-            include: { tenant: { select: { id: true } } },
+            include: { tenant: { select: { id: true } }, role: true },
         });
 
         if (!membership) {
@@ -476,17 +444,18 @@ const refresh = async (refreshToken) => {
                     where: {
                         userId: user.id,
                         tenantId: targetTenant.parentId,
-                        role: 'ORG_MANAGER',
+                        role: { code: 'ORG_MANAGER' },
                         isActive: true,
                         tenant: { is: { isActive: true, parentId: null } },
                     },
-                    select: { role: true },
+                    include: { role: true },
                 });
 
                 if (parentOrgMembership) {
                     membership = {
                         tenantId: targetTenant.id,
-                        role: 'ORG_MANAGER',
+                        role: parentOrgMembership.role,
+                        roleId: parentOrgMembership.roleId,
                         tenant: { id: targetTenant.id },
                     };
                 }
@@ -497,9 +466,10 @@ const refresh = async (refreshToken) => {
             where: {
                 userId: user.id,
                 tenantId: null,
-                role: 'SUPER_ADMIN',
+                role: { code: 'SUPER_ADMIN' },
                 isActive: true,
             },
+            include: { role: true },
         });
     }
 
@@ -511,7 +481,6 @@ const refresh = async (refreshToken) => {
     if (membership.tenantId) {
         try {
             await ensureTenantNotSuspended(membership.tenantId);
-            await ensureTenantSubscriptionNotExpired(membership.tenantId);
         } catch (err) {
             // Revoke the presented refresh token to force logout.
             await prisma.refreshToken.updateMany({
@@ -522,11 +491,21 @@ const refresh = async (refreshToken) => {
         }
     }
 
+    const roleCode = membershipRoleCode(membership);
+    let roleId = membership.roleId ?? membership.role?.id;
+    if (!roleId && roleCode) {
+        roleId = await getRoleIdByCode(roleCode);
+    }
+    const permissions = await getPermissionsForMembership({ roleId, roleCode });
+
     const newAccessToken = generateAccessToken({
         userId: user.id,
         tenantId: membership.tenantId,
-        role: membership.role,
+        role: roleCode,
         email: user.email,
+        ...(roleId ? { roleId } : {}),
+        permissions,
+        permissionVersion: user.permissionVersion ?? 0,
     });
 
     return { accessToken: newAccessToken };
@@ -574,16 +553,23 @@ const getMe = async (userId, tenantId) => {
         },
         include: {
             tenant: { select: { id: true, name: true, slug: true, logoUrl: true } },
+            role: true,
         },
     });
     if (!membership) {
         throw Object.assign(new Error('Membership not found for this context.'), { statusCode: 404 });
     }
 
+    const rc = membershipRoleCode(membership);
+    const permissions = await getPermissionsForMembership({
+        roleId: membership.roleId,
+        roleCode: rc,
+    });
+
     return {
         ...user,
-        role: membership.role,
-        permissions: getPermissionsForRole(membership.role),
+        role: rc,
+        permissions,
         tenant: membership.tenant || null,
     };
 };
@@ -617,14 +603,7 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
             slug: normalizedTenantSlug,
             isActive: true,
         },
-        select: {
-            id: true,
-            slug: true,
-            name: true,
-            parentId: true,
-            subStatus: true,
-            licenseEndDate: true,
-        },
+        select: { id: true, slug: true, name: true, parentId: true, subStatus: true },
     });
 
     if (!targetTenant) {
@@ -633,9 +612,6 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
 
     // Block switching to suspended tenant/org hierarchy with distinct codes.
     await ensureTenantNotSuspended(targetTenant.id);
-    if (isTenantSubscriptionExpired(targetTenant)) {
-        throw buildSubscriptionExpiredError();
-    }
 
     // Strict switch guard:
     // If user is an ORG_MANAGER of any root org, they may only switch to that org
@@ -643,7 +619,7 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     const rootOrgManagerOrgMemberships = await prisma.tenantMember.findMany({
         where: {
             userId,
-            role: 'ORG_MANAGER',
+            role: { code: 'ORG_MANAGER' },
             isActive: true,
             tenantId: { not: null },
             tenant: { is: { parentId: null, isActive: true } },
@@ -667,6 +643,7 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
         where: { userId, tenantId: targetTenant.id },
         include: {
             tenant: { select: { id: true, slug: true, name: true, parentId: true } },
+            role: true,
         },
     });
 
@@ -682,17 +659,18 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
             where: {
                 userId,
                 tenantId: targetTenant.parentId,
-                role: 'ORG_MANAGER',
+                role: { code: 'ORG_MANAGER' },
                 isActive: true,
                 tenant: { is: { isActive: true, parentId: null } },
             },
-            select: { role: true },
+            include: { role: true },
         });
 
         if (parentOrgMembership) {
             membership = {
                 tenantId: targetTenant.id,
-                role: 'ORG_MANAGER',
+                role: parentOrgMembership.role,
+                roleId: parentOrgMembership.roleId,
                 tenant: targetTenant,
                 isActive: true,
                 isInherited: true,

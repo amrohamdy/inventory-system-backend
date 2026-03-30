@@ -48,8 +48,18 @@ async function main() {
         });
         await prisma.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: tenant.id, userId: user.id } },
-            update: { role, isActive: true },
-            create: { tenantId: tenant.id, userId: user.id, role, isActive: true },
+            update: {
+                tenant: { connect: { id: tenant.id } },
+                user: { connect: { id: user.id } },
+                role: { connect: { code: role } },
+                isActive: true,
+            },
+            create: {
+                tenant: { connect: { id: tenant.id } },
+                user: { connect: { id: user.id } },
+                role: { connect: { code: role } },
+                isActive: true,
+            },
         });
         console.log(`  👤 ${role}: ${user.firstName} ${user.lastName} (${user.email})`);
     }

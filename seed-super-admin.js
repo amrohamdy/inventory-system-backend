@@ -69,7 +69,7 @@ async function main() {
             data: {
                 tenantId: null,
                 userId: user.id,
-                role: 'SUPER_ADMIN',
+                role: { connect: { code: 'SUPER_ADMIN' } },
                 isActive: true,
             },
         });
@@ -80,11 +80,11 @@ async function main() {
             create: {
                 tenantId: null,
                 userId: existing.id,
-                role: 'SUPER_ADMIN',
+                role: { connect: { code: 'SUPER_ADMIN' } },
                 isActive: true,
             },
             update: {
-                role: 'SUPER_ADMIN',
+                role: { connect: { code: 'SUPER_ADMIN' } },
                 isActive: true,
             },
         });

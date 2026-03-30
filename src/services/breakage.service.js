@@ -1,6 +1,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
+const { connectRole } = require('./rbac.service');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ const BREAKAGE_INCLUDE = {
                 orderBy: { stepNumber: 'asc' },
                 include: {
                     actedByUser: { select: { id: true, firstName: true, lastName: true } },
+                    requiredRole: { select: { id: true, code: true } },
                 },
             },
         },
@@ -105,7 +107,7 @@ const createBreakage = async (data, tenantId, userId) => {
                 steps: {
                     create: APPROVAL_CHAIN.map(c => ({
                         stepNumber: c.step,
-                        requiredRole: c.role,
+                        requiredRole: connectRole(c.role),
                         status: 'PENDING',
                     })),
                 },
@@ -186,7 +188,7 @@ const submitBreakage = async (id, tenantId, userId) => {
                 // In a production system this would target the specific manager 
                 const chain = APPROVAL_CHAIN.find(c => c.step === 1);
                 const approvers = await tx.tenantMember.findMany({
-                    where: { tenantId, role: chain.role, isActive: true, user: { isActive: true } },
+                    where: { tenantId, role: { code: chain.role }, isActive: true, user: { isActive: true } },
                     select: { user: { select: { email: true } } }
                 });
 
@@ -396,7 +398,7 @@ const getEvidence = async (id, tenantId) => {
     // Approval history
     const approvalHistory = (getApproval(doc)?.steps || []).map(s => ({
         stepNumber: s.stepNumber,
-        role: s.requiredRole,
+        role: s.requiredRole?.code ?? s.requiredRole,
         label: APPROVAL_CHAIN.find(c => c.step === s.stepNumber)?.label,
         status: s.status,
         actedBy: s.actedByUser

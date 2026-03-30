@@ -4,6 +4,7 @@ const postingService = require('./posting.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { generateDocNumber } = require('./docNumbering.service');
+const { connectRole } = require('./rbac.service');
 
 /**
  * Creates a new Stock Count Session for a given location.
@@ -107,7 +108,7 @@ const getSessionById = async (id, tenantId) => {
             approvalRequest: {
                 include: {
                     steps: {
-                        include: { actedByUser: true },
+                        include: { actedByUser: true, requiredRole: { select: { code: true } } },
                         orderBy: { stepNumber: 'asc' }
                     }
                 }
@@ -190,9 +191,9 @@ const submitForApproval = async (id, tenantId, userId) => {
                 createdBy: userId,
                 steps: {
                     create: [
-                        { stepNumber: 1, requiredRole: 'DEPT_MANAGER' },
-                        { stepNumber: 2, requiredRole: 'COST_CONTROL' },
-                        { stepNumber: 3, requiredRole: 'FINANCE_MANAGER' }
+                        { stepNumber: 1, requiredRole: connectRole('DEPT_MANAGER') },
+                        { stepNumber: 2, requiredRole: connectRole('COST_CONTROL') },
+                        { stepNumber: 3, requiredRole: connectRole('FINANCE_MANAGER') }
                     ]
                 }
             }
@@ -222,8 +223,9 @@ const processApproval = async (id, tenantId, user, comment, isApproved) => {
     const step = request.steps.find(s => s.stepNumber === currentStepNum);
 
     if (!step) throw new Error('No pending approval step found');
-    if (step.requiredRole !== user.role && user.role !== 'ADMIN') {
-        throw new Error(`Unauthorized. Step requires role: ${step.requiredRole}`);
+    const stepRoleCode = step.requiredRole?.code ?? step.requiredRole;
+    if (stepRoleCode !== user.role && user.role !== 'ADMIN') {
+        throw new Error(`Unauthorized. Step requires role: ${stepRoleCode}`);
     }
 
     if (!isApproved) {
