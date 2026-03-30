@@ -168,7 +168,7 @@ model TenantMember {
   department   Department? @relation(fields: [departmentId], references: [id])
   tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role         Role        @relation(fields: [roleId], references: [id])
+  role         Role?        @relation(fields: [roleId], references: [id])
 
   @@unique([tenantId, userId])
   @@index([userId])
