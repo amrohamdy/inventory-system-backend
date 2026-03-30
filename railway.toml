@@ -3,6 +3,14 @@
 #
 # Production DB sync: use migrations (prisma migrate deploy), NOT `db push`.
 # `db push --accept-data-loss` is for local/dev only and is unsafe on production.
+#
+# --- مساران ---
+# 1) قاعدة جديدة فارغة: أول نشر يشغّل start:prod → migrate deploy يطبّق كل الملفات تلقائياً.
+# 2) قاعدة قديمة + P3005 (schema غير فارغة بدون سجل migrations): مرة واحدة من الجهاز أو railway run:
+#    DATABASE_URL=... npm run db:baseline
+#    ثم أعد النشر؛ بعدها migrate deploy يعمل طبيعي.
+#
+# Dashboard: لا تضع Start Command ثانياً يتعارض مع هذا الملف.
 
 [build]
 builder = "NIXPACKS"

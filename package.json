@@ -4,6 +4,9 @@
     "private": true,
     "description": "OS&E Inventory System — Backend API",
     "main": "src/server.js",
+    "engines": {
+        "node": ">=18"
+    },
     "scripts": {
         "dev": "nodemon src/server.js",
         "start": "node src/server.js",
@@ -11,6 +14,7 @@
         "postinstall": "prisma generate",
         "db:migrate": "prisma migrate dev",
         "db:migrate:prod": "prisma migrate deploy",
+        "db:baseline": "node scripts/baseline-migrations.js",
         "db:seed": "node prisma/seeds/index.js",
         "db:studio": "prisma studio",
         "db:generate": "prisma generate",
