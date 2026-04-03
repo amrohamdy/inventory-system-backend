@@ -2,6 +2,7 @@
  * SaaS Phase 1 — Seed Platform Tenant + SUPER_ADMIN user
  *
  * Creates a SUPER_ADMIN user (global membership with null tenant).
+ * Updated: Uses upsert for Roles and TenantMembers to prevent P2025/P3005 errors.
  * Usage: node seed-super-admin.js
  */
 const { PrismaClient } = require('@prisma/client');
@@ -11,7 +12,19 @@ const prisma = new PrismaClient();
 async function main() {
     console.log('── Seeding Platform Tenant + SUPER_ADMIN ──');
 
-    // 1. Create or find platform tenant
+    // 1. Create or find the SUPER_ADMIN Role (Crucial for Railway)
+    const superAdminRole = await prisma.role.upsert({
+        where: { code: 'SUPER_ADMIN' },
+        update: {},
+        create: {
+            code: 'SUPER_ADMIN',
+            name: 'Super Administrator',
+            description: 'Full system access with global scope',
+        },
+    });
+    console.log(`  ✅ Role SUPER_ADMIN verified: ${superAdminRole.id}`);
+
+    // 2. Create or find platform tenant
     let platform = await prisma.tenant.findUnique({ where: { slug: 'platform' } });
     if (!platform) {
         platform = await prisma.tenant.create({
@@ -27,7 +40,7 @@ async function main() {
         console.log(`  ℹ  Platform tenant already exists: ${platform.id}`);
     }
 
-    // 2. Create subscription for platform (ENTERPRISE, no limits)
+    // 3. Create subscription for platform (ENTERPRISE, no limits)
     await prisma.subscription.upsert({
         where: { tenantId: platform.id },
         create: {
@@ -43,68 +56,62 @@ async function main() {
     });
     console.log('  ✅ Platform subscription (ENTERPRISE) set');
 
-    // 3. Create usage tracker
+    // 4. Create usage tracker
     await prisma.tenantUsage.upsert({
         where: { tenantId: platform.id },
         create: { tenantId: platform.id, totalUsers: 1 },
         update: {},
     });
 
-    // 4. Create SUPER_ADMIN user
+    // 5. Create/Update SUPER_ADMIN user
     const email = 'superadmin@ose.cloud';
     const password = 'superadmin@2026';
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const pwHash = await hashPassword(password);
 
-    if (!existing) {
-        const pwHash = await hashPassword(password);
-        const user = await prisma.user.create({
+    const user = await prisma.user.upsert({
+        where: { email },
+        update: {
+            passwordHash: pwHash,
+            isActive: true,
+        },
+        create: {
+            email,
+            passwordHash: pwHash,
+            firstName: 'Super',
+            lastName: 'Admin',
+            isActive: true,
+        },
+    });
+    console.log(`  ✅ User SUPER_ADMIN verified: ${user.email}`);
+
+    // 6. Create/Update Global Membership (TenantMember)
+    // We look for a membership where tenantId is null and role is SUPER_ADMIN
+    const existingMembership = await prisma.tenantMember.findFirst({
+        where: { 
+            userId: user.id, 
+            tenantId: null 
+        }
+    });
+
+    if (existingMembership) {
+        await prisma.tenantMember.update({
+            where: { id: existingMembership.id },
             data: {
-                email,
-                passwordHash: pwHash,
-                firstName: 'Super',
-                lastName: 'Admin',
+                roleId: superAdminRole.id,
+                isActive: true,
             },
         });
+        console.log('  ✅ Global membership updated');
+    } else {
         await prisma.tenantMember.create({
             data: {
-                user: { connect: { id: user.id } },
-                role: { connect: { code: 'SUPER_ADMIN' } },
+                userId: user.id,
+                roleId: superAdminRole.id,
+                tenantId: null,
                 isActive: true,
             },
         });
-        console.log(`  ✅ SUPER_ADMIN user created: ${email} / ${password}`);
-    } else {
-        const pwHash = await hashPassword(password);
-        await prisma.user.update({
-            where: { id: existing.id },
-            data: {
-                passwordHash: pwHash,
-                isActive: true,
-            },
-        });
-        const existingGlobalMembership = await prisma.tenantMember.findFirst({
-            where: { userId: existing.id, tenantId: null },
-            select: { id: true },
-        });
-
-        if (existingGlobalMembership) {
-            await prisma.tenantMember.update({
-                where: { id: existingGlobalMembership.id },
-                data: {
-                    role: { connect: { code: 'SUPER_ADMIN' } },
-                    isActive: true,
-                },
-            });
-        } else {
-            await prisma.tenantMember.create({
-                data: {
-                    user: { connect: { id: existing.id } },
-                    role: { connect: { code: 'SUPER_ADMIN' } },
-                    isActive: true,
-                },
-            });
-        }
-        console.log(`  ✅ SUPER_ADMIN user already exists — password reset to default: ${email} / ${password}`);
+        console.log('  ✅ Global membership created');
     }
 
     console.log('\n── Done. You can now login as SUPER_ADMIN at /api/auth/login ──');
@@ -114,5 +121,8 @@ async function main() {
 }
 
 main()
-    .catch(e => { console.error(e); process.exit(1); })
+    .catch(e => { 
+        console.error('❌ Error during seeding:', e); 
+        process.exit(1); 
+    })
     .finally(() => prisma.$disconnect());
