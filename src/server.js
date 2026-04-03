@@ -16,6 +16,8 @@ require('./utils/scheduler'); // Initialize cron jobs
 
 const app = express();
 
+// Railway / reverse proxies: required for correct client IP and express-rate-limit (X-Forwarded-For)
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 1);
 
 // ─── Security Middleware ───────────────────────────────────────────────────
 app.use(helmet({

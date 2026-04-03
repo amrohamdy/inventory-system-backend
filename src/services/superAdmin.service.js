@@ -637,7 +637,7 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
     await logAdminAction(adminUserId, 'TENANT_CREATED', created.organization.id, {
         kind: 'FULL_ORG_SETUP',
         organization: { name: orgName, slug: orgSlug },
-        hotel: { name: hotelName, slug: hotelSlug, subStatus: hotelSubStatus },
+        hotel: { name: hotelName, slug: hotelSlug, subStatus: created.hotel.subStatus },
         maxBranches,
     }, ipAddress);
 
