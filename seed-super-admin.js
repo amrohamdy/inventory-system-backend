@@ -1,30 +1,54 @@
 /**
- * SaaS Phase 1 — Seed Platform Tenant + SUPER_ADMIN user
+ * System initializer — global Role rows + platform tenant + SUPER_ADMIN user.
  *
- * Creates a SUPER_ADMIN user (global membership with null tenant).
- * Updated: Removed 'description' field from Role to match your schema.
+ * Ensures `connectRole(...)` and tenant/org flows find every role code the API uses.
+ * Roles are tenant-agnostic (`tenantId: null`).
+ *
  * Usage: node seed-super-admin.js
  */
 const { PrismaClient } = require('@prisma/client');
 const { hashPassword } = require('./src/utils/password');
+
 const prisma = new PrismaClient();
 
+/** Must stay in sync with src/utils/validators.js + middleware/authorize.js usage. */
+const SYSTEM_ROLES = [
+    { code: 'SUPER_ADMIN', name: 'Super Administrator' },
+    { code: 'ORG_MANAGER', name: 'Organization Manager' },
+    { code: 'ADMIN', name: 'Administrator' },
+    { code: 'STOREKEEPER', name: 'Storekeeper' },
+    { code: 'DEPT_MANAGER', name: 'Department Manager' },
+    { code: 'COST_CONTROL', name: 'Cost Control' },
+    { code: 'FINANCE_MANAGER', name: 'Finance Manager' },
+    { code: 'AUDITOR', name: 'Auditor' },
+    { code: 'SECURITY', name: 'Security' },
+];
+
+async function seedSystemRoles() {
+    console.log('── Seeding system roles (global) ──');
+    for (const { code, name } of SYSTEM_ROLES) {
+        await prisma.role.upsert({
+            where: { code },
+            update: { name, isActive: true },
+            create: { code, name, tenantId: null, isActive: true },
+        });
+        console.log(`  ✅ Role ${code}`);
+    }
+}
+
 async function main() {
-    console.log('── Seeding Platform Tenant + SUPER_ADMIN ──');
+    console.log('── System initializer (roles + platform + SUPER_ADMIN) ──\n');
 
-    // 1. Create or find the SUPER_ADMIN Role
-    // Note: Removed 'description' as it's not in your schema
-    const superAdminRole = await prisma.role.upsert({
+    await seedSystemRoles();
+
+    const superAdminRole = await prisma.role.findUnique({
         where: { code: 'SUPER_ADMIN' },
-        update: {},
-        create: {
-            code: 'SUPER_ADMIN',
-            name: 'Super Administrator'
-        },
+        select: { id: true },
     });
-    console.log(`  ✅ Role SUPER_ADMIN verified: ${superAdminRole.id}`);
+    if (!superAdminRole) {
+        throw new Error('SUPER_ADMIN role missing after seedSystemRoles()');
+    }
 
-    // 2. Create or find platform tenant
     let platform = await prisma.tenant.findUnique({ where: { slug: 'platform' } });
     if (!platform) {
         platform = await prisma.tenant.create({
@@ -35,12 +59,11 @@ async function main() {
                 isActive: true,
             },
         });
-        console.log(`  ✅ Platform tenant created: ${platform.id}`);
+        console.log(`\n  ✅ Platform tenant created: ${platform.id}`);
     } else {
-        console.log(`  ℹ  Platform tenant already exists: ${platform.id}`);
+        console.log(`\n  ℹ  Platform tenant already exists: ${platform.id}`);
     }
 
-    // 3. Create subscription for platform
     await prisma.subscription.upsert({
         where: { tenantId: platform.id },
         create: {
@@ -56,14 +79,12 @@ async function main() {
     });
     console.log('  ✅ Platform subscription (ENTERPRISE) set');
 
-    // 4. Create usage tracker
     await prisma.tenantUsage.upsert({
         where: { tenantId: platform.id },
         create: { tenantId: platform.id, totalUsers: 1 },
         update: {},
     });
 
-    // 5. Create/Update SUPER_ADMIN user
     const email = 'superadmin@ose.cloud';
     const password = 'superadmin@2026';
     const pwHash = await hashPassword(password);
@@ -82,14 +103,10 @@ async function main() {
             isActive: true,
         },
     });
-    console.log(`  ✅ User SUPER_ADMIN verified: ${user.email}`);
+    console.log(`  ✅ User SUPER_ADMIN: ${user.email}`);
 
-    // 6. Create/Update Global Membership (TenantMember)
     const existingMembership = await prisma.tenantMember.findFirst({
-        where: { 
-            userId: user.id, 
-            tenantId: null 
-        }
+        where: { userId: user.id, tenantId: null },
     });
 
     if (existingMembership) {
@@ -113,14 +130,15 @@ async function main() {
         console.log('  ✅ Global membership created');
     }
 
-    console.log('\n── Done. You can now login as SUPER_ADMIN at /api/auth/login ──');
+    console.log('\n── Done. Login as SUPER_ADMIN at /api/auth/login ──');
     console.log(`   email: ${email}`);
     console.log(`   password: ${password}`);
+    console.log('   tenantSlug: (optional for super admin)');
 }
 
 main()
-    .catch(e => { 
-        console.error('❌ Error during seeding:', e); 
-        process.exit(1); 
+    .catch((e) => {
+        console.error('❌ Error during seeding:', e);
+        process.exit(1);
     })
     .finally(() => prisma.$disconnect());
