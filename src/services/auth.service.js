@@ -85,7 +85,13 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
     return mergedMemberships;
 };
 
-const buildSuspensionError = (code) => Object.assign(new Error(code), { statusCode: 403, code });
+const buildSuspensionError = (code) => {
+    const messages = {
+        ACCOUNT_SUSPENDED: 'This account has been suspended.',
+        ORGANIZATION_SUSPENDED: 'This organization has been suspended.',
+    };
+    return Object.assign(new Error(messages[code] || code), { statusCode: 403, code });
+};
 const logAuthCheck = ({ email, tenant }) => {
     if (!tenant) return;
     const parentAdminStatus = tenant.parent?.adminStatus || 'N/A';
@@ -186,12 +192,18 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
     });
 
     if (!user || !user.isActive) {
-        throw Object.assign(new Error('Invalid credentials.'), { statusCode: 401 });
+        throw Object.assign(new Error('Invalid email or password.'), {
+            statusCode: 401,
+            code: 'INVALID_CREDENTIALS',
+        });
     }
 
     const passwordValid = await comparePassword(password, user.passwordHash);
     if (!passwordValid) {
-        throw Object.assign(new Error('Invalid credentials.'), { statusCode: 401 });
+        throw Object.assign(new Error('Invalid email or password.'), {
+            statusCode: 401,
+            code: 'INVALID_CREDENTIALS',
+        });
     }
 
     const memberships = await prisma.tenantMember.findMany({
@@ -302,7 +314,10 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         if (memberships.length > 0) {
             throw buildAccountInactiveError();
         }
-        throw Object.assign(new Error('No active tenant membership found for this user.'), { statusCode: 403 });
+        throw Object.assign(new Error('No active tenant membership found for this user.'), {
+            statusCode: 403,
+            code: 'NO_ACTIVE_MEMBERSHIP',
+        });
     }
 
     if (normalizedTenantSlug) {
@@ -345,7 +360,10 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
             if (inactiveDirectMembership) {
                 throw buildAccountInactiveError();
             }
-            throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
+            throw Object.assign(new Error('You are not authorized for this tenant.'), {
+                statusCode: 403,
+                code: 'TENANT_ACCESS_DENIED',
+            });
         }
         if (!selectedMembership.isActive) {
             throw buildAccountInactiveError();
@@ -395,7 +413,10 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         };
     }
 
-    throw Object.assign(new Error('No active tenant membership found for this user.'), { statusCode: 403 });
+    throw Object.assign(new Error('No active tenant membership found for this user.'), {
+        statusCode: 403,
+        code: 'NO_ACTIVE_MEMBERSHIP',
+    });
 };
 
 /**
@@ -406,7 +427,10 @@ const refresh = async (refreshToken) => {
     try {
         decoded = verifyRefreshToken(refreshToken);
     } catch {
-        throw Object.assign(new Error('Invalid or expired refresh token.'), { statusCode: 401 });
+        throw Object.assign(new Error('Invalid or expired refresh token.'), {
+            statusCode: 401,
+            code: 'INVALID_REFRESH_TOKEN',
+        });
     }
 
     // Ensure token exists in DB and is not revoked
@@ -474,7 +498,10 @@ const refresh = async (refreshToken) => {
     }
 
     if (!membership) {
-        throw Object.assign(new Error('Refresh token context is no longer valid.'), { statusCode: 401 });
+        throw Object.assign(new Error('Refresh token context is no longer valid.'), {
+            statusCode: 401,
+            code: 'REFRESH_CONTEXT_INVALID',
+        });
     }
 
     // Block refresh if tenant is suspended or parent org is suspended.
@@ -542,7 +569,7 @@ const getMe = async (userId, tenantId) => {
         },
     });
     if (!user) {
-        throw Object.assign(new Error('User not found.'), { statusCode: 404 });
+        throw Object.assign(new Error('User not found.'), { statusCode: 404, code: 'USER_NOT_FOUND' });
     }
 
     const membership = await prisma.tenantMember.findFirst({
@@ -556,7 +583,10 @@ const getMe = async (userId, tenantId) => {
         },
     });
     if (!membership) {
-        throw Object.assign(new Error('Membership not found for this context.'), { statusCode: 404 });
+        throw Object.assign(new Error('Membership not found for this context.'), {
+            statusCode: 404,
+            code: 'MEMBERSHIP_NOT_FOUND',
+        });
     }
 
     const rc = membershipRoleCode(membership);
@@ -579,7 +609,10 @@ const getMe = async (userId, tenantId) => {
 const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     const normalizedTenantSlug = typeof tenantSlug === 'string' ? tenantSlug.trim() : '';
     if (!normalizedTenantSlug) {
-        throw Object.assign(new Error('tenantSlug is required.'), { statusCode: 400 });
+        throw Object.assign(new Error('tenantSlug is required.'), {
+            statusCode: 400,
+            code: 'TENANT_SLUG_REQUIRED',
+        });
     }
 
     const user = await prisma.user.findUnique({
@@ -594,7 +627,10 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
         },
     });
     if (!user || !user.isActive) {
-        throw Object.assign(new Error('User not found or inactive.'), { statusCode: 401 });
+        throw Object.assign(new Error('User not found or inactive.'), {
+            statusCode: 401,
+            code: 'USER_INACTIVE',
+        });
     }
 
     const targetTenant = await prisma.tenant.findFirst({
@@ -606,7 +642,10 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     });
 
     if (!targetTenant) {
-        throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
+        throw Object.assign(new Error('You are not authorized for this tenant.'), {
+            statusCode: 403,
+            code: 'TENANT_ACCESS_DENIED',
+        });
     }
 
     // Block switching to suspended tenant/org hierarchy with distinct codes.
@@ -634,7 +673,10 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
             (targetTenant.parentId && rootOrgIds.includes(targetTenant.parentId));
 
         if (!allowed) {
-            throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
+            throw Object.assign(new Error('You are not authorized for this tenant.'), {
+                statusCode: 403,
+                code: 'TENANT_ACCESS_DENIED',
+            });
         }
     }
 
@@ -677,7 +719,10 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     }
 
     if (!membership) {
-        throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
+        throw Object.assign(new Error('You are not authorized for this tenant.'), {
+            statusCode: 403,
+            code: 'TENANT_ACCESS_DENIED',
+        });
     }
 
     const result = await issueSessionForMembership({
