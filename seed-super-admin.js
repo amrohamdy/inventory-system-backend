@@ -8,6 +8,7 @@
  */
 const { PrismaClient } = require('@prisma/client');
 const { hashPassword } = require('./src/utils/password');
+const { PERMISSIONS, getPermissionsForRole } = require('./src/middleware/authorize');
 
 const prisma = new PrismaClient();
 
@@ -36,10 +37,71 @@ async function seedSystemRoles() {
     }
 }
 
+/**
+ * Canonical permission rows from the static matrix (idempotent).
+ */
+async function seedPermissions() {
+    console.log('\n── Seeding permissions (from PERMISSIONS matrix) ──');
+    const keys = Object.keys(PERMISSIONS);
+    for (const code of keys) {
+        await prisma.permission.upsert({
+            where: { code },
+            create: { code, name: code },
+            update: { name: code },
+        });
+    }
+    console.log(`  ✅ ${keys.length} permission(s) upserted`);
+}
+
+/**
+ * Role ↔ Permission links aligned with getPermissionsForRole() (idempotent).
+ */
+async function seedRolePermissions() {
+    console.log('\n── Seeding role_permissions ──');
+    let linkCount = 0;
+    for (const { code: roleCode } of SYSTEM_ROLES) {
+        const role = await prisma.role.findUnique({
+            where: { code: roleCode },
+            select: { id: true },
+        });
+        if (!role) {
+            throw new Error(`Role not found: ${roleCode}`);
+        }
+        const permissionCodes = getPermissionsForRole(roleCode);
+        for (const permCode of permissionCodes) {
+            const permission = await prisma.permission.findUnique({
+                where: { code: permCode },
+                select: { id: true },
+            });
+            if (!permission) {
+                throw new Error(`Permission not found: ${permCode} (run seedPermissions first)`);
+            }
+            await prisma.rolePermission.upsert({
+                where: {
+                    roleId_permissionId: {
+                        roleId: role.id,
+                        permissionId: permission.id,
+                    },
+                },
+                create: {
+                    roleId: role.id,
+                    permissionId: permission.id,
+                },
+                update: {},
+            });
+            linkCount += 1;
+        }
+        console.log(`  ✅ ${roleCode}: ${permissionCodes.length} permission(s)`);
+    }
+    console.log(`  ✅ Total role_permission link(s): ${linkCount}`);
+}
+
 async function main() {
     console.log('── System initializer (roles + platform + SUPER_ADMIN) ──\n');
 
     await seedSystemRoles();
+    await seedPermissions();
+    await seedRolePermissions();
 
     const superAdminRole = await prisma.role.findUnique({
         where: { code: 'SUPER_ADMIN' },
