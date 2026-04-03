@@ -24,6 +24,19 @@ const LICENSE_DATE_RANGE_ERROR = 'License end date cannot be before the start da
 
 const badRequestError = (message) => Object.assign(new Error(message), { statusCode: 400 });
 
+/** Slug conflicts align with DB @@unique on Tenant.slug only (not display name). */
+const duplicateTenantSlugError = ({ field, conflictingSlug, existingTenantId, message }) =>
+    Object.assign(
+        new Error(message || `This tenant slug is already in use: ${conflictingSlug}.`),
+        {
+            statusCode: 409,
+            code: 'DUPLICATE_TENANT_SLUG',
+            field,
+            conflictingSlug,
+            existingTenantId,
+        }
+    );
+
 const parseValidLicenseDate = (value) => {
     const parsedDate = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(parsedDate.getTime())) {
@@ -464,20 +477,35 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
         throw Object.assign(new Error('hotel.subStatus must be TRIAL or ACTIVE.'), { statusCode: 400 });
     }
 
-    // Pre-check uniqueness early for clearer errors.
-    const existing = await prisma.tenant.findFirst({
-        where: { OR: [{ slug: orgSlug }, { name: orgName }, { slug: hotelSlug }, { name: hotelName }] },
-        select: { id: true, slug: true, name: true },
-    });
-    if (existing) {
-        throw Object.assign(new Error('Tenant name or slug already exists.'), { statusCode: 409 });
+    // Pre-check slug uniqueness (matches DB); names are not globally unique in schema.
+    const [slugOrg, slugHotel] = await Promise.all([
+        prisma.tenant.findUnique({ where: { slug: orgSlug }, select: { id: true, slug: true } }),
+        prisma.tenant.findUnique({ where: { slug: hotelSlug }, select: { id: true, slug: true } }),
+    ]);
+    if (slugOrg) {
+        throw duplicateTenantSlugError({
+            field: 'organization.slug',
+            conflictingSlug: orgSlug,
+            existingTenantId: slugOrg.id,
+            message: `Organization slug "${orgSlug}" is already in use.`,
+        });
+    }
+    if (slugHotel) {
+        throw duplicateTenantSlugError({
+            field: 'hotel.slug',
+            conflictingSlug: hotelSlug,
+            existingTenantId: slugHotel.id,
+            message: `Hotel slug "${hotelSlug}" is already in use.`,
+        });
     }
 
     const hotelAdminPassword = hotelAdminPayload.password ?? adminPassword;
     const hotelAdminFirstName = hotelAdminPayload.firstName ?? adminFirstName;
     const hotelAdminLastName = hotelAdminPayload.lastName ?? adminLastName ?? hotelName;
 
-    const created = await prisma.$transaction(async (tx) => {
+    let created;
+    try {
+        created = await prisma.$transaction(async (tx) => {
         const findOrCreateUser = async ({
             email: rawEmail,
             password,
@@ -633,6 +661,25 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
             hotelAdminUser: orgManagerUser,
         };
     });
+    } catch (e) {
+        if (e.code === 'P2002') {
+            const meta = e.meta || {};
+            const target = meta.target;
+            const slugTarget = Array.isArray(target)
+                ? target.some((t) => String(t).toLowerCase().includes('slug'))
+                : String(target || '').toLowerCase().includes('slug');
+            if (slugTarget || meta.modelName === 'Tenant') {
+                throw duplicateTenantSlugError({
+                    field: 'organization.slug',
+                    conflictingSlug: undefined,
+                    existingTenantId: undefined,
+                    message:
+                        'A tenant slug is already in use (possibly a concurrent request). Try different organization or hotel slugs.',
+                });
+            }
+        }
+        throw e;
+    }
 
     await logAdminAction(adminUserId, 'TENANT_CREATED', created.organization.id, {
         kind: 'FULL_ORG_SETUP',

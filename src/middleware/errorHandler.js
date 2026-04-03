@@ -16,11 +16,17 @@ const errorHandler = (err, req, res, next) => {
 
     // Prisma unique constraint violation
     if (err.code === 'P2002') {
-        return res.status(409).json({
+        const target = err.meta?.target;
+        const body = {
             success: false,
             message: 'A record with this value already exists.',
-            field: err.meta?.target,
-        });
+            field: target,
+        };
+        if (Array.isArray(target) && target.includes('slug')) {
+            body.code = 'DUPLICATE_TENANT_SLUG';
+            body.error = 'DUPLICATE_TENANT_SLUG';
+        }
+        return res.status(409).json(body);
     }
 
     // Prisma record not found
@@ -70,6 +76,9 @@ const errorHandler = (err, req, res, next) => {
         responseBody.code = err.code;
         responseBody.error = err.code;
     }
+    if (err.field !== undefined) responseBody.field = err.field;
+    if (err.conflictingSlug !== undefined) responseBody.conflictingSlug = err.conflictingSlug;
+    if (err.existingTenantId !== undefined) responseBody.existingTenantId = err.existingTenantId;
 
     res.status(statusCode).json(responseBody);
 };
