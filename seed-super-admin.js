@@ -2,7 +2,7 @@
  * SaaS Phase 1 — Seed Platform Tenant + SUPER_ADMIN user
  *
  * Creates a SUPER_ADMIN user (global membership with null tenant).
- * Updated: Uses upsert for Roles and TenantMembers to prevent P2025/P3005 errors.
+ * Updated: Removed 'description' field from Role to match your schema.
  * Usage: node seed-super-admin.js
  */
 const { PrismaClient } = require('@prisma/client');
@@ -12,14 +12,14 @@ const prisma = new PrismaClient();
 async function main() {
     console.log('── Seeding Platform Tenant + SUPER_ADMIN ──');
 
-    // 1. Create or find the SUPER_ADMIN Role (Crucial for Railway)
+    // 1. Create or find the SUPER_ADMIN Role
+    // Note: Removed 'description' as it's not in your schema
     const superAdminRole = await prisma.role.upsert({
         where: { code: 'SUPER_ADMIN' },
         update: {},
         create: {
             code: 'SUPER_ADMIN',
-            name: 'Super Administrator',
-            description: 'Full system access with global scope',
+            name: 'Super Administrator'
         },
     });
     console.log(`  ✅ Role SUPER_ADMIN verified: ${superAdminRole.id}`);
@@ -40,7 +40,7 @@ async function main() {
         console.log(`  ℹ  Platform tenant already exists: ${platform.id}`);
     }
 
-    // 3. Create subscription for platform (ENTERPRISE, no limits)
+    // 3. Create subscription for platform
     await prisma.subscription.upsert({
         where: { tenantId: platform.id },
         create: {
@@ -85,7 +85,6 @@ async function main() {
     console.log(`  ✅ User SUPER_ADMIN verified: ${user.email}`);
 
     // 6. Create/Update Global Membership (TenantMember)
-    // We look for a membership where tenantId is null and role is SUPER_ADMIN
     const existingMembership = await prisma.tenantMember.findFirst({
         where: { 
             userId: user.id, 
@@ -117,7 +116,6 @@ async function main() {
     console.log('\n── Done. You can now login as SUPER_ADMIN at /api/auth/login ──');
     console.log(`   email: ${email}`);
     console.log(`   password: ${password}`);
-    console.log('   tenantSlug: (not required for super admin)');
 }
 
 main()
