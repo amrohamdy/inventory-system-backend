@@ -183,9 +183,8 @@ async function main() {
     } else {
         await prisma.tenantMember.create({
             data: {
-                userId: user.id,
-                roleId: superAdminRole.id,
-                tenantId: null,
+                user: { connect: { id: user.id } },
+                role: { connect: { id: superAdminRole.id } },
                 isActive: true,
             },
         });

@@ -222,8 +222,8 @@ const createTenant = async (data) => {
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: tenant.id, userId: adminUser.id } },
                 create: {
-                    tenantId: tenant.id,
-                    userId: adminUser.id,
+                    tenant: { connect: { id: tenant.id } },
+                    user: { connect: { id: adminUser.id } },
                     role: connectRole('ORG_MANAGER'),
                     isActive: true,
                 },
@@ -239,8 +239,8 @@ const createTenant = async (data) => {
                 await tx.tenantMember.upsert({
                     where: { tenantId_userId: { tenantId: tenant.id, userId: orgManagerUserId } },
                     create: {
-                        tenantId: tenant.id,
-                        userId: orgManagerUserId,
+                        tenant: { connect: { id: tenant.id } },
+                        user: { connect: { id: orgManagerUserId } },
                         role: connectRole('ORG_MANAGER'),
                         isActive: true,
                     },
@@ -258,8 +258,8 @@ const createTenant = async (data) => {
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: tenant.id, userId: adminUser.id } },
                 create: {
-                    tenantId: tenant.id,
-                    userId: adminUser.id,
+                    tenant: { connect: { id: tenant.id } },
+                    user: { connect: { id: adminUser.id } },
                     role: connectRole(branchAdminRole),
                     isActive: true,
                 },

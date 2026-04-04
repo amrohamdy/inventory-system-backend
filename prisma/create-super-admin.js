@@ -21,7 +21,11 @@ async function main() {
     if (existing) {
         await prisma.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: null, userId: existing.id } },
-            create: { tenantId: null, userId: existing.id, role: { connect: { code: 'SUPER_ADMIN' } }, isActive: true },
+            create: {
+                user: { connect: { id: existing.id } },
+                role: { connect: { code: 'SUPER_ADMIN' } },
+                isActive: true,
+            },
             update: { role: { connect: { code: 'SUPER_ADMIN' } }, isActive: true },
         });
         console.log(`\n✅  SUPER_ADMIN already exists: ${email}`);
@@ -42,8 +46,7 @@ async function main() {
     });
     await prisma.tenantMember.create({
         data: {
-            tenantId: null,
-            userId: user.id,
+            user: { connect: { id: user.id } },
             role: { connect: { code: 'SUPER_ADMIN' } },
             isActive: true,
         },

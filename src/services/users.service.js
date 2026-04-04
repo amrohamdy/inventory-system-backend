@@ -228,8 +228,8 @@ const createUser = async (tenantId, data, requestingUserId) => {
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId, userId: targetUser.id } },
             create: {
-                tenantId,
-                userId: targetUser.id,
+                tenant: { connect: { id: tenantId } },
+                user: { connect: { id: targetUser.id } },
                 role: connectRole(data.role),
                 isActive: true,
                 departmentId: departmentRecord?.id || null,
