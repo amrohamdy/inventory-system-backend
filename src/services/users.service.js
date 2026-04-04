@@ -225,6 +225,13 @@ const createUser = async (tenantId, data, requestingUserId) => {
             excludeUserId: targetUser.id,
         });
 
+        const departmentOnCreate = departmentRecord?.id
+            ? { department: { connect: { id: departmentRecord.id } } }
+            : {};
+        const departmentOnUpdate = departmentRecord?.id
+            ? { department: { connect: { id: departmentRecord.id } } }
+            : { department: { disconnect: true } };
+
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId, userId: targetUser.id } },
             create: {
@@ -232,12 +239,12 @@ const createUser = async (tenantId, data, requestingUserId) => {
                 user: { connect: { id: targetUser.id } },
                 role: connectRole(data.role),
                 isActive: true,
-                departmentId: departmentRecord?.id || null,
+                ...departmentOnCreate,
             },
             update: {
                 role: connectRole(data.role),
                 isActive: true,
-                departmentId: departmentRecord?.id || null,
+                ...departmentOnUpdate,
             },
         });
 
