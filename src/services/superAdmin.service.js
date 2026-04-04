@@ -211,21 +211,227 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
 };
 
 // ─── S1.2 — Get Tenant Detail ─────────────────────────────────────────────────
-const getTenant = async (tenantId) => {
-    const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
+const branchSelectForDetail = {
+    orderBy: { createdAt: 'desc' },
+    select: {
+        id: true,
+        name: true,
+        slug: true,
+        email: true,
+        parentId: true,
+        isActive: true,
+        planType: true,
+        subStatus: true,
+        adminStatus: true,
+        licenseStartDate: true,
+        licenseEndDate: true,
+        maxUsers: true,
+        hasBranches: true,
+        maxBranches: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { locations: true } },
+    },
+};
+
+/** Active ADMIN / ORG_MANAGER memberships for primary admin + orgManagers list. */
+const fetchActiveTenantAdminMemberships = (tenantId) =>
+    prisma.tenantMember.findMany({
+        where: {
+            tenantId,
+            isActive: true,
+            user: { isActive: true },
+            role: { code: { in: ['ADMIN', 'ORG_MANAGER'] } },
+        },
         include: {
-            _count: {
-                select: { locations: true, movementDocuments: true, items: true },
+            user: { select: { id: true, email: true, firstName: true, lastName: true, isActive: true } },
+            role: { select: { code: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+    });
+
+const pickPrimaryAdmin = (memberships) => {
+    const admins = memberships.filter((m) => membershipRoleCode(m) === 'ADMIN');
+    const orgManagers = memberships.filter((m) => membershipRoleCode(m) === 'ORG_MANAGER');
+    const m = admins[0] || orgManagers[0];
+    if (!m) return null;
+    return {
+        id: m.user.id,
+        email: m.user.email,
+        firstName: m.user.firstName,
+        lastName: m.user.lastName,
+        isActive: m.isActive && m.user.isActive,
+    };
+};
+
+const getTenant = async (tenantId) => {
+    const [tenant, adminMemberships] = await Promise.all([
+        prisma.tenant.findUnique({
+            where: { id: tenantId },
+            include: {
+                _count: {
+                    select: { locations: true, movementDocuments: true, items: true },
+                },
+                children: branchSelectForDetail,
             },
+        }),
+        fetchActiveTenantAdminMemberships(tenantId),
+    ]);
+    if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
+
+    const { children: branchesRaw, ...tenantRest } = tenant;
+    const branchIds = (branchesRaw || []).map((b) => b.id);
+    const activeSeatMap = await activeSeatCountsByTenantIds(prisma, [tenant.id, ...branchIds]);
+
+    const toBranchRow = (t) => ({
+        ...t,
+        email: t.email || null,
+        parentName: null,
+        subStatus: effectiveSubStatusForTenantList(t),
+        usersCount: activeSeatMap.get(t.id) ?? 0,
+    });
+
+    const primaryAdmin = pickPrimaryAdmin(adminMemberships);
+    const orgManagers = adminMemberships
+        .filter((m) => membershipRoleCode(m) === 'ORG_MANAGER')
+        .map((row) => ({
+            userId: row.userId,
+            email: row.user.email,
+            firstName: row.user.firstName,
+            lastName: row.user.lastName,
+        }));
+
+    return {
+        ...tenantRest,
+        subStatus: effectiveSubStatusForTenantList(tenant),
+        usersCount: activeSeatMap.get(tenant.id) ?? 0,
+        branches: (branchesRaw || []).map(toBranchRow),
+        primaryAdmin,
+        orgManagers,
+    };
+};
+
+// ─── Tenant administrators (ADMIN + ORG_MANAGER) ─────────────────────────────
+const getTenantAdmins = async (tenantId) => {
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true } });
+    if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
+
+    const rows = await prisma.tenantMember.findMany({
+        where: {
+            tenantId,
+            role: { code: { in: ['ADMIN', 'ORG_MANAGER'] } },
+        },
+        include: {
+            user: { select: { id: true, email: true, firstName: true, lastName: true, isActive: true } },
+            role: { select: { code: true } },
         },
     });
+
+    const rank = (code) => (code === 'ADMIN' ? 0 : 1);
+    rows.sort((a, b) => {
+        const ca = membershipRoleCode(a);
+        const cb = membershipRoleCode(b);
+        if (rank(ca) !== rank(cb)) return rank(ca) - rank(cb);
+        return new Date(a.createdAt) - new Date(b.createdAt);
+    });
+
+    const admins = rows.map((m) => ({
+        id: m.user.id,
+        email: m.user.email,
+        firstName: m.user.firstName,
+        lastName: m.user.lastName,
+        isActive: m.isActive && m.user.isActive,
+        role: membershipRoleCode(m),
+    }));
+
+    return { admins };
+};
+
+const updateTenantAdmin = async (tenantId, userId, data, adminUserId, ipAddress) => {
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true } });
     if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
-    const usersCount = await countActiveSeats(prisma, tenantId);
+
+    const membership = await prisma.tenantMember.findUnique({
+        where: { tenantId_userId: { tenantId, userId } },
+        include: { user: true, role: true },
+    });
+    if (!membership) {
+        throw Object.assign(new Error('User is not a member of this tenant.'), { statusCode: 404 });
+    }
+
+    const rc = membershipRoleCode(membership);
+    if (rc !== 'ADMIN' && rc !== 'ORG_MANAGER') {
+        throw Object.assign(new Error('Only tenant administrators can be updated here.'), { statusCode: 403 });
+    }
+
+    const userData = {};
+    if (data.firstName !== undefined) userData.firstName = String(data.firstName).trim();
+    if (data.lastName !== undefined) userData.lastName = String(data.lastName).trim();
+    if (data.email !== undefined) {
+        const normalized = String(data.email).toLowerCase().trim();
+        const conflict = await prisma.user.findFirst({
+            where: { email: normalized, NOT: { id: userId } },
+            select: { id: true },
+        });
+        if (conflict) {
+            throw Object.assign(new Error('This email is already in use.'), { statusCode: 409 });
+        }
+        userData.email = normalized;
+    }
+    if (data.password) {
+        userData.passwordHash = await hashPassword(data.password);
+    }
+
+    const bumpPermission =
+        data.email !== undefined || data.password !== undefined ? { permissionVersion: { increment: 1 } } : {};
+
+    const membershipData = {};
+    if (data.isActive !== undefined) membershipData.isActive = Boolean(data.isActive);
+
+    if (Object.keys(userData).length === 0 && Object.keys(membershipData).length === 0) {
+        throw Object.assign(new Error('No valid fields to update.'), { statusCode: 400 });
+    }
+
+    await prisma.$transaction(async (tx) => {
+        if (Object.keys(userData).length > 0 || Object.keys(bumpPermission).length > 0) {
+            await tx.user.update({
+                where: { id: userId },
+                data: { ...userData, ...bumpPermission },
+            });
+        }
+        if (Object.keys(membershipData).length > 0) {
+            await tx.tenantMember.update({
+                where: { tenantId_userId: { tenantId, userId } },
+                data: membershipData,
+            });
+        }
+    });
+
+    invalidateTenantCache(tenantId);
+
+    await logAdminAction(
+        adminUserId,
+        'TENANT_ADMIN_UPDATED',
+        tenantId,
+        { targetUserId: userId, updatedFields: [...Object.keys(userData), ...Object.keys(membershipData)] },
+        ipAddress
+    );
+
+    const updated = await prisma.tenantMember.findUnique({
+        where: { tenantId_userId: { tenantId, userId } },
+        include: {
+            user: { select: { id: true, email: true, firstName: true, lastName: true, isActive: true, updatedAt: true } },
+            role: { select: { code: true } },
+        },
+    });
+
     return {
-        ...tenant,
-        subStatus: effectiveSubStatusForTenantList(tenant),
-        usersCount,
+        id: updated.user.id,
+        email: updated.user.email,
+        firstName: updated.user.firstName,
+        lastName: updated.user.lastName,
+        isActive: updated.isActive && updated.user.isActive,
+        role: membershipRoleCode(updated),
     };
 };
 
@@ -1000,6 +1206,8 @@ module.exports = {
     PLAN_DEFAULTS,
     listTenants,
     getTenant,
+    getTenantAdmins,
+    updateTenantAdmin,
     createTenant,
     createFullOrganization,
     updateTenant,

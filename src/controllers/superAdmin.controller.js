@@ -18,6 +18,28 @@ const getTenant = async (req, res, next) => {
     } catch (e) { next(e); }
 };
 
+// ─── List tenant administrators (ADMIN + ORG_MANAGER) ─────────────────────────
+const getTenantAdmins = async (req, res, next) => {
+    try {
+        const result = await superAdminService.getTenantAdmins(req.params.id);
+        res.json({ success: true, data: result });
+    } catch (e) { next(e); }
+};
+
+// ─── Update a tenant administrator profile ─────────────────────────────────────
+const updateTenantAdmin = async (req, res, next) => {
+    try {
+        const updated = await superAdminService.updateTenantAdmin(
+            req.params.id,
+            req.params.userId,
+            req.body,
+            req.user.id,
+            req.ip
+        );
+        res.json({ success: true, data: updated });
+    } catch (e) { next(e); }
+};
+
 // ─── Create Tenant ────────────────────────────────────────────────────────────
 const createTenant = async (req, res, next) => {
     try {
@@ -93,6 +115,8 @@ const getAdminLogs = async (req, res, next) => {
 module.exports = {
     listTenants,
     getTenant,
+    getTenantAdmins,
+    updateTenantAdmin,
     createTenant,
     createFullOrganization,
     updateTenant,

@@ -283,6 +283,25 @@ const updateSuperAdminTenantValidator = [
     validate,
 ];
 
+/** Super Admin: PATCH-style update for a tenant’s ADMIN / ORG_MANAGER user */
+const updateSuperAdminTenantAdminValidator = [
+    param('id').isUUID().withMessage('id must be a valid UUID.'),
+    param('userId').isUUID().withMessage('userId must be a valid UUID.'),
+    body('firstName').optional().notEmpty().trim(),
+    body('lastName').optional().notEmpty().trim(),
+    body('email').optional().isEmail().withMessage('email must be valid.').normalizeEmail(),
+    body('isActive').optional().isBoolean().withMessage('isActive must be a boolean.'),
+    body('password').optional().isLength({ min: 8 }).withMessage('password must be at least 8 characters.'),
+    body().custom((value, { req }) => {
+        const keys = ['firstName', 'lastName', 'email', 'isActive', 'password'];
+        if (!keys.some((k) => Object.prototype.hasOwnProperty.call(req.body, k))) {
+            throw new Error('At least one of firstName, lastName, email, isActive, or password is required.');
+        }
+        return true;
+    }),
+    validate,
+];
+
 const updateOrganizationValidator = [
     param('id').isUUID().withMessage('id must be a valid UUID.'),
     body('organization.name').optional().notEmpty().trim(),
@@ -327,5 +346,6 @@ module.exports = {
     createFullOrganizationValidator,
     updateTenantLicenseValidator,
     updateSuperAdminTenantValidator,
+    updateSuperAdminTenantAdminValidator,
     updateOrganizationValidator,
 };

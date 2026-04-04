@@ -8,6 +8,7 @@ const {
     createSuperAdminTenantValidator,
     createFullOrganizationValidator,
     updateSuperAdminTenantValidator,
+    updateSuperAdminTenantAdminValidator,
 } = require('../utils/validators');
 
 // ─── All Super Admin routes require JWT + SUPER_ADMIN role ───────────────────
@@ -17,6 +18,12 @@ router.use(authenticate, requireSuperAdmin);
 router.get('/tenants', ctrl.listTenants);
 router.post('/tenants', createSuperAdminTenantValidator, ctrl.createTenant);
 router.post('/tenants/full-organization', createFullOrganizationValidator, ctrl.createFullOrganization);
+router.get('/tenants/:id/admin', ctrl.getTenantAdmins);
+router.put(
+    '/tenants/:id/admin/:userId',
+    updateSuperAdminTenantAdminValidator,
+    ctrl.updateTenantAdmin
+);
 router.get('/tenants/:id', ctrl.getTenant);
 router.put('/tenants/:id', updateSuperAdminTenantValidator, ctrl.updateTenant);
 router.post('/tenants/:id/activate', ctrl.activateTenant);
