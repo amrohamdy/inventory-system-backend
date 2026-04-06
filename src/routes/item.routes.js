@@ -1,4 +1,5 @@
 const express = require('express');
+const { validate: uuidValidate } = require('uuid');
 const router = express.Router();
 const itemController = require('../controllers/item.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
@@ -7,6 +8,17 @@ const { uploadImage, uploadImport, uploadZip } = require('../middleware/upload.m
 
 // All item routes require authentication
 router.use(protect);
+
+// Reject non-UUID :id before Prisma (avoids P2000 on e.g. GET /items/check-requirements if routed as /:id)
+router.param('id', (req, res, next, id) => {
+    if (!uuidValidate(id)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid item id. Expected a UUID.',
+        });
+    }
+    next();
+});
 
 // ── Template Download ────────────────────────────────────────────────────────
 router.get(
