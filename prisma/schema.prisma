@@ -54,7 +54,7 @@ model Tenant {
   superAdminLogs    SuperAdminLog[]     @relation("SuperAdminLogTenant")
   suppliers         Supplier[]
   memberships       TenantMember[]
-  roles               Role[]
+  roles             Role[]
   tenantSettings    TenantSetting[]
   tenantUsage       TenantUsage?
   parent            Tenant?             @relation("TenantHierarchy", fields: [parentId], references: [id])
@@ -165,7 +165,7 @@ model TenantMember {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @default(now()) @updatedAt
   departmentId String?     @db.Uuid
-  department   Department? @relation(fields: [departmentId], references: [id])
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   role         Role        @relation(fields: [roleId], references: [id])
@@ -203,7 +203,7 @@ model Category {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   departmentId       String?            @db.Uuid
-  department         Department?        @relation("DepartmentCategories", fields: [departmentId], references: [id])
+  department         Department?        @relation("DepartmentCategories", fields: [departmentId], references: [id], onDelete: SetNull)
   tenant             Tenant             @relation(fields: [tenantId], references: [id])
   items              Item[]
   locationCategories LocationCategory[]
@@ -225,7 +225,7 @@ model Subcategory {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   items       Item[]
-  category    Category @relation(fields: [categoryId], references: [id])
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   tenant      Tenant   @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, categoryId, name])
@@ -271,7 +271,7 @@ model Location {
   defaultItems            Item[]                        @relation("ItemDefaultStore")
   locationCategories      LocationCategory[]
   locationUsers           LocationUser[]
-  department              Department?                   @relation(fields: [departmentId], references: [id])
+  department              Department?                   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   tenant                  Tenant                        @relation(fields: [tenantId], references: [id])
   movementLines           MovementLine[]
   savedReportLocationQtys SavedStockReportLocationQty[]
@@ -303,8 +303,8 @@ model LocationUser {
   id         String   @id @default(uuid()) @db.Uuid
   locationId String   @db.Uuid
   userId     String   @db.Uuid
-  location   Location @relation(fields: [locationId], references: [id])
-  user       User     @relation(fields: [userId], references: [id])
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([locationId, userId])
   @@map("location_users")
@@ -320,11 +320,13 @@ model Unit {
   description      String?
   itemUnits        ItemUnit[]
   issueLines       StoreIssueLine[]
+  movementLines    MovementLine[]
   requisitionLines StoreRequisitionLine[]
   transferLines    StoreTransferLine[]
   tenant           Tenant                 @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, name])
+  @@unique([tenantId, abbreviation])
   @@index([tenantId])
   @@map("units")
 }
@@ -338,7 +340,7 @@ model ItemUnit {
   conversionRate Decimal  @default(1) @db.Decimal(15, 6)
   isDefault      Boolean  @default(false)
   item           Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  unit           Unit     @relation(fields: [unitId], references: [id])
+  unit           Unit     @relation(fields: [unitId], references: [id], onDelete: Restrict)
 
   @@unique([itemId, unitType])
   @@index([tenantId])
@@ -346,19 +348,20 @@ model ItemUnit {
 }
 
 model Supplier {
-  id            String      @id @default(uuid()) @db.Uuid
-  tenantId      String      @db.Uuid
-  name          String
-  contactPerson String?
-  phone         String?
-  email         String?
-  address       String?
-  isActive      Boolean     @default(true)
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  grnImports    GrnImport[]
-  items         Item[]
-  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  id                String             @id @default(uuid()) @db.Uuid
+  tenantId          String             @db.Uuid
+  name              String
+  contactPerson     String?
+  phone             String?
+  email             String?
+  address           String?
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  grnImports        GrnImport[]
+  items             Item[]
+  movementDocuments MovementDocument[]
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -387,11 +390,11 @@ model Item {
   getPassLines     GetPassLine[]
   ledgerEntries    InventoryLedger[]
   itemUnits        ItemUnit[]
-  category         Category?              @relation(fields: [categoryId], references: [id])
-  defaultStore     Location?              @relation("ItemDefaultStore", fields: [defaultStoreId], references: [id])
-  department       Department?            @relation(fields: [departmentId], references: [id])
-  subcategory      Subcategory?           @relation(fields: [subcategoryId], references: [id])
-  supplier         Supplier?              @relation(fields: [supplierId], references: [id])
+  category         Category?              @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  defaultStore     Location?              @relation("ItemDefaultStore", fields: [defaultStoreId], references: [id], onDelete: SetNull)
+  department       Department?            @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  subcategory      Subcategory?           @relation(fields: [subcategoryId], references: [id], onDelete: SetNull)
+  supplier         Supplier?              @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   tenant           Tenant                 @relation(fields: [tenantId], references: [id])
   movementLines    MovementLine[]
   stockReportLines SavedStockReportLine[]
@@ -429,8 +432,8 @@ model InventoryLedger {
   createdAt        DateTime         @default(now())
   approvalRequest  ApprovalRequest? @relation(fields: [approvalId], references: [id])
   createdByUser    User             @relation("LedgerCreatedBy", fields: [createdBy], references: [id])
-  item             Item             @relation(fields: [itemId], references: [id])
-  location         Location         @relation(fields: [locationId], references: [id])
+  item             Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location         Location         @relation(fields: [locationId], references: [id], onDelete: Restrict)
   tenant           Tenant           @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId, itemId])
@@ -454,8 +457,8 @@ model StockBalance {
   maxQty       Decimal  @default(0) @db.Decimal(15, 4)
   minQty       Decimal  @default(0) @db.Decimal(15, 4)
   reorderPoint Decimal  @default(0) @db.Decimal(15, 4)
-  item         Item     @relation(fields: [itemId], references: [id])
-  location     Location @relation(fields: [locationId], references: [id])
+  item         Item     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location     Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
   tenant       Tenant   @relation(fields: [tenantId], references: [id])
 
   @@id([tenantId, itemId, locationId])
@@ -486,6 +489,7 @@ model MovementDocument {
   updatedAt        DateTime            @updatedAt
   approvalRequests ApprovalRequest?
   createdByUser    User                @relation("MovementCreatedBy", fields: [createdBy], references: [id])
+  supplier         Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   tenant           Tenant              @relation(fields: [tenantId], references: [id])
   lines            MovementLine[]
   sessions         StockCountSession[]
@@ -494,6 +498,7 @@ model MovementDocument {
   @@index([tenantId, movementType])
   @@index([tenantId, movementType, documentDate])
   @@index([tenantId, status])
+  @@index([tenantId, supplierId])
   @@map("movement_documents")
 }
 
@@ -509,10 +514,12 @@ model MovementLine {
   totalValue    Decimal          @default(0) @db.Decimal(15, 4)
   notes         String?
   document      MovementDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  item          Item             @relation(fields: [itemId], references: [id])
-  location      Location         @relation(fields: [locationId], references: [id])
+  item          Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location      Location         @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  unit          Unit?            @relation(fields: [unitId], references: [id], onDelete: SetNull)
 
   @@index([documentId])
+  @@index([unitId])
   @@map("movement_lines")
 }
 
@@ -612,7 +619,7 @@ model StockCountSession {
   lines              StockCountLine[]
   approvalRequest    ApprovalRequest?  @relation(fields: [approvalRequestId], references: [id])
   createdByUser      User              @relation(fields: [createdBy], references: [id])
-  location           Location          @relation(fields: [locationId], references: [id])
+  location           Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
   MovementDocument   MovementDocument? @relation(fields: [movementDocumentId], references: [id])
   tenant             Tenant            @relation(fields: [tenantId], references: [id])
 
@@ -634,7 +641,7 @@ model StockCountLine {
   varianceValue Decimal?          @db.Decimal(15, 4)
   notes         String?
   qtyOnLoan     Decimal           @default(0) @db.Decimal(15, 4)
-  item          Item              @relation(fields: [itemId], references: [id])
+  item          Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
   session       StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@unique([sessionId, itemId])
@@ -729,10 +736,10 @@ model GrnImport {
   updatedAt          DateTime  @updatedAt
   approvedByUser     User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
   importedByUser     User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
-  location           Location  @relation(fields: [locationId], references: [id])
+  location           Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
   rejectedByUser     User?     @relation("GrnRejectedBy", fields: [rejectedBy], references: [id])
   tenant             Tenant    @relation(fields: [tenantId], references: [id])
-  vendor             Supplier? @relation(fields: [vendorId], references: [id])
+  vendor             Supplier? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
   lines              GrnLine[]
 
   @@unique([tenantId, grnNumber])
@@ -835,7 +842,7 @@ model StoreRequisition {
   issues          StoreIssue[]
   lines           StoreRequisitionLine[]
   approvedByUser  User?                  @relation("ReqApprovedBy", fields: [approvedBy], references: [id])
-  location        Location               @relation(fields: [locationId], references: [id])
+  location        Location               @relation(fields: [locationId], references: [id], onDelete: Restrict)
   rejectedByUser  User?                  @relation("ReqRejectedBy", fields: [rejectedBy], references: [id])
   requestedByUser User                   @relation("ReqRequestedBy", fields: [requestedBy], references: [id])
   tenant          Tenant                 @relation(fields: [tenantId], references: [id])
@@ -856,9 +863,9 @@ model StoreRequisitionLine {
   totalIssuedQty Decimal          @default(0) @db.Decimal(15, 4)
   notes          String?
   issueLines     StoreIssueLine[]
-  item           Item             @relation(fields: [itemId], references: [id])
+  item           Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
   requisition    StoreRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  uom            Unit             @relation(fields: [uomId], references: [id])
+  uom            Unit             @relation(fields: [uomId], references: [id], onDelete: Restrict)
 
   @@index([requisitionId])
   @@map("store_requisition_lines")
@@ -898,9 +905,9 @@ model StoreIssueLine {
   unitCost          Decimal              @default(0) @db.Decimal(15, 4)
   totalValue        Decimal              @default(0) @db.Decimal(15, 4)
   issue             StoreIssue           @relation(fields: [issueId], references: [id], onDelete: Cascade)
-  item              Item                 @relation(fields: [itemId], references: [id])
+  item              Item                 @relation(fields: [itemId], references: [id], onDelete: Restrict)
   requisitionLine   StoreRequisitionLine @relation(fields: [requisitionLineId], references: [id])
-  uom               Unit                 @relation(fields: [uomId], references: [id])
+  uom               Unit                 @relation(fields: [uomId], references: [id], onDelete: Restrict)
 
   @@index([issueId])
   @@index([requisitionLineId])
@@ -931,11 +938,11 @@ model StoreTransfer {
   updatedAt        DateTime            @updatedAt
   lines            StoreTransferLine[]
   approvedByUser   User?               @relation("TrfApprovedBy", fields: [approvedBy], references: [id])
-  destLocation     Location            @relation("TransferDest", fields: [destLocationId], references: [id])
+  destLocation     Location            @relation("TransferDest", fields: [destLocationId], references: [id], onDelete: Restrict)
   receivedByUser   User?               @relation("TrfReceivedBy", fields: [receivedBy], references: [id])
   rejectedByUser   User?               @relation("TrfRejectedBy", fields: [rejectedBy], references: [id])
   requestedByUser  User                @relation("TrfRequestedBy", fields: [requestedBy], references: [id])
-  sourceLocation   Location            @relation("TransferSource", fields: [sourceLocationId], references: [id])
+  sourceLocation   Location            @relation("TransferSource", fields: [sourceLocationId], references: [id], onDelete: Restrict)
   tenant           Tenant              @relation(fields: [tenantId], references: [id])
   approvalRequest  ApprovalRequest?
 
@@ -957,9 +964,9 @@ model StoreTransferLine {
   unitCost     Decimal       @default(0) @db.Decimal(15, 4)
   totalValue   Decimal       @default(0) @db.Decimal(15, 4)
   notes        String?
-  item         Item          @relation(fields: [itemId], references: [id])
+  item         Item          @relation(fields: [itemId], references: [id], onDelete: Restrict)
   transfer     StoreTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
-  uom          Unit          @relation(fields: [uomId], references: [id])
+  uom          Unit          @relation(fields: [uomId], references: [id], onDelete: Restrict)
 
   @@index([transferId])
   @@map("store_transfer_lines")
@@ -1059,7 +1066,7 @@ model GetPass {
   checkoutUser       User?         @relation("GetPassCheckedOutBy", fields: [checkedOutBy], references: [id])
   closingUser        User?         @relation("GetPassClosedBy", fields: [closedBy], references: [id])
   createdByUser      User          @relation("GetPassCreatedBy", fields: [createdBy], references: [id])
-  department         Department?   @relation(fields: [departmentId], references: [id])
+  department         Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   deptApprover       User?         @relation("GetPassDeptApprover", fields: [deptApprovedBy], references: [id])
   financeApprover    User?         @relation("GetPassFinanceApprover", fields: [financeApprovedBy], references: [id])
   securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
@@ -1084,8 +1091,8 @@ model GetPassLine {
   status       GetPassLineStatus @default(PENDING)
   notes        String?
   getPass      GetPass           @relation(fields: [getPassId], references: [id], onDelete: Cascade)
-  item         Item              @relation(fields: [itemId], references: [id])
-  location     Location          @relation(fields: [locationId], references: [id])
+  item         Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location     Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
   returns      GetPassReturn[]
 
   @@index([getPassId])
@@ -1129,7 +1136,7 @@ model SavedStockReport {
   lines             SavedStockReportLine[]
   approvalRequest   ApprovalRequest?       @relation(fields: [approvalRequestId], references: [id])
   createdByUser     User                   @relation(fields: [createdBy], references: [id])
-  location          Location               @relation(fields: [locationId], references: [id])
+  location          Location               @relation(fields: [locationId], references: [id], onDelete: Restrict)
   tenant            Tenant                 @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, reportNo])
@@ -1155,7 +1162,7 @@ model SavedStockReportLine {
   grnQty       Decimal                       @default(0) @db.Decimal(15, 4)
   grnValue     Decimal                       @default(0) @db.Decimal(15, 4)
   breakages    Decimal                       @default(0) @db.Decimal(15, 4)
-  item         Item                          @relation(fields: [itemId], references: [id])
+  item         Item                          @relation(fields: [itemId], references: [id], onDelete: Restrict)
   report       SavedStockReport              @relation(fields: [reportId], references: [id], onDelete: Cascade)
   locationQtys SavedStockReportLocationQty[]
 
@@ -1171,7 +1178,7 @@ model SavedStockReportLocationQty {
   countedQty  Decimal?             @db.Decimal(15, 4)
   varianceQty Decimal              @default(0) @db.Decimal(15, 4)
   line        SavedStockReportLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  location    Location             @relation(fields: [locationId], references: [id])
+  location    Location             @relation(fields: [locationId], references: [id], onDelete: Restrict)
 
   @@index([lineId])
   @@index([locationId])
@@ -1189,7 +1196,7 @@ model GeneratedReport {
   data            Json
   generatedBy     String      @db.Uuid
   createdAt       DateTime    @default(now())
-  department      Department? @relation(fields: [departmentId], references: [id])
+  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   generatedByUser User        @relation("ReportGeneratedBy", fields: [generatedBy], references: [id])
   tenant          Tenant      @relation(fields: [tenantId], references: [id])
 
