@@ -537,82 +537,92 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
         const { name, barcode, unitPrice, departmentId, defaultStoreId, categoryId, supplierId, baseUnitId, storeQuantities } = row.data;
 
         try {
-            // Check if item exists
-            const existing = await prisma.item.findFirst({ where: { name, tenantId } });
-            let itemId;
+            const txResult = await prisma.$transaction(async (tx) => {
+                // Check if item exists
+                const existing = await tx.item.findFirst({ where: { name, tenantId } });
+                let itemId;
+                let wasInserted = false;
+                let wasUpdated = false;
+                let obDocumentNo = null;
 
-            if (existing) {
-                await prisma.item.update({
-                    where: { id: existing.id },
-                    data: {
-                        ...(barcode && { barcode }),
-                        ...(unitPrice !== undefined && { unitPrice }),
-                        ...(departmentId && { departmentId }),
-                        ...(defaultStoreId && { defaultStoreId }),
-                        ...(categoryId && { categoryId }),
-                        ...(supplierId && { supplierId }),
-                    },
-                });
-                itemId = existing.id;
-                updated++;
-            } else {
-                const finalBarcode = barcode || Math.floor(100000000000 + Math.random() * 900000000000).toString();
-                const created = await prisma.item.create({
-                    data: {
-                        name, unitPrice, categoryId,
-                        barcode: finalBarcode,
-                        tenantId,
-                        ...(departmentId && { departmentId }),
-                        ...(defaultStoreId && { defaultStoreId }),
-                        ...(supplierId && { supplierId }),
-                    },
-                });
-                itemId = created.id;
-
-                // Add base unit if provided
-                if (baseUnitId) {
-                    await prisma.itemUnit.create({
+                if (existing) {
+                    await tx.item.update({
+                        where: { id: existing.id },
                         data: {
-                            itemId: created.id,
-                            unitId: baseUnitId,
-                            unitType: 'BASE',
-                            conversionRate: 1,
-                            isDefault: true,
-                            tenantId,
+                            ...(barcode && { barcode }),
+                            ...(unitPrice !== undefined && { unitPrice }),
+                            ...(departmentId && { departmentId }),
+                            ...(defaultStoreId && { defaultStoreId }),
+                            ...(categoryId && { categoryId }),
+                            ...(supplierId && { supplierId }),
                         },
                     });
+                    itemId = existing.id;
+                    wasUpdated = true;
+                } else {
+                    const finalBarcode = barcode || Math.floor(100000000000 + Math.random() * 900000000000).toString();
+                    const created = await tx.item.create({
+                        data: {
+                            name, unitPrice, categoryId,
+                            barcode: finalBarcode,
+                            tenantId,
+                            ...(departmentId && { departmentId }),
+                            ...(defaultStoreId && { defaultStoreId }),
+                            ...(supplierId && { supplierId }),
+                        },
+                    });
+                    itemId = created.id;
+                    wasInserted = true;
+
+                    // Add base unit if provided
+                    if (baseUnitId) {
+                        await tx.itemUnit.create({
+                            data: {
+                                itemId: created.id,
+                                unitId: baseUnitId,
+                                unitType: 'BASE',
+                                conversionRate: 1,
+                                isDefault: true,
+                                tenantId,
+                            },
+                        });
+                    }
                 }
-                inserted++;
-            }
 
-            // ── Create OB document if requested ───────────────────────────
-            if (asOpeningBalance && storeQuantities && Object.keys(storeQuantities).length > 0) {
+                // ── Create OB document if requested ───────────────────────
+                if (asOpeningBalance && storeQuantities && Object.keys(storeQuantities).length > 0) {
+                    // Zero-cost guard at import level
+                    if (!(Number(unitPrice) > 0)) {
+                        throw new Error(`Opening Balance requires a valid unit cost. Item "${name}" has unitPrice = ${unitPrice || 0}. Please add a price before importing as Opening Balance.`);
+                    }
 
-                // Zero-cost guard at import level
-                if (!(Number(unitPrice) > 0)) {
-                    throw new Error(`Opening Balance requires a valid unit cost. Item "${name}" has unitPrice = ${unitPrice || 0}. Please add a price before importing as Opening Balance.`);
+                    const lines = Object.entries(storeQuantities).map(([locationId, qty]) => ({
+                        itemId,
+                        locationId,
+                        qtyRequested: qty,
+                        unitCost: unitPrice,
+                        totalValue: qty * unitPrice,
+                    }));
+
+                    const obDoc = await movementService.createMovementDraft({
+                        movementType: 'OPENING_BALANCE',
+                        documentDate: new Date().toISOString(),
+                        destLocationId: lines[0].locationId,
+                        notes: `Opening Balance import for ${name}`,
+                        lines,
+                    }, tenantId, createdBy, tx);
+
+                    // Post immediately within same transaction for row-level atomicity
+                    const posted = await postingService.postDocument(obDoc.id, tenantId, createdBy, tx);
+                    obDocumentNo = posted.documentNo || obDoc.documentNo;
                 }
 
-                const lines = Object.entries(storeQuantities).map(([locationId, qty]) => ({
-                    itemId,
-                    locationId,
-                    qtyRequested: qty,
-                    unitCost: unitPrice,
-                    totalValue: qty * unitPrice,
-                }));
+                return { wasInserted, wasUpdated, obDocumentNo };
+            });
 
-                const obDoc = await movementService.createMovementDraft({
-                    movementType: 'OPENING_BALANCE',
-                    documentDate: new Date().toISOString(),
-                    destLocationId: lines[0].locationId,
-                    notes: `Opening Balance import for ${name}`,
-                    lines,
-                }, tenantId, createdBy);
-
-                // Post immediately
-                await postingService.postDocument(obDoc.id, tenantId, createdBy);
-                obDocuments.push(obDoc.documentNo);
-            }
+            if (txResult.wasInserted) inserted++;
+            if (txResult.wasUpdated) updated++;
+            if (txResult.obDocumentNo) obDocuments.push(txResult.obDocumentNo);
         } catch (err) {
             failed++;
             failures.push({ rowNum: row.rowNum, errors: [err.message] });

@@ -4,7 +4,7 @@ const prisma = new PrismaClient();
 /**
  * Generate a unique Document Number
  */
-const generateDocumentNo = async (tenantId, movementType) => {
+const generateDocumentNo = async (tenantId, movementType, db = prisma) => {
     const prefixMap = {
         OPENING_BALANCE: 'OB',
         RECEIVE: 'REC',
@@ -22,7 +22,7 @@ const generateDocumentNo = async (tenantId, movementType) => {
 
     const startStr = `${prefix}-${yearMonth}-`;
 
-    const lastDoc = await prisma.movementDocument.findFirst({
+    const lastDoc = await db.movementDocument.findFirst({
         where: {
             tenantId,
             documentNo: { startsWith: startStr }
@@ -44,7 +44,7 @@ const generateDocumentNo = async (tenantId, movementType) => {
 /**
  * Create a new draft movement document
  */
-const createMovementDraft = async (data, tenantId, userId) => {
+const createMovementDraft = async (data, tenantId, userId, db = prisma) => {
     // ── Phase 4 MANDATORY GUARD: No manual RECEIVE without a valid GRN ──────
     // Every RECEIVE movement MUST reference an approved GRN.
     // This is a strict control requirement — no exceptions.
@@ -54,7 +54,7 @@ const createMovementDraft = async (data, tenantId, userId) => {
             err.statusCode = 403;
             throw err;
         }
-        const grn = await prisma.grnImport.findFirst({
+        const grn = await db.grnImport.findFirst({
             where: { id: data.grnImportId, tenantId },
         });
         if (!grn) {
@@ -77,7 +77,7 @@ const createMovementDraft = async (data, tenantId, userId) => {
             err.statusCode = 403;
             throw err;
         }
-        const reqn = await prisma.storeRequisition.findFirst({
+        const reqn = await db.storeRequisition.findFirst({
             where: { id: data.requisitionId, tenantId },
         });
         if (!reqn) {
@@ -106,7 +106,7 @@ const createMovementDraft = async (data, tenantId, userId) => {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    const documentNo = await generateDocumentNo(tenantId, data.movementType);
+    const documentNo = await generateDocumentNo(tenantId, data.movementType, db);
 
 
     // Sanitize optional UUID fields — convert empty strings to null
@@ -117,12 +117,12 @@ const createMovementDraft = async (data, tenantId, userId) => {
 
     // Validate locations if provided
     if (data.sourceLocationId) {
-        const source = await prisma.location.findFirst({ where: { id: data.sourceLocationId, tenantId } });
+        const source = await db.location.findFirst({ where: { id: data.sourceLocationId, tenantId } });
         if (!source) throw Object.assign(new Error('Source location not found'), { statusCode: 404 });
     }
 
     if (data.destLocationId) {
-        const dest = await prisma.location.findFirst({ where: { id: data.destLocationId, tenantId } });
+        const dest = await db.location.findFirst({ where: { id: data.destLocationId, tenantId } });
         if (!dest) throw Object.assign(new Error('Destination location not found'), { statusCode: 404 });
     }
 
@@ -170,7 +170,7 @@ const createMovementDraft = async (data, tenantId, userId) => {
         ...(linesCreate && { lines: linesCreate })
     };
 
-    return prisma.movementDocument.create({
+    return db.movementDocument.create({
         data: documentData,
         include: {
             lines: { include: { item: { select: { name: true, barcode: true } } } },

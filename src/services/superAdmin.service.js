@@ -551,6 +551,20 @@ const createTenant = async (data, adminUserId, ipAddress) => {
             },
         });
 
+        await tx.tenantSetting.upsert({
+            where: { tenantId_key: { tenantId: t.id, key: 'allowOpeningBalance' } },
+            update: {
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+            create: {
+                tenantId: t.id,
+                key: 'allowOpeningBalance',
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+        });
+
         // 2. First hotel admin: explicit payload, or inherit from parent org's ORG_MANAGER
         if (adminEmail) {
             const normalizedAdminEmail = adminEmail.toLowerCase();
@@ -759,6 +773,20 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
             },
         });
 
+        await tx.tenantSetting.upsert({
+            where: { tenantId_key: { tenantId: orgTenant.id, key: 'allowOpeningBalance' } },
+            update: {
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+            create: {
+                tenantId: orgTenant.id,
+                key: 'allowOpeningBalance',
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+        });
+
         const normalizedOrgEmail = String(adminEmail).toLowerCase();
         const normalizedHotelEmail = String(hotelAdminEmailResolved).toLowerCase();
         const separateHotelAdmin = normalizedOrgEmail !== normalizedHotelEmail;
@@ -801,6 +829,20 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
                 licenseEndDate: hotelEndDate,
                 maxUsers: hotelMaxUsers !== undefined ? Number(hotelMaxUsers) : hotelLimits.maxUsers,
                 isActive: true,
+            },
+        });
+
+        await tx.tenantSetting.upsert({
+            where: { tenantId_key: { tenantId: hotelTenant.id, key: 'allowOpeningBalance' } },
+            update: {
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+            create: {
+                tenantId: hotelTenant.id,
+                key: 'allowOpeningBalance',
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
             },
         });
 

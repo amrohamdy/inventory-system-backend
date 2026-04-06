@@ -69,23 +69,11 @@ const isOpeningBalanceAllowed = async (tenantId) => {
         return { allowed: true, reason: 'Opening Balance enabled by administrator.' };
     }
 
-    // No explicit setting — auto-check: block if non-OB movements already posted
-    const postedNonOB = await prisma.movementDocument.count({
-        where: {
-            tenantId,
-            status: 'POSTED',
-            movementType: { notIn: ['OPENING_BALANCE'] },
-        },
-    });
-
-    if (postedNonOB > 0) {
-        return {
-            allowed: false,
-            reason: `Opening Balance locked: ${postedNonOB} operational movement(s) already posted. Contact your administrator.`,
-        };
-    }
-
-    return { allowed: true, reason: 'System is in initial setup mode.' };
+    // Security default: if setting is missing, OB remains locked until explicitly enabled.
+    return {
+        allowed: false,
+        reason: 'Opening Balance is locked by default. Must be enabled by Super Admin.',
+    };
 };
 
 module.exports = {

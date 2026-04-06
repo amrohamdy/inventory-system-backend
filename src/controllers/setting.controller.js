@@ -60,9 +60,13 @@ const lockOB = async (req, res, next) => {
             e.statusCode = 403; throw e;
         }
 
+        if (!reason || !reason.trim()) {
+            const e = new Error('A reason is required when locking Opening Balance import.');
+            e.statusCode = 400; throw e;
+        }
+
         await settingService.setSetting(
-            tenantId, 'allowOpeningBalance', 'LOCKED', userId,
-            reason || 'Manually locked by Super Administrator'
+            tenantId, 'allowOpeningBalance', 'LOCKED', userId, reason
         );
 
         await logAction({
@@ -71,7 +75,7 @@ const lockOB = async (req, res, next) => {
             entityId: 'allowOpeningBalance',
             action: 'LOCK_OB',
             changedBy: userId,
-            note: reason || 'OB import locked by Super Administrator',
+            note: reason,
         });
 
         return success(res, { locked: true }, 'Opening Balance import has been locked.');

@@ -190,6 +190,20 @@ const createTenant = async (data) => {
             }
         });
 
+        await tx.tenantSetting.upsert({
+            where: { tenantId_key: { tenantId: tenant.id, key: 'allowOpeningBalance' } },
+            update: {
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+            create: {
+                tenantId: tenant.id,
+                key: 'allowOpeningBalance',
+                value: 'LOCKED',
+                reason: 'Default locked on tenant creation',
+            },
+        });
+
         const normalizedEmail = data.adminUser.email.toLowerCase();
         let adminUser = await tx.user.findUnique({ where: { email: normalizedEmail } });
         if (!adminUser) {

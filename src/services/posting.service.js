@@ -1,6 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const movementService = require('./movement.service');
 const { checkPeriodLock, checkOBAllowed } = require('./periodGuard.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { generateDocNumber, prefixFromMovementType } = require('./docNumbering.service');
@@ -9,9 +8,20 @@ const { generateDocNumber, prefixFromMovementType } = require('./docNumbering.se
  * Core engine for posting stock movements to the ledger and updating balances.
  * Uses a database transaction to ensure atomicity.
  */
-const postDocument = async (documentId, tenantId, userId) => {
+const postDocument = async (documentId, tenantId, userId, db = prisma) => {
     // 1. Fetch document and validate status
-    const document = await movementService.getMovementById(documentId, tenantId);
+    const document = await db.movementDocument.findFirst({
+        where: { id: documentId, tenantId },
+        include: {
+            lines: {
+                include: {
+                    item: { select: { name: true, barcode: true, unitPrice: true } },
+                    location: { select: { name: true } }
+                }
+            },
+            createdByUser: { select: { firstName: true, lastName: true } }
+        }
+    });
 
     if (!document) {
         const error = new Error('Document not found');
@@ -53,7 +63,7 @@ const postDocument = async (documentId, tenantId, userId) => {
     // ─────────────────────────────────────────────────────────────────────────
 
     // 2. Perform the Transaction
-    const result = await prisma.$transaction(async (tx) => {
+    const transactionWork = async (tx) => {
         // ============================================================================
         // 🚨 ARCHITECTURAL GUARD: STRICT LEDGER CONSISTENCY RULE 🚨
         // `StockBalance` must NEVER be mutated outside of this engine.
@@ -278,7 +288,11 @@ const postDocument = async (documentId, tenantId, userId) => {
 
         return updatedDocument;
 
-    }); // End Transaction
+    };
+
+    const result = db === prisma
+        ? await prisma.$transaction(transactionWork)
+        : await transactionWork(db);
 
     // Audit trail — outside transaction so a log failure never rolls back the posting
     await logAction({
