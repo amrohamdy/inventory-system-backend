@@ -1,30 +1,78 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
+const normalizeCategoryIds = (categoryIds) => {
+    if (categoryIds === undefined) return undefined;
+    if (!Array.isArray(categoryIds)) {
+        const error = new Error('categoryIds must be an array of UUID strings');
+        error.statusCode = 400;
+        throw error;
+    }
+    return [...new Set(categoryIds.filter(Boolean))];
+};
+
+const validateCategoryIdsBelongToTenant = async (categoryIds, tenantId) => {
+    if (!categoryIds || categoryIds.length === 0) return;
+    const found = await prisma.category.findMany({
+        where: { id: { in: categoryIds }, tenantId },
+        select: { id: true },
+    });
+    if (found.length !== categoryIds.length) {
+        const error = new Error('One or more categories not found');
+        error.statusCode = 400;
+        throw error;
+    }
+};
+
+const mapLocationWithCategories = (location) => ({
+    ...location,
+    categories: (location.locationCategories || []).map((row) => row.category),
+});
+
 /**
  * Create a new location
  */
 const createLocation = async (data, tenantId) => {
+    const { categoryIds, ...locationData } = data;
+    const normalizedCategoryIds = normalizeCategoryIds(categoryIds);
+
     const existing = await prisma.location.findFirst({
-        where: { name: data.name, tenantId }
+        where: { name: locationData.name, tenantId }
     });
 
     if (existing) {
-        const error = new Error(`Location with name '${data.name}' already exists.`);
+        const error = new Error(`Location with name '${locationData.name}' already exists.`);
         error.statusCode = 400;
         throw error;
     }
 
     // Validate department if provided
-    if (data.departmentId) {
-        const dept = await prisma.department.findFirst({ where: { id: data.departmentId, tenantId } });
+    if (locationData.departmentId) {
+        const dept = await prisma.department.findFirst({ where: { id: locationData.departmentId, tenantId } });
         if (!dept) { const e = new Error('Department not found'); e.statusCode = 400; throw e; }
     }
 
-    return prisma.location.create({
-        data: { ...data, tenantId },
-        include: { department: { select: { id: true, name: true, code: true } } },
+    await validateCategoryIdsBelongToTenant(normalizedCategoryIds, tenantId);
+
+    const location = await prisma.location.create({
+        data: {
+            ...locationData,
+            tenantId,
+            ...(normalizedCategoryIds !== undefined && {
+                locationCategories: {
+                    create: normalizedCategoryIds.map((categoryId) => ({
+                        category: { connect: { id: categoryId } },
+                    })),
+                },
+            }),
+        },
+        include: {
+            department: { select: { id: true, name: true, code: true } },
+            locationCategories: { include: { category: { select: { id: true, name: true } } } },
+        },
     });
+
+    return mapLocationWithCategories(location);
 };
 
 /**
@@ -65,7 +113,7 @@ const getLocations = async (tenantId, query = {}) => {
         prisma.location.count({ where })
     ]);
 
-    return { locations, total };
+    return { locations: locations.map(mapLocationWithCategories), total };
 };
 
 /**
@@ -76,6 +124,9 @@ const getLocationById = async (id, tenantId) => {
         where: { id, tenantId },
         include: {
             department: { select: { id: true, name: true, code: true } },
+            locationCategories: {
+                include: { category: { select: { id: true, name: true } } }
+            },
             locationUsers: {
                 include: {
                     user: { select: { id: true, firstName: true, lastName: true, email: true } }
@@ -90,7 +141,7 @@ const getLocationById = async (id, tenantId) => {
         throw error;
     }
 
-    return location;
+    return mapLocationWithCategories(location);
 };
 
 /**
@@ -98,34 +149,58 @@ const getLocationById = async (id, tenantId) => {
  */
 const updateLocation = async (id, data, tenantId) => {
     await getLocationById(id, tenantId);
+    const { categoryIds, ...locationData } = data;
+    const normalizedCategoryIds = normalizeCategoryIds(categoryIds);
 
-    if (data.name) {
+    if (locationData.name) {
         const existing = await prisma.location.findFirst({
             where: {
-                name: data.name,
+                name: locationData.name,
                 tenantId,
                 id: { not: id }
             }
         });
 
         if (existing) {
-            const error = new Error(`Location with name '${data.name}' already exists.`);
+            const error = new Error(`Location with name '${locationData.name}' already exists.`);
             error.statusCode = 400;
             throw error;
         }
     }
 
     // Validate department if changing
-    if (data.departmentId) {
-        const dept = await prisma.department.findFirst({ where: { id: data.departmentId, tenantId } });
+    if (locationData.departmentId) {
+        const dept = await prisma.department.findFirst({ where: { id: locationData.departmentId, tenantId } });
         if (!dept) { const e = new Error('Department not found'); e.statusCode = 400; throw e; }
     }
 
-    return prisma.location.update({
+    await validateCategoryIdsBelongToTenant(normalizedCategoryIds, tenantId);
+
+    const location = await prisma.location.update({
         where: { id },
-        data,
-        include: { department: { select: { id: true, name: true, code: true } } },
+        data: {
+            ...locationData,
+            ...(normalizedCategoryIds !== undefined && {
+                locationCategories: {
+                    set: normalizedCategoryIds.map((categoryId) => ({
+                        locationId_categoryId: { locationId: id, categoryId },
+                    })),
+                    connectOrCreate: normalizedCategoryIds.map((categoryId) => ({
+                        where: { locationId_categoryId: { locationId: id, categoryId } },
+                        create: {
+                            category: { connect: { id: categoryId } },
+                        },
+                    })),
+                },
+            }),
+        },
+        include: {
+            department: { select: { id: true, name: true, code: true } },
+            locationCategories: { include: { category: { select: { id: true, name: true } } } },
+        },
     });
+
+    return mapLocationWithCategories(location);
 };
 
 /**
