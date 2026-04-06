@@ -11,6 +11,15 @@ const normalizeCategoryIds = (categoryIds) => {
     return [...new Set(categoryIds.filter(Boolean))];
 };
 
+const validateOptionalIsActive = (payload) => {
+    if (!Object.prototype.hasOwnProperty.call(payload, 'isActive')) return;
+    if (typeof payload.isActive !== 'boolean') {
+        const error = new Error('isActive must be a boolean');
+        error.statusCode = 400;
+        throw error;
+    }
+};
+
 const validateCategoryIdsBelongToTenant = async (categoryIds, tenantId) => {
     if (!categoryIds || categoryIds.length === 0) return;
     const found = await prisma.category.findMany({
@@ -35,6 +44,7 @@ const mapLocationWithCategories = (location) => ({
 const createLocation = async (data, tenantId) => {
     const { categoryIds, ...locationData } = data;
     const normalizedCategoryIds = normalizeCategoryIds(categoryIds);
+    validateOptionalIsActive(locationData);
 
     const existing = await prisma.location.findFirst({
         where: { name: locationData.name, tenantId }
@@ -57,6 +67,7 @@ const createLocation = async (data, tenantId) => {
     const location = await prisma.location.create({
         data: {
             ...locationData,
+            isActive: locationData.isActive ?? true,
             tenantId,
             ...(normalizedCategoryIds !== undefined && {
                 locationCategories: {
@@ -151,6 +162,7 @@ const updateLocation = async (id, data, tenantId) => {
     await getLocationById(id, tenantId);
     const { categoryIds, ...locationData } = data;
     const normalizedCategoryIds = normalizeCategoryIds(categoryIds);
+    validateOptionalIsActive(locationData);
 
     if (locationData.name) {
         const existing = await prisma.location.findFirst({
@@ -176,29 +188,46 @@ const updateLocation = async (id, data, tenantId) => {
 
     await validateCategoryIdsBelongToTenant(normalizedCategoryIds, tenantId);
 
-    const location = await prisma.location.update({
-        where: { id },
-        data: {
-            ...locationData,
-            ...(normalizedCategoryIds !== undefined && {
-                locationCategories: {
-                    set: normalizedCategoryIds.map((categoryId) => ({
-                        locationId_categoryId: { locationId: id, categoryId },
-                    })),
-                    connectOrCreate: normalizedCategoryIds.map((categoryId) => ({
-                        where: { locationId_categoryId: { locationId: id, categoryId } },
-                        create: {
-                            category: { connect: { id: categoryId } },
-                        },
-                    })),
-                },
+    if (normalizedCategoryIds !== undefined) {
+        await prisma.$transaction([
+            prisma.location.update({
+                where: { id },
+                data: locationData,
             }),
-        },
+            prisma.locationCategory.deleteMany({
+                where: { locationId: id },
+            }),
+            ...(normalizedCategoryIds.length > 0
+                ? [
+                    prisma.locationCategory.createMany({
+                        data: normalizedCategoryIds.map((categoryId) => ({
+                            locationId: id,
+                            categoryId,
+                        })),
+                    }),
+                ]
+                : []),
+        ]);
+    } else {
+        await prisma.location.update({
+            where: { id },
+            data: locationData,
+        });
+    }
+
+    const location = await prisma.location.findFirst({
+        where: { id, tenantId },
         include: {
             department: { select: { id: true, name: true, code: true } },
             locationCategories: { include: { category: { select: { id: true, name: true } } } },
         },
     });
+
+    if (!location) {
+        const error = new Error('Location not found');
+        error.statusCode = 404;
+        throw error;
+    }
 
     return mapLocationWithCategories(location);
 };
