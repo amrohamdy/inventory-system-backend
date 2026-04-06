@@ -48,15 +48,15 @@ const getOBEligibility = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-// ── POST /settings/ob-lock — Lock OB import (SUPER_ADMIN only) ────────────────
+// ── POST /settings/ob-lock — Lock OB import (SUPER_ADMIN / ADMIN) ─────────────
 const lockOB = async (req, res, next) => {
     try {
         const { reason } = req.body;
         const { tenantId, id: userId, role } = req.user;
 
-        // Defense-in-depth: only SUPER_ADMIN may lock/unlock OB
-        if (role !== 'SUPER_ADMIN') {
-            const e = new Error('Only Super Admin can lock or unlock Opening Balance. This is a system-level control.');
+        // Defense-in-depth role check (route middleware also enforces this).
+        if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
+            const e = new Error('Only tenant administrators can lock or unlock Opening Balance.');
             e.statusCode = 403; throw e;
         }
 
@@ -78,19 +78,23 @@ const lockOB = async (req, res, next) => {
             note: reason,
         });
 
-        return success(res, { locked: true }, 'Opening Balance import has been locked.');
+        return success(
+            res,
+            { key: 'allowOpeningBalance', value: 'LOCKED' },
+            'Opening Balance import has been locked.'
+        );
     } catch (err) { next(err); }
 };
 
-// ── POST /settings/ob-enable — Enable OB import (SUPER_ADMIN only, reason required) ──
+// ── POST /settings/ob-enable — Enable OB import (SUPER_ADMIN / ADMIN) ─────────
 const enableOB = async (req, res, next) => {
     try {
         const { reason } = req.body;
         const { tenantId, id: userId, role } = req.user;
 
-        // Defense-in-depth: only SUPER_ADMIN may lock/unlock OB
-        if (role !== 'SUPER_ADMIN') {
-            const e = new Error('Only Super Admin can lock or unlock Opening Balance. This is a system-level control.');
+        // Defense-in-depth role check (route middleware also enforces this).
+        if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
+            const e = new Error('Only tenant administrators can lock or unlock Opening Balance.');
             e.statusCode = 403; throw e;
         }
 
@@ -109,10 +113,14 @@ const enableOB = async (req, res, next) => {
             entityId: 'allowOpeningBalance',
             action: 'REOPEN_PERIOD',
             changedBy: userId,
-            note: `OB import enabled by Super Administrator — reason: ${reason}`,
+            note: `OB import enabled by tenant administrator — reason: ${reason}`,
         });
 
-        return success(res, { locked: false }, 'Opening Balance import has been enabled.');
+        return success(
+            res,
+            { key: 'allowOpeningBalance', value: 'OPEN' },
+            'Opening Balance import has been enabled.'
+        );
     } catch (err) { next(err); }
 };
 

@@ -10,9 +10,9 @@ router.use(protect);
 // OB eligibility check — any authenticated user can check
 router.get('/ob-eligible', settingController.getOBEligibility);
 
-// OB lock / enable — SUPER_ADMIN only (system-level control)
-router.post('/ob-lock', authorize('SUPER_ADMIN'), settingController.lockOB);
-router.post('/ob-enable', authorize('SUPER_ADMIN'), settingController.enableOB);
+// OB lock / enable — tenant-level admins can toggle for their own tenant
+router.post('/ob-lock', authorize('SUPER_ADMIN', 'ADMIN'), settingController.lockOB);
+router.post('/ob-enable', authorize('SUPER_ADMIN', 'ADMIN'), settingController.enableOB);
 
 // Generic setting CRUD
 router.route('/:key')

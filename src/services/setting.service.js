@@ -12,7 +12,12 @@ const getSetting = async (tenantId, key) => {
     const setting = await prisma.tenantSetting.findUnique({
         where: { tenantId_key: { tenantId, key } },
     });
-    return setting ? setting.value : null;
+    if (setting) return setting.value;
+
+    // Keep Opening Balance deterministic for new/legacy tenants.
+    if (key === 'allowOpeningBalance') return 'LOCKED';
+
+    return null;
 };
 
 // ── SET setting (with audit) ───────────────────────────────────────────────────
@@ -72,7 +77,7 @@ const isOpeningBalanceAllowed = async (tenantId) => {
     // Security default: if setting is missing, OB remains locked until explicitly enabled.
     return {
         allowed: false,
-        reason: 'Opening Balance is locked by default. Must be enabled by Super Admin.',
+        reason: 'Opening Balance is locked by default. Must be enabled by an administrator.',
     };
 };
 
