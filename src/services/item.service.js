@@ -3,6 +3,7 @@ const prisma = new PrismaClient();
 const XLSX = require('xlsx');
 const path = require('path');
 const auditService = require('./audit.service');
+const settingService = require('./setting.service');
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,7 @@ const badRequest = (msg) => {
 /**
  * Prerequisite counts for Item Master creation (tenant-scoped).
  * canCreateItem is true only when units, categories, vendors (suppliers), and locations all exist.
+ * After prerequisites are met, the Opening Balance period must be active (not LOCKED) to add items.
  */
 const checkItemCreationRequirements = async (tenantId) => {
     const [units, categories, vendors, locations] = await Promise.all([
@@ -50,10 +52,27 @@ const checkItemCreationRequirements = async (tenantId) => {
         locations: { count: locations },
     };
 
-    const canCreateItem =
+    const prerequisitesMet =
         units > 0 && categories > 0 && vendors > 0 && locations > 0;
 
-    return { canCreateItem, requirements };
+    if (!prerequisitesMet) {
+        return {
+            canCreateItem: false,
+            requirements,
+            blockReason: 'MISSING_PREREQUISITES',
+        };
+    }
+
+    const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
+    if (!obCheck.allowed) {
+        return {
+            canCreateItem: false,
+            requirements,
+            blockReason: 'OPENING_BALANCE',
+        };
+    }
+
+    return { canCreateItem: true, requirements };
 };
 
 // ── Validate itemUnits array ───────────────────────────────────────────────────

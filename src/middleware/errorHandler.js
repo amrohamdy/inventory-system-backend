@@ -61,12 +61,11 @@ const errorHandler = (err, req, res, next) => {
     }
 
     // Default 500
-    const statusCode = err.statusCode || 500;
+    const statusCode = err.statusCode || err.status || 500;
     const isClientError = statusCode >= 400 && statusCode < 500;
-    // App errors (4xx + explicit code) carry safe, user-facing messages — do not mask in production.
+    // In production: 4xx from services use explicit statusCode/status — return err.message (not generic 500 text).
     const exposeMessage =
-        process.env.NODE_ENV !== 'production' ||
-        (isClientError && err.code && typeof err.code === 'string' && !String(err.code).startsWith('P'));
+        process.env.NODE_ENV !== 'production' || isClientError;
     const responseBody = {
         success: false,
         message: exposeMessage ? err.message : 'Internal server error.',

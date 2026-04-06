@@ -260,17 +260,17 @@ const exportItems = async (req, res, next) => {
 
 // ── Download Import Template (.xlsx) ──────────────────────────────────────────
 const downloadTemplate = async (req, res, next) => {
+    const { PrismaClient } = require('@prisma/client');
+    const prisma = new PrismaClient();
     try {
         const ExcelJS = require('exceljs');
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const tenantId = req.user.tenantId;
 
-        // Fetch lookup data
+        // Fetch lookup data — store columns and Reference sheet use only this data
         const [categories, units, departments, locations, suppliers] = await Promise.all([
-            prisma.category.findMany({ where: { tenantId, isActive: true }, select: { name: true } }),
-            prisma.unit.findMany({ where: { tenantId, isActive: true }, select: { name: true, abbreviation: true } }),
-            prisma.department.findMany({ where: { tenantId, isActive: true }, select: { name: true } }),
+            prisma.category.findMany({ where: { tenantId, isActive: true }, select: { name: true }, orderBy: { name: 'asc' } }),
+            prisma.unit.findMany({ where: { tenantId, isActive: true }, select: { name: true, abbreviation: true }, orderBy: { name: 'asc' } }),
+            prisma.department.findMany({ where: { tenantId, isActive: true }, select: { name: true }, orderBy: { name: 'asc' } }),
             prisma.location.findMany({ where: { tenantId, isActive: true }, select: { name: true }, orderBy: { name: 'asc' } }),
             prisma.supplier.findMany({ where: { tenantId, isActive: true }, select: { name: true }, orderBy: { name: 'asc' } }),
         ]);
@@ -306,18 +306,21 @@ const downloadTemplate = async (req, res, next) => {
         wsItems.columns = [...fixedColumns, ...storeColumns];
         const totalColumns = FIXED_COL_COUNT + storeColumns.length;
 
-        // Example row with sample store quantities
+        // Optional example row: only tenant lookup values (no hardcoded demo labels)
+        const firstUnitLabel = units[0]
+            ? `${units[0].name} (${units[0].abbreviation})`
+            : '';
         const exRowData = {
-            name: 'King Bed Sheet Set',
-            barcode: 'OSE-001',
-            department: departments[0]?.name || 'Housekeeping',
-            category: categories[0]?.name || 'Linen & Textiles',
-            vendor: suppliers[0]?.name || '',
-            baseUnit: 'Each',
-            unitPrice: 85.00,
+            name: '',
+            barcode: '',
+            department: departments[0]?.name ?? '',
+            category: categories[0]?.name ?? '',
+            vendor: suppliers[0]?.name ?? '',
+            baseUnit: firstUnitLabel,
+            unitPrice: '',
         };
-        locations.forEach((loc, i) => {
-            exRowData[`store__${loc.name}`] = i < 2 ? (i === 0 ? 50 : 20) : '';
+        locations.forEach((loc) => {
+            exRowData[`store__${loc.name}`] = '';
         });
 
         const exRow = wsItems.addRow(exRowData);
@@ -351,7 +354,7 @@ const downloadTemplate = async (req, res, next) => {
             { header: 'Available Units', key: 'unit', width: 22 },
         ];
 
-        const maxRows = Math.max(categories.length, units.length, departments.length, locations.length, suppliers.length, 1);
+        const maxRows = Math.max(categories.length, units.length, departments.length, locations.length, suppliers.length, 0);
         for (let i = 0; i < maxRows; i++) {
             wsRef.addRow({
                 dept: departments[i]?.name || '',
@@ -409,7 +412,11 @@ const downloadTemplate = async (req, res, next) => {
         res.setHeader('Content-Disposition', 'attachment; filename="Item_Import_Template.xlsx"');
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(Buffer.from(buf));
-    } catch (err) { next(err); }
+    } catch (err) {
+        next(err);
+    } finally {
+        await prisma.$disconnect();
+    }
 };
 
 module.exports = {
