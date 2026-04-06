@@ -42,6 +42,13 @@ router.post(
     itemController.bulkUploadImages
 );
 
+// ── Prerequisites for creating items (must be before /:id) ─────────────────────
+router.get(
+    '/check-requirements',
+    requirePermission('VIEW_MASTER_DATA'),
+    itemController.checkItemCreationRequirements
+);
+
 // ── Collection routes ─────────────────────────────────────────────────────────
 router.route('/')
     .post(requirePermission('MANAGE_MASTER_DATA'), itemController.createItem)

@@ -6,6 +6,14 @@ const fs = require('fs');
 // ── Always use relative path so frontend proxy (Vite /uploads) handles CORS ────
 const getImageUrl = (_req, filename) => `/uploads/items/${filename}`;
 
+// ── Item Master prerequisites (units, categories, vendors, locations) ─────────
+const checkItemCreationRequirements = async (req, res, next) => {
+    try {
+        const result = await itemService.checkItemCreationRequirements(req.user.tenantId);
+        return success(res, result, 'Item creation requirements checked');
+    } catch (err) { next(err); }
+};
+
 // ── Create Item ───────────────────────────────────────────────────────────────
 const createItem = async (req, res, next) => {
     try {
@@ -405,6 +413,7 @@ const downloadTemplate = async (req, res, next) => {
 };
 
 module.exports = {
+    checkItemCreationRequirements,
     createItem,
     getItems,
     getItem,

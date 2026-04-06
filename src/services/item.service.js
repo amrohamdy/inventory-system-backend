@@ -31,6 +31,31 @@ const badRequest = (msg) => {
     return e;
 };
 
+/**
+ * Prerequisite counts for Item Master creation (tenant-scoped).
+ * canCreateItem is true only when units, categories, vendors (suppliers), and locations all exist.
+ */
+const checkItemCreationRequirements = async (tenantId) => {
+    const [units, categories, vendors, locations] = await Promise.all([
+        prisma.unit.count({ where: { tenantId } }),
+        prisma.category.count({ where: { tenantId } }),
+        prisma.supplier.count({ where: { tenantId } }),
+        prisma.location.count({ where: { tenantId } }),
+    ]);
+
+    const requirements = {
+        units: { count: units },
+        categories: { count: categories },
+        vendors: { count: vendors },
+        locations: { count: locations },
+    };
+
+    const canCreateItem =
+        units > 0 && categories > 0 && vendors > 0 && locations > 0;
+
+    return { canCreateItem, requirements };
+};
+
 // ── Validate itemUnits array ───────────────────────────────────────────────────
 // Each entry: { unitId, unitType: 'BASE'|'PURCHASE'|'ISSUE', conversionRate }
 const validateItemUnits = (itemUnits) => {
@@ -714,6 +739,7 @@ const bulkUploadImages = async (zipFilePath, tenantId) => {
 };
 
 module.exports = {
+    checkItemCreationRequirements,
     createItem,
     getItems,
     getItemById,
