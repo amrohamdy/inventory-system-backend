@@ -401,7 +401,8 @@ const updateItemUnits = async (id, tenantId, itemUnits) => {
 };
 
 // ── EXCEL IMPORT: PARSE & PREVIEW ─────────────────────────────────────────────
-const parseImportFile = async (filePath, tenantId) => {
+const parseImportFile = async (filePath, tenantId, options = {}) => {
+    const asOpeningBalance = Boolean(options.asOpeningBalance);
     const wb = XLSX.readFile(filePath);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -499,9 +500,44 @@ const parseImportFile = async (filePath, tenantId) => {
         );
     }
 
+    // Preload existing DB items for fast "exists in DB" checks
+    const incomingNames = [...new Set(
+        rows
+            .map(row => String(row['Name'] || row['name'] || '').trim().toLowerCase())
+            .filter(Boolean)
+    )];
+    const incomingBarcodes = [...new Set(
+        rows
+            .map(row => String(row['Barcode'] || row['barcode'] || '').trim().toLowerCase())
+            .filter(Boolean)
+    )];
+    const existingItems = (incomingNames.length > 0 || incomingBarcodes.length > 0)
+        ? await prisma.item.findMany({
+            where: { tenantId },
+            select: { id: true, name: true, barcode: true },
+        })
+        : [];
+    const existingByNameMap = new Map(
+        existingItems
+            .filter(item => item.name)
+            .map(item => [String(item.name).toLowerCase(), item])
+    );
+    const existingByBarcodeMap = new Map(
+        existingItems
+            .filter(item => item.barcode)
+            .map(item => [String(item.barcode).toLowerCase(), item])
+    );
+
+    // In-file duplicate detection
+    const seenNames = new Set();
+    const seenBarcodes = new Set();
+
     const preview = rows.map((row, idx) => {
-        const errors = [];
+        const issues = [];
         const rowNum = idx + 2;
+        const addIssue = (field, message, severity, code) => {
+            issues.push({ field, message, severity, code });
+        };
 
         const name = String(row['Name'] || row['name'] || '').trim();
         const barcode = String(row['Barcode'] || row['barcode'] || '').trim();
@@ -511,14 +547,31 @@ const parseImportFile = async (filePath, tenantId) => {
         const deptName = String(row['Department'] || row['department'] || '').trim();
         const vendorName = String(row['Vendor'] || row['vendor'] || row['Supplier'] || row['supplier'] || '').trim();
 
-        if (!name) errors.push('Name is required');
-        if (isNaN(unitPrice) || unitPrice < 0) errors.push('Invalid unit price');
+        if (!name) addIssue('name', 'Name is required', 'error', 'REQUIRED');
+        if (isNaN(unitPrice) || unitPrice < 0) addIssue('unitPrice', 'Invalid unit price', 'error', 'INVALID_NUMBER');
+
+        const normalizedName = name.toLowerCase();
+        const normalizedBarcode = barcode.toLowerCase();
+        if (name) {
+            if (seenNames.has(normalizedName)) {
+                addIssue('name', `Name '${name}' is duplicated in file`, 'error', 'DUPLICATE_IN_FILE');
+            } else {
+                seenNames.add(normalizedName);
+            }
+        }
+        if (barcode) {
+            if (seenBarcodes.has(normalizedBarcode)) {
+                addIssue('barcode', `Barcode '${barcode}' is duplicated in file`, 'error', 'DUPLICATE_IN_FILE');
+            } else {
+                seenBarcodes.add(normalizedBarcode);
+            }
+        }
 
         const categoryId = catName ? catMap.get(catName.toLowerCase()) : undefined;
-        if (catName && !categoryId) errors.push(`Category '${catName}' not found`);
+        if (catName && !categoryId) addIssue('category', `Category '${catName}' not found`, 'error', 'NOT_FOUND');
 
         const supplierId = vendorName ? supplierMap.get(vendorName.toLowerCase()) : undefined;
-        if (vendorName && !supplierId) errors.push(`Vendor '${vendorName}' not found`);
+        if (vendorName && !supplierId) addIssue('vendor', `Vendor '${vendorName}' not found`, 'error', 'NOT_FOUND');
 
         let baseUnitId = undefined;
         if (baseUnit) {
@@ -531,18 +584,54 @@ const parseImportFile = async (filePath, tenantId) => {
                 const cleanedUnit = baseUnit.replace(/\s*\(.*\)\s*$/, '').trim();
                 baseUnitId = unitNameMap.get(cleanedUnit.toLowerCase());
             }
-            if (!baseUnitId) errors.push(`Unit '${baseUnit}' not found`);
+            if (!baseUnitId) addIssue('baseUnit', `Unit '${baseUnit}' not found`, 'error', 'NOT_FOUND');
         }
 
         const departmentId = deptName ? deptMap.get(deptName.toLowerCase()) : undefined;
-        if (deptName && !departmentId) errors.push(`Department '${deptName}' not found`);
-        if (!deptName) errors.push('Department is required');
+        if (deptName && !departmentId) addIssue('department', `Department '${deptName}' not found`, 'error', 'NOT_FOUND');
+        if (!deptName) addIssue('department', 'Department is required', 'error', 'REQUIRED');
+
+        // DB existence / update intent
+        const existingByName = name ? existingByNameMap.get(normalizedName) : null;
+        const existingByBarcode = barcode ? existingByBarcodeMap.get(normalizedBarcode) : null;
+        const matchedExisting = existingByName || existingByBarcode || null;
+        const isUpdate = Boolean(matchedExisting);
+        if (isUpdate) {
+            addIssue(
+                existingByName ? 'name' : 'barcode',
+                `Row matches existing item in DB (${matchedExisting.name}). Import will update it.`,
+                'warning',
+                'EXISTS_IN_DB'
+            );
+        }
+        // Manual barcode uniqueness guard (tenant scoped): barcode must not point to another item
+        if (barcode && existingByBarcode && existingByName && existingByBarcode.id !== existingByName.id) {
+            addIssue(
+                'barcode',
+                `Barcode '${barcode}' already belongs to another item (${existingByBarcode.name}).`,
+                'error',
+                'EXISTS_IN_DB'
+            );
+        } else if (barcode && existingByBarcode && !existingByName) {
+            addIssue(
+                'barcode',
+                `Barcode '${barcode}' already belongs to existing item (${existingByBarcode.name}).`,
+                'error',
+                'EXISTS_IN_DB'
+            );
+        }
 
         // Parse store quantities from dynamic columns
         const storeQuantities = {};
         let firstStoreWithQty = null;
         for (const { header, locationId } of storeColumnNames) {
-            const qty = parseExcelNumber(row[header] || 0);
+            const rawQty = row[header];
+            const qty = parseExcelNumber(rawQty || 0);
+            const hasRawValue = rawQty !== null && rawQty !== undefined && String(rawQty).trim() !== '';
+            if (hasRawValue && Number.isNaN(qty)) {
+                addIssue(`store__${header}`, `Invalid quantity in store column '${header}'`, 'error', 'INVALID_NUMBER');
+                continue;
+            }
             if (!isNaN(qty) && qty > 0) {
                 storeQuantities[locationId] = qty;
                 if (!firstStoreWithQty) firstStoreWithQty = locationId;
@@ -550,10 +639,13 @@ const parseImportFile = async (filePath, tenantId) => {
         }
 
         const defaultStoreId = firstStoreWithQty || null;
+        const errors = issues.filter((issue) => issue.severity === 'error').map((issue) => issue.message);
 
         return {
             rowNum,
             status: errors.length === 0 ? 'VALID' : 'ERROR',
+            isUpdate,
+            issues,
             errors,
             data: {
                 name,
@@ -567,6 +659,7 @@ const parseImportFile = async (filePath, tenantId) => {
                 deptName: deptName || null,
                 vendorName: vendorName || null,
                 storeQuantities,
+                isUpdate,
             },
         };
     });
@@ -581,6 +674,14 @@ const parseImportFile = async (filePath, tenantId) => {
         invalid: invalidCount,
         storeColumns: storeColumnNames.map(s => s.header),
         unknownColumns: unknownStoreColumns,
+        contractVersion: 'V2',
+        summary: {
+            asOpeningBalance,
+            openingBalanceReason: {
+                required: asOpeningBalance,
+                message: asOpeningBalance ? 'Global reason is required for Opening Balance confirm step.' : null,
+            },
+        },
     };
 };
 

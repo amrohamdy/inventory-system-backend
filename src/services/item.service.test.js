@@ -12,6 +12,7 @@ function loadServiceWithMocks({
     departments = [],
     locations = [],
     suppliers = [],
+    items = [],
 }) {
     const prismaMock = {
         category: { findMany: async () => categories },
@@ -19,6 +20,7 @@ function loadServiceWithMocks({
         department: { findMany: async () => departments },
         location: { findMany: async () => locations },
         supplier: { findMany: async () => suppliers },
+        item: { findMany: async () => items },
     };
 
     const originalLoad = Module._load;

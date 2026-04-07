@@ -123,7 +123,8 @@ const importPreview = async (req, res, next) => {
         if (!req.file) {
             const e = new Error('No file uploaded.'); e.statusCode = 400; throw e;
         }
-        const result = await itemService.parseImportFile(req.file.path, req.user.tenantId);
+        const asOpeningBalance = String(req.body?.asOpeningBalance ?? req.query?.asOpeningBalance ?? '').toLowerCase() === 'true';
+        const result = await itemService.parseImportFile(req.file.path, req.user.tenantId, { asOpeningBalance });
         // Store file path in session-like manner via response for confirm step
         return success(res, { ...result, filePath: req.file.path }, 'File parsed successfully');
     } catch (err) {
