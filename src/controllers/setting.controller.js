@@ -91,6 +91,7 @@ const enableOB = async (req, res, next) => {
     try {
         const { reason } = req.body;
         const { tenantId, id: userId, role } = req.user;
+        const normalizedReason = (reason && String(reason).trim()) || 'Initial Setup';
 
         // Defense-in-depth role check (route middleware also enforces this).
         if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
@@ -98,13 +99,8 @@ const enableOB = async (req, res, next) => {
             e.statusCode = 403; throw e;
         }
 
-        if (!reason || !reason.trim()) {
-            const e = new Error('A reason is required when enabling Opening Balance import.');
-            e.statusCode = 400; throw e;
-        }
-
         await settingService.setSetting(
-            tenantId, 'allowOpeningBalance', 'OPEN', userId, reason
+            tenantId, 'allowOpeningBalance', 'OPEN', userId, normalizedReason
         );
 
         await logAction({
@@ -113,7 +109,7 @@ const enableOB = async (req, res, next) => {
             entityId: 'allowOpeningBalance',
             action: 'REOPEN_PERIOD',
             changedBy: userId,
-            note: `OB import enabled by tenant administrator — reason: ${reason}`,
+            note: `OB import enabled by tenant administrator — reason: ${normalizedReason}`,
         });
 
         return success(
