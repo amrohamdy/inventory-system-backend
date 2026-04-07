@@ -656,6 +656,8 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
                 categoryId: categoryId || null,
                 supplierId: supplierId || null,
                 baseUnitId: baseUnitId || null,
+                categoryName: catName || null,
+                baseUnitName: baseUnit || null,
                 deptName: deptName || null,
                 vendorName: vendorName || null,
                 storeQuantities,

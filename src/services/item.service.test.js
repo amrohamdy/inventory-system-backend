@@ -69,6 +69,8 @@ test('parseImportFile parses comma-formatted numbers correctly', async () => {
     assert.equal(result.preview[0].status, 'VALID');
     assert.equal(result.preview[0].data.unitPrice, 1200.5);
     assert.equal(result.preview[0].data.storeQuantities['loc-1'], 1200);
+    assert.equal(result.preview[0].data.categoryName, 'Amenities');
+    assert.equal(result.preview[0].data.baseUnitName, 'Bag (bag)');
 });
 
 test('parseImportFile extracts unit abbreviation from parentheses (Bag/Pcs)', async () => {
