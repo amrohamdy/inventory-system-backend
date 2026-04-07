@@ -32,6 +32,14 @@ const badRequest = (msg) => {
     return e;
 };
 
+const parseExcelNumber = (val) => {
+    if (val === null || val === undefined || val === '') return 0;
+    if (typeof val === 'number') return val;
+    const normalized = String(val).replace(/,/g, '').trim();
+    const parsed = parseFloat(normalized);
+    return Number.isNaN(parsed) ? NaN : parsed;
+};
+
 /**
  * Prerequisite counts for Item Master creation (tenant-scoped).
  * canCreateItem is true only when units, categories, vendors (suppliers), and locations all exist.
@@ -404,16 +412,20 @@ const parseImportFile = async (filePath, tenantId) => {
     // Fetch lookup data once
     const [categories, units, departments, locations, suppliers] = await Promise.all([
         prisma.category.findMany({ where: { tenantId, isActive: true }, select: { id: true, name: true } }),
-        prisma.unit.findMany({ where: { tenantId, isActive: true }, select: { id: true, name: true } }),
+        prisma.unit.findMany({ where: { tenantId, isActive: true }, select: { id: true, name: true, abbreviation: true } }),
         prisma.department.findMany({ where: { tenantId, isActive: true }, select: { id: true, name: true } }),
         prisma.location.findMany({ where: { tenantId, isActive: true }, select: { id: true, name: true, departmentId: true } }),
         prisma.supplier.findMany({ where: { tenantId, isActive: true }, select: { id: true, name: true } }),
     ]);
 
     const catMap = new Map(categories.map(c => [c.name.toLowerCase(), c.id]));
-    const unitMap = new Map(units.map(u => [u.name.toLowerCase(), u.id]));
+    const unitNameMap = new Map(units.map(u => [u.name.toLowerCase(), u.id]));
+    const unitAbbreviationMap = new Map(
+        units
+            .filter(u => u.abbreviation)
+            .map(u => [String(u.abbreviation).toLowerCase(), u.id])
+    );
     const deptMap = new Map(departments.map(d => [d.name.toLowerCase(), d.id]));
-    const locMap = new Map(locations.map(l => [l.name.toLowerCase(), { id: l.id, departmentId: l.departmentId }]));
     const supplierMap = new Map(suppliers.map(s => [s.name.toLowerCase(), s.id]));
 
     // Detect fixed vs dynamic (store) columns
@@ -480,6 +492,12 @@ const parseImportFile = async (filePath, tenantId) => {
             unknownStoreColumns.push(header);
         }
     }
+    if (unknownStoreColumns.length > 0) {
+        throw badRequest(
+            `Unknown store column(s): ${unknownStoreColumns.join(', ')}. `
+            + 'Please use valid store names from the template.'
+        );
+    }
 
     const preview = rows.map((row, idx) => {
         const errors = [];
@@ -487,7 +505,7 @@ const parseImportFile = async (filePath, tenantId) => {
 
         const name = String(row['Name'] || row['name'] || '').trim();
         const barcode = String(row['Barcode'] || row['barcode'] || '').trim();
-        const unitPrice = parseFloat(row['Unit Price'] || row['unitPrice'] || row['unit_price'] || 0);
+        const unitPrice = parseExcelNumber(row['Unit Price'] || row['unitPrice'] || row['unit_price'] || 0);
         const catName = String(row['Category'] || row['category'] || '').trim();
         const baseUnit = String(row['Base Unit'] || row['baseUnit'] || row['base_unit'] || '').trim();
         const deptName = String(row['Department'] || row['department'] || '').trim();
@@ -500,14 +518,18 @@ const parseImportFile = async (filePath, tenantId) => {
         if (catName && !categoryId) errors.push(`Category '${catName}' not found`);
 
         const supplierId = vendorName ? supplierMap.get(vendorName.toLowerCase()) : undefined;
-        // Vendor is optional — unknown vendor names are stored as text but don't block import
+        if (vendorName && !supplierId) errors.push(`Vendor '${vendorName}' not found`);
 
         let baseUnitId = undefined;
         if (baseUnit) {
-            baseUnitId = unitMap.get(baseUnit.toLowerCase());
+            const unitCodeMatch = baseUnit.match(/\(([^)]+)\)/);
+            if (unitCodeMatch?.[1]) {
+                const unitCode = unitCodeMatch[1].trim().toLowerCase();
+                baseUnitId = unitAbbreviationMap.get(unitCode);
+            }
             if (!baseUnitId) {
                 const cleanedUnit = baseUnit.replace(/\s*\(.*\)\s*$/, '').trim();
-                baseUnitId = unitMap.get(cleanedUnit.toLowerCase());
+                baseUnitId = unitNameMap.get(cleanedUnit.toLowerCase());
             }
             if (!baseUnitId) errors.push(`Unit '${baseUnit}' not found`);
         }
@@ -520,7 +542,7 @@ const parseImportFile = async (filePath, tenantId) => {
         const storeQuantities = {};
         let firstStoreWithQty = null;
         for (const { header, locationId } of storeColumnNames) {
-            const qty = parseFloat(row[header] || 0);
+            const qty = parseExcelNumber(row[header] || 0);
             if (!isNaN(qty) && qty > 0) {
                 storeQuantities[locationId] = qty;
                 if (!firstStoreWithQty) firstStoreWithQty = locationId;

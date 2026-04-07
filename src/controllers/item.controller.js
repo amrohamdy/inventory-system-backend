@@ -375,20 +375,20 @@ const downloadTemplate = async (req, res, next) => {
         const vendorList = suppliers.map(s => s.name).filter(Boolean);
 
         const validationConfig = [
-            { col: 'department', list: deptList },
-            { col: 'category', list: catList },
-            { col: 'vendor', list: vendorList },
-            { col: 'baseUnit', list: unitList },
+            { col: 'department', list: deptList, formula: `Reference!$A$2:$A$${departments.length + 1}` },
+            { col: 'category', list: catList, formula: `Reference!$B$2:$B$${categories.length + 1}` },
+            { col: 'vendor', list: vendorList, formula: `Reference!$C$2:$C$${suppliers.length + 1}` },
+            { col: 'baseUnit', list: unitList, formula: `Reference!$E$2:$E$${units.length + 1}` },
         ];
 
-        for (const { col, list } of validationConfig) {
+        for (const { col, list, formula } of validationConfig) {
             if (list.length === 0) continue;
             const colIdx = wsItems.getColumn(col).number;
             for (let row = 2; row <= VALIDATION_ROWS; row++) {
                 wsItems.getCell(row, colIdx).dataValidation = {
                     type: 'list',
                     allowBlank: true,
-                    formulae: [`"${list.join(',')}"`],
+                    formulae: [formula],
                     showErrorMessage: true,
                     errorTitle: 'Invalid Value',
                     error: 'Please select a value from the dropdown list.',
