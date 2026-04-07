@@ -91,9 +91,7 @@ async function seedRolePermissions() {
             });
             linkCount += 1;
         }
-        console.log(`  ✅ ${roleCode}: ${permissionCodes.length} permission(s)`);
     }
-    console.log(`  ✅ Total role_permission link(s): ${linkCount}`);
 }
 
 async function main() {
