@@ -4,6 +4,7 @@ const XLSX = require('xlsx');
 const path = require('path');
 const auditService = require('./audit.service');
 const settingService = require('./setting.service');
+const { checkPeriodLock, checkOpeningBalanceAllowed } = require('./periodGuard.service');
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -687,6 +688,124 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
     };
 };
 
+/**
+ * Opening Balance Excel import: idempotent per (itemId + locationId).
+ * - If OPENING_BALANCE ledger row(s) already exist for that pair: set StockBalance.qtyOnHand
+ *   to the Excel value (not increment), keep one ledger row in sync (qtyIn, value, balanceAfter),
+ *   remove duplicate OB ledger rows, and update MovementLine when referenceId exists.
+ * - Otherwise: create a single-line OB draft and post (existing engine path).
+ * Caller must run inside prisma.$transaction and pass tx.
+ */
+const upsertOpeningBalanceForItemLocation = async (
+    tx,
+    {
+        tenantId,
+        itemId,
+        locationId,
+        targetQty,
+        unitCost,
+        userId,
+        itemName,
+    },
+    movementService,
+    postingService
+) => {
+    const qty = Number(targetQty);
+    if (!(qty > 0) || !(Number(unitCost) > 0)) {
+        throw new Error(`Invalid Opening Balance qty/cost for "${itemName}" at location.`);
+    }
+
+    const txDate = new Date();
+    const totalValue = qty * Number(unitCost);
+
+    const existingObRows = await tx.inventoryLedger.findMany({
+        where: {
+            tenantId,
+            itemId,
+            locationId,
+            movementType: 'OPENING_BALANCE',
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+
+    if (existingObRows.length > 0) {
+        // Correction path: do not require OB window (may be LOCKED after other postings).
+        await checkPeriodLock(tenantId, txDate);
+
+        const primary = existingObRows[0];
+        const duplicateIds = existingObRows.slice(1).map((r) => r.id);
+        if (duplicateIds.length > 0) {
+            await tx.inventoryLedger.deleteMany({ where: { id: { in: duplicateIds } } });
+        }
+
+        await tx.inventoryLedger.update({
+            where: { id: primary.id },
+            data: {
+                qtyIn: qty,
+                qtyOut: 0,
+                unitCost,
+                totalValue: totalValue,
+                balanceAfter: qty,
+            },
+        });
+
+        await tx.stockBalance.upsert({
+            where: { tenantId_itemId_locationId: { tenantId, itemId, locationId } },
+            update: {
+                qtyOnHand: qty,
+                wacUnitCost: unitCost,
+            },
+            create: {
+                tenantId,
+                itemId,
+                locationId,
+                qtyOnHand: qty,
+                wacUnitCost: unitCost,
+            },
+        });
+
+        if (primary.referenceId) {
+            await tx.movementLine.updateMany({
+                where: { documentId: primary.referenceId, itemId, locationId },
+                data: {
+                    qtyRequested: qty,
+                    qtyInBaseUnit: qty,
+                    unitCost,
+                    totalValue: totalValue,
+                },
+            });
+        }
+
+        return { kind: 'updated' };
+    }
+
+    await checkOpeningBalanceAllowed(tenantId, txDate);
+
+    const obDoc = await movementService.createMovementDraft(
+        {
+            movementType: 'OPENING_BALANCE',
+            documentDate: txDate.toISOString(),
+            destLocationId: locationId,
+            notes: `Opening Balance import for ${itemName}`,
+            lines: [
+                {
+                    itemId,
+                    locationId,
+                    qtyRequested: qty,
+                    unitCost,
+                    totalValue: totalValue,
+                },
+            ],
+        },
+        tenantId,
+        userId,
+        tx
+    );
+
+    const posted = await postingService.postDocument(obDoc.id, tenantId, userId, tx);
+    return { kind: 'posted', documentNo: posted.documentNo || obDoc.documentNo };
+};
+
 // ── EXCEL IMPORT: CONFIRM ─────────────────────────────────────────────────────
 const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false) => {
     const movementService = require('./movement.service');
@@ -694,7 +813,8 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
 
     let inserted = 0, updated = 0, failed = 0;
     const failures = [];
-    const obDocuments = []; // Track created OB document IDs
+    const obDocuments = []; // Newly posted OB document numbers (one per new item+location)
+    let obLocationUpdates = 0;
 
     for (const row of rows) {
         if (row.status === 'ERROR') {
@@ -712,7 +832,8 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                 let itemId;
                 let wasInserted = false;
                 let wasUpdated = false;
-                let obDocumentNo = null;
+                const obDocNosThisRow = [];
+                let obLocationsUpdatedThisRow = 0;
 
                 if (existing) {
                     await tx.item.update({
@@ -758,40 +879,45 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                     }
                 }
 
-                // ── Create OB document if requested ───────────────────────
+                // ── Opening Balance: idempotent per (itemId + locationId) ──
                 if (asOpeningBalance && storeQuantities && Object.keys(storeQuantities).length > 0) {
-                    // Zero-cost guard at import level
                     if (!(Number(unitPrice) > 0)) {
                         throw new Error(`Opening Balance requires a valid unit cost. Item "${name}" has unitPrice = ${unitPrice || 0}. Please add a price before importing as Opening Balance.`);
                     }
 
-                    const lines = Object.entries(storeQuantities).map(([locationId, qty]) => ({
-                        itemId,
-                        locationId,
-                        qtyRequested: qty,
-                        unitCost: unitPrice,
-                        totalValue: qty * unitPrice,
-                    }));
-
-                    const obDoc = await movementService.createMovementDraft({
-                        movementType: 'OPENING_BALANCE',
-                        documentDate: new Date().toISOString(),
-                        destLocationId: lines[0].locationId,
-                        notes: `Opening Balance import for ${name}`,
-                        lines,
-                    }, tenantId, createdBy, tx);
-
-                    // Post immediately within same transaction for row-level atomicity
-                    const posted = await postingService.postDocument(obDoc.id, tenantId, createdBy, tx);
-                    obDocumentNo = posted.documentNo || obDoc.documentNo;
+                    for (const [locationId, qty] of Object.entries(storeQuantities)) {
+                        const result = await upsertOpeningBalanceForItemLocation(
+                            tx,
+                            {
+                                tenantId,
+                                itemId,
+                                locationId,
+                                targetQty: qty,
+                                unitCost: unitPrice,
+                                userId: createdBy,
+                                itemName: name,
+                            },
+                            movementService,
+                            postingService
+                        );
+                        if (result.kind === 'posted' && result.documentNo) {
+                            obDocNosThisRow.push(result.documentNo);
+                        }
+                        if (result.kind === 'updated') {
+                            obLocationsUpdatedThisRow += 1;
+                        }
+                    }
                 }
 
-                return { wasInserted, wasUpdated, obDocumentNo };
+                return { wasInserted, wasUpdated, obDocNosThisRow, obLocationsUpdatedThisRow };
             });
 
             if (txResult.wasInserted) inserted++;
             if (txResult.wasUpdated) updated++;
-            if (txResult.obDocumentNo) obDocuments.push(txResult.obDocumentNo);
+            for (const no of txResult.obDocNosThisRow || []) {
+                obDocuments.push(no);
+            }
+            obLocationUpdates += txResult.obLocationsUpdatedThisRow || 0;
         } catch (err) {
             failed++;
             failures.push({ rowNum: row.rowNum, errors: [err.message] });
@@ -800,7 +926,11 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
 
     return {
         inserted, updated, failed, failures,
-        ...(asOpeningBalance && { obDocuments, obCount: obDocuments.length }),
+        ...(asOpeningBalance && {
+            obDocuments,
+            obCount: obDocuments.length,
+            obLocationUpdates,
+        }),
     };
 };
 // ── BULK UPLOAD IMAGES (ZIP) ──────────────────────────────────────────────────
