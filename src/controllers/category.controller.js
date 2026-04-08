@@ -58,10 +58,22 @@ const deleteCategory = async (req, res, next) => {
 // SUBCATEGORIES
 // ==========================================
 
+const getSubcategories = async (req, res, next) => {
+    try {
+        const subcategories = await categoryService.getSubcategoriesByCategoryId(
+            req.params.id,
+            req.user.tenantId
+        );
+        return success(res, subcategories, 'Subcategories fetched successfully');
+    } catch (error) {
+        next(error);
+    }
+};
+
 const createSubcategory = async (req, res, next) => {
     try {
         const subcategory = await categoryService.createSubcategory(
-            req.params.categoryId,
+            req.params.id,
             req.body,
             req.user.tenantId
         );
@@ -95,6 +107,7 @@ module.exports = {
     getCategory,
     updateCategory,
     deleteCategory,
+    getSubcategories,
     createSubcategory,
     updateSubcategory,
     deleteSubcategory

@@ -1,3 +1,4 @@
+const { validate: uuidValidate } = require('uuid');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
@@ -117,6 +118,29 @@ const deleteCategory = async (id, tenantId) => {
 // SUBCATEGORIES
 // ==========================================
 
+const getSubcategoriesByCategoryId = async (categoryId, tenantId) => {
+    if (!uuidValidate(categoryId)) {
+        const error = new Error('Invalid category id. Expected a UUID.');
+        error.statusCode = 400;
+        throw error;
+    }
+
+    const category = await prisma.category.findFirst({
+        where: { id: categoryId, tenantId },
+        select: { id: true },
+    });
+    if (!category) {
+        const error = new Error('Category not found');
+        error.statusCode = 404;
+        throw error;
+    }
+
+    return prisma.subcategory.findMany({
+        where: { categoryId, tenantId },
+        orderBy: { name: 'asc' },
+    });
+};
+
 const createSubcategory = async (categoryId, data, tenantId) => {
     await getCategoryById(categoryId, tenantId);
 
@@ -190,6 +214,7 @@ module.exports = {
     getCategoryById,
     updateCategory,
     deleteCategory,
+    getSubcategoriesByCategoryId,
     createSubcategory,
     updateSubcategory,
     deleteSubcategory
