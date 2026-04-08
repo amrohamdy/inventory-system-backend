@@ -11,9 +11,10 @@ const getParLevels = async (req, res, next) => {
 
 const updateParLevels = async (req, res, next) => {
     try {
-        const { updates } = req.body;
-        if (!updates || !Array.isArray(updates)) return res.status(400).json({ error: 'updates array required' });
-        const data = await parLevelService.updateParLevels(req.user.tenantId, updates);
+        const { locationId, updates } = req.body;
+        if (!locationId) return res.status(400).json({ success: false, message: 'locationId is required' });
+        if (!updates || !Array.isArray(updates)) return res.status(400).json({ success: false, message: 'updates array required' });
+        const data = await parLevelService.updateParLevels(req.user.tenantId, locationId, updates);
         res.json(data);
     } catch (err) { next(err); }
 };

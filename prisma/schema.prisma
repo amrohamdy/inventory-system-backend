@@ -422,6 +422,7 @@ model InventoryLedger {
   qtyOut           Decimal          @default(0) @db.Decimal(15, 4)
   unitCost         Decimal          @default(0) @db.Decimal(15, 4)
   totalValue       Decimal          @default(0) @db.Decimal(15, 4)
+  balanceAfter     Decimal          @default(0) @db.Decimal(15, 4)
   referenceType    String?
   referenceId      String?          @db.Uuid
   referenceNo      String?

@@ -102,6 +102,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                 if (!currentStock || Number(currentStock.qtyOnHand) < qty) {
                     throw new Error(`Insufficient stock for Item ${line.item.name} at source location. Available: ${currentStock ? currentStock.qtyOnHand : 0}, Requested: ${qty}`);
                 }
+                const balanceAfter = Number(currentStock.qtyOnHand) - qty;
 
                 // Create Ledger Entry for Issue
                 await tx.inventoryLedger.create({
@@ -114,6 +115,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                         qtyIn: 0,
                         unitCost: currentStock.wacUnitCost, // Outgoing at current WAC
                         totalValue: qty * Number(currentStock.wacUnitCost),
+                        balanceAfter,
                         referenceType: 'MOVEMENT',
                         referenceId: document.id,
                         referenceNo: document.documentNo,
@@ -159,6 +161,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                 const totalValueBefore = currentQty * currentWac;
                 const newTotalQty = currentQty + qty;
                 const newWac = newTotalQty > 0 ? ((totalValueBefore + receiveTotalValue) / newTotalQty) : 0;
+                const balanceAfter = currentQty + qty;
 
                 // Create Ledger Entry for Receipt
                 await tx.inventoryLedger.create({
@@ -171,6 +174,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                         qtyOut: 0,
                         unitCost: receiveUnitCost,
                         totalValue: receiveTotalValue,
+                        balanceAfter,
                         referenceType: 'MOVEMENT',
                         referenceId: document.id,
                         referenceNo: document.documentNo,
@@ -211,6 +215,13 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                 const currentWac = currentStock ? Number(currentStock.wacUnitCost) : Number(unitCost) || 0;
                 const adjUnitCost = Number(unitCost) > 0 ? Number(unitCost) : currentWac;
                 const adjTotalValue = absQty * adjUnitCost;
+                const currentQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
+
+                if (!isPositive && (!currentStock || currentQty < absQty)) {
+                    throw new Error(`Insufficient stock for adjustment of ${line.item.name}. Available: ${currentStock ? currentStock.qtyOnHand : 0}, Requested: ${absQty}`);
+                }
+
+                const balanceAfter = isPositive ? (currentQty + absQty) : (currentQty - absQty);
 
                 // Create Ledger Entry
                 await tx.inventoryLedger.create({
@@ -223,6 +234,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                         qtyOut: isPositive ? 0 : absQty,
                         unitCost: adjUnitCost,
                         totalValue: adjTotalValue,
+                        balanceAfter,
                         referenceType: 'MOVEMENT',
                         referenceId: document.id,
                         referenceNo: document.documentNo,
@@ -232,7 +244,6 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
 
                 if (isPositive) {
                     // Increase balance (upsert in case balance doesn't exist yet)
-                    const currentQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
                     const newTotalQty = currentQty + absQty;
                     const newWac = newTotalQty > 0
                         ? ((currentQty * currentWac) + adjTotalValue) / newTotalQty
@@ -244,10 +255,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                         create: { tenantId, itemId, locationId: adjLocationId, qtyOnHand: absQty, wacUnitCost: adjUnitCost }
                     });
                 } else {
-                    // Decrease balance — check sufficient stock first
-                    if (!currentStock || Number(currentStock.qtyOnHand) < absQty) {
-                        throw new Error(`Insufficient stock for adjustment of ${line.item.name}. Available: ${currentStock ? currentStock.qtyOnHand : 0}, Requested: ${absQty}`);
-                    }
+                    // Decrease balance (already validated above)
                     await tx.stockBalance.update({
                         where: { tenantId_itemId_locationId: { tenantId, itemId, locationId: adjLocationId } },
                         data: { qtyOnHand: { decrement: absQty } }
@@ -338,6 +346,15 @@ const postStockCount = async (sessionId, tenantId, userId) => {
             const absVariance = Math.abs(varianceQty);
             const wac = Number(line.wacUnitCost);
             const totalValue = Math.abs(Number(line.varianceValue));
+            const currentStock = await tx.stockBalance.findUnique({
+                where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: session.locationId } }
+            });
+            const currentQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
+
+            if (!isPositive && (!currentStock || currentQty < absVariance)) {
+                throw new Error(`Insufficient stock for count adjustment. Available: ${currentStock ? currentStock.qtyOnHand : 0}, Requested: ${absVariance}`);
+            }
+            const balanceAfter = isPositive ? (currentQty + absVariance) : (currentQty - absVariance);
 
             // Create Ledger Entry
             await tx.inventoryLedger.create({
@@ -350,6 +367,7 @@ const postStockCount = async (sessionId, tenantId, userId) => {
                     qtyOut: isPositive ? 0 : absVariance,
                     unitCost: wac,
                     totalValue: totalValue,
+                    balanceAfter,
                     referenceType: 'STOCK_COUNT',
                     referenceId: session.id,
                     referenceNo: session.sessionNo,
@@ -447,7 +465,13 @@ const postStockReport = async (reportId, tenantId, userId) => {
                     where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId } }
                 });
                 const wac = currentStock ? Number(currentStock.wacUnitCost) : 0;
+                const currentQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
                 const adjustedTotalValue = absVariance * wac;
+
+                if (!isPositive && (!currentStock || currentQty < absVariance)) {
+                    throw new Error(`Insufficient stock for stock report adjustment. Available: ${currentStock ? currentStock.qtyOnHand : 0}, Requested: ${absVariance}`);
+                }
+                const balanceAfter = isPositive ? (currentQty + absVariance) : (currentQty - absVariance);
 
                 // Create Ledger Entry for this item+location variance
                 await tx.inventoryLedger.create({
@@ -460,6 +484,7 @@ const postStockReport = async (reportId, tenantId, userId) => {
                         qtyOut: isPositive ? 0 : absVariance,
                         unitCost: wac,
                         totalValue: adjustedTotalValue,
+                        balanceAfter,
                         referenceType: 'STOCK_REPORT',
                         referenceId: report.id,
                         referenceNo: report.reportNo,

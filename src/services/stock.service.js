@@ -81,7 +81,7 @@ const getStockSummary = async (tenantId, query = {}) => {
         totalValue += qty * wac;
         if (qty === 0) zeroStockCount++;
         const reorder = Number(r.item?.reorderPoint || 0);
-        if (reorder > 0 && qty < reorder) lowStockCount++;
+        if (reorder > 0 && qty <= reorder) lowStockCount++;
     }
 
     return {
@@ -145,7 +145,7 @@ const exportStockBalances = async (tenantId, query = {}) => {
         const reorder = Number(b.item?.reorderPoint || 0);
         grandTotal += value;
 
-        const isLow = reorder > 0 && qty < reorder;
+        const isLow = reorder > 0 && qty <= reorder;
         const isZero = qty === 0;
 
         const row = ws.addRow({

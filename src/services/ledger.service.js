@@ -36,7 +36,7 @@ const getLedgerEntries = async (tenantId, query = {}) => {
             where,
             skip: parseInt(skip),
             take: parseInt(take),
-            orderBy: { createdAt: 'asc' },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
             include: {
                 item: { select: { id: true, name: true, barcode: true } },
                 location: { select: { id: true, name: true } },
@@ -46,22 +46,7 @@ const getLedgerEntries = async (tenantId, query = {}) => {
         prisma.inventoryLedger.count({ where })
     ]);
 
-    // Calculate running balance per item+location combination
-    const runningBalances = {};
-    const entriesWithBalance = entries.map(entry => {
-        const key = `${entry.itemId}-${entry.locationId}`;
-        if (!runningBalances[key]) {
-            runningBalances[key] = 0;
-        }
-        runningBalances[key] += Number(entry.qtyIn) - Number(entry.qtyOut);
-
-        return {
-            ...entry,
-            runningBalance: runningBalances[key]
-        };
-    });
-
-    return { entries: entriesWithBalance, total };
+    return { entries, total };
 };
 
 /**
@@ -73,7 +58,7 @@ const getLedgerByDocument = async (documentId, tenantId) => {
             tenantId,
             referenceId: documentId
         },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         include: {
             item: { select: { id: true, name: true, barcode: true } },
             location: { select: { id: true, name: true } }
