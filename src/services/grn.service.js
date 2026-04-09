@@ -5,6 +5,7 @@ const pdfParse = require('pdf-parse');
 const fs = require('fs');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
+const { normalizeRole } = require('./rbac.service');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const assertStatus = async (grnId, tenantId, expected) => {
@@ -34,10 +35,11 @@ const assertStatus = async (grnId, tenantId, expected) => {
  * @param {Array}  opts.lines           — [{ itemId, uomId, orderedQty, receivedQty, unitPrice, notes? }]
  * @param {string} opts.tenantId
  * @param {string} opts.userId
+ * @param {string} opts.creatorRole — JWT role code (normalized): STOREKEEPER → VALIDATED; COST_CONTROL / ADMIN / SUPER_ADMIN / ORG_MANAGER → APPROVED
  */
 const createGrn = async ({
     supplierId, locationId, grnNumber, receivingDate,
-    invoiceUrl, notes, lines, tenantId, userId,
+    invoiceUrl, notes, lines, tenantId, userId, creatorRole,
 }) => {
     // ── Validate supplier ──
     const supplier = await prisma.supplier.findFirst({
@@ -85,6 +87,16 @@ const createGrn = async ({
     // ── Build item lookup for display ──
     const itemMap = Object.fromEntries(foundItems.map(i => [i.id, i]));
 
+    const role = normalizeRole(creatorRole);
+    let initialStatus = 'VALIDATED';
+    let approvedBy = null;
+    if (role === 'STOREKEEPER') {
+        initialStatus = 'VALIDATED';
+    } else if (['COST_CONTROL', 'ADMIN', 'SUPER_ADMIN', 'ORG_MANAGER'].includes(role)) {
+        initialStatus = 'APPROVED';
+        approvedBy = userId;
+    }
+
     // ── Create GRN atomically ──
     const grn = await prisma.grnImport.create({
         data: {
@@ -96,7 +108,8 @@ const createGrn = async ({
             receivingDate: receivingDate ? new Date(receivingDate) : new Date(),
             pdfAttachmentUrl: invoiceUrl,
             notes: notes || null,
-            status: 'VALIDATED',
+            status: initialStatus,
+            approvedBy,
             importedBy: userId,
             lines: {
                 create: lines.map(l => {
@@ -264,6 +277,43 @@ const updateStatus = async (grnId, tenantId, status, reason, userId) => {
     });
 };
 
+/**
+ * After corrections, move REJECTED → VALIDATED (storekeeper) or APPROVED (cost control / admin).
+ */
+const resubmitRejectedGrn = async (grnId, tenantId, userId, creatorRole) => {
+    const grn = await prisma.grnImport.findFirst({ where: { id: grnId, tenantId } });
+    if (!grn) throw Object.assign(new Error('GRN not found'), { status: 404 });
+    if (grn.status !== 'REJECTED')
+        throw Object.assign(new Error('Only rejected GRNs can be resubmitted.'), { status: 422 });
+
+    const r = normalizeRole(creatorRole);
+    if (r === 'STOREKEEPER') {
+        return prisma.grnImport.update({
+            where: { id: grnId },
+            data: {
+                status: 'VALIDATED',
+                approvedBy: null,
+                rejectionReason: null,
+                rejectedBy: null,
+                updatedAt: new Date(),
+            },
+        });
+    }
+    if (['COST_CONTROL', 'ADMIN', 'SUPER_ADMIN', 'ORG_MANAGER'].includes(r)) {
+        return prisma.grnImport.update({
+            where: { id: grnId },
+            data: {
+                status: 'APPROVED',
+                approvedBy: userId,
+                rejectionReason: null,
+                rejectedBy: null,
+                updatedAt: new Date(),
+            },
+        });
+    }
+    throw Object.assign(new Error('Your role cannot resubmit this GRN.'), { status: 403 });
+};
+
 // ─── Post GRN (Atomic) ───────────────────────────────────────────────────────
 
 /**
@@ -423,18 +473,98 @@ const getGrn = async (grnId, tenantId) => {
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
 
-const updateGrnNotes = async (grnId, tenantId, notes) => {
+/**
+ * PATCH /api/grn/:id — optional `notes`; optional `lines` (full replacement) only when status is REJECTED.
+ * POSTED / APPROVED (and any non-REJECTED status) cannot change line items.
+ */
+const updateGrn = async (grnId, tenantId, body = {}) => {
+    const { notes, lines } = body;
+    const hasLines = lines !== undefined;
+    const hasNotes = notes !== undefined;
+
+    if (!hasLines && !hasNotes)
+        throw Object.assign(new Error('No updates provided.'), { status: 400 });
+
     const grn = await prisma.grnImport.findFirst({ where: { id: grnId, tenantId } });
     if (!grn) throw Object.assign(new Error('GRN not found'), { status: 404 });
 
-    const IMMUTABLE = ['POSTED', 'REJECTED'];
-    if (IMMUTABLE.includes(grn.status))
-        throw Object.assign(new Error(`GRN is ${grn.status} and is fully read-only.`), { status: 423 });
+    if (hasLines) {
+        if (!Array.isArray(lines))
+            throw Object.assign(new Error('lines must be an array.'), { status: 400 });
+        if (grn.status !== 'REJECTED')
+            throw Object.assign(
+                new Error('Line items can only be edited when the GRN status is REJECTED.'),
+                { status: 422 }
+            );
+        if (lines.length === 0)
+            throw Object.assign(new Error('At least one line item is required.'), { status: 400 });
 
-    return prisma.grnImport.update({
+        const itemIds = [...new Set(lines.map(l => l.itemId))];
+        const foundItems = await prisma.item.findMany({
+            where: { id: { in: itemIds }, tenantId },
+            include: { itemUnits: { include: { unit: true } } },
+        });
+        const foundItemIds = new Set(foundItems.map(i => i.id));
+        const missingIds = itemIds.filter(id => !foundItemIds.has(id));
+        if (missingIds.length > 0)
+            throw Object.assign(
+                new Error(`${missingIds.length} item(s) not found in Item Master. Add them first.`),
+                { status: 422, details: missingIds }
+            );
+
+        const invalidLines = lines.filter(l => Number(l.receivedQty) <= 0);
+        if (invalidLines.length > 0)
+            throw Object.assign(new Error('All received quantities must be greater than zero.'), { status: 400 });
+
+        const itemMap = Object.fromEntries(foundItems.map(i => [i.id, i]));
+
+        await prisma.$transaction(async (tx) => {
+            await tx.grnLine.deleteMany({ where: { grnImportId: grnId } });
+
+            const createRows = lines.map(l => {
+                const received = Number(l.receivedQty);
+                const orderedRaw = l.orderedQty;
+                const ordered =
+                    orderedRaw != null && orderedRaw !== ''
+                        ? Number(orderedRaw)
+                        : received;
+                return {
+                    grnImportId: grnId,
+                    futurelogItemCode: itemMap[l.itemId]?.barcode || l.itemId,
+                    futurelogDescription: itemMap[l.itemId]?.name || '',
+                    futurelogUom: l.uomId,
+                    orderedQty: Number.isFinite(ordered) ? ordered : received,
+                    receivedQty: received,
+                    unitPrice: Number(l.unitPrice) || 0,
+                    internalItemId: l.itemId,
+                    internalUomId: l.uomId,
+                    conversionFactor: 1,
+                    qtyInBaseUnit: received,
+                    isMapped: true,
+                };
+            });
+
+            await tx.grnLine.createMany({ data: createRows });
+            await tx.grnImport.update({
+                where: { id: grnId },
+                data: {
+                    ...(hasNotes ? { notes: notes ?? null } : {}),
+                    updatedAt: new Date(),
+                },
+            });
+        });
+
+        return getGrn(grnId, tenantId);
+    }
+
+    if (grn.status === 'POSTED')
+        throw Object.assign(new Error('GRN is POSTED and is fully read-only.'), { status: 423 });
+
+    await prisma.grnImport.update({
         where: { id: grnId },
         data: { notes, updatedAt: new Date() },
     });
+    return getGrn(grnId, tenantId);
 };
 
 const deleteGrn = async (grnId, tenantId) => {
@@ -805,7 +935,8 @@ module.exports = {
     postGrn,
     listGrns,
     getGrn,
-    updateGrnNotes,
+    updateGrn,
+    resubmitRejectedGrn,
     deleteGrn,
     generateGrnTemplate,
     previewGrnExcel,

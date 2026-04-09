@@ -24,6 +24,7 @@ router.post('/:id/validate', requirePermission('GRN_MANAGE'), ctrl.validateGrn);
 router.post('/:id/submit', requirePermission('GRN_MANAGE'), ctrl.submitGrn);
 router.post('/:id/approve', requirePermission('GRN_MANAGE'), ctrl.approveGrn);
 router.post('/:id/reject', requirePermission('GRN_MANAGE'), ctrl.rejectGrn);
+router.post('/:id/resubmit', requirePermission('GRN_MANAGE'), ctrl.resubmitGrn);
 router.post('/:id/post', requirePermission('GRN_MANAGE'), ctrl.postGrn);
 
 // ── Mutations (specific PATCH paths before `/:id`) ──

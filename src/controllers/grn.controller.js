@@ -60,8 +60,18 @@ const assertFinance = (req) => {
         );
 };
 
+/** POST /api/grn/:id/post — FINANCE_MANAGER or ADMIN (not Cost Control). */
+const assertPostGrnRole = (req) => {
+    const role = normalizeRole(req.user?.role);
+    if (!['FINANCE_MANAGER', 'ADMIN', 'SUPER_ADMIN'].includes(role))
+        throw Object.assign(
+            new Error('Insufficient permissions to post this GRN to the ledger.'),
+            { status: 403 }
+        );
+};
+
 /** PATCH /api/grn/:id/status — VALIDATED → APPROVED | REJECTED (Cost Control / Admin only). */
-const GRN_STATUS_UPDATE_ROLES = ['COST_CONTROL', 'ADMIN', 'SUPER_ADMIN'];
+const GRN_STATUS_UPDATE_ROLES = ['COST_CONTROL', 'ADMIN'];
 
 const assertCostControlOrAdmin = (req) => {
     const role = normalizeRole(req.user?.role);
@@ -117,6 +127,7 @@ const createGrn = async (req, res) => {
             lines: parsedLines,
             tenantId: req.user.tenantId,
             userId: req.user.id,
+            creatorRole: normalizeRole(req.user.role),
         });
 
         sendSuccess(res, grn, 201);
@@ -201,10 +212,25 @@ const rejectGrn = async (req, res) => {
     }
 };
 
-/** POST /api/grn/:id/post — FINANCE only */
+/** POST /api/grn/:id/resubmit — REJECTED → VALIDATED | APPROVED */
+const resubmitGrn = async (req, res) => {
+    try {
+        const grn = await grnService.resubmitRejectedGrn(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            normalizeRole(req.user.role),
+        );
+        sendSuccess(res, grn);
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
+/** POST /api/grn/:id/post — Finance / Admin only */
 const postGrn = async (req, res) => {
     try {
-        assertFinance(req);
+        assertPostGrnRole(req);
         const grn = await grnService.postGrn(
             req.params.id, req.user.tenantId, req.user.id,
         );
@@ -239,12 +265,12 @@ const updateGrnStatus = async (req, res) => {
     }
 };
 
-/** PATCH /api/grn/:id */
+/** PATCH /api/grn/:id — notes and/or lines (lines only when REJECTED) */
 const updateGrn = async (req, res) => {
     try {
-        const { notes } = req.body;
-        const updated = await grnService.updateGrnNotes(
-            req.params.id, req.user.tenantId, notes,
+        const { notes, lines } = req.body || {};
+        const updated = await grnService.updateGrn(
+            req.params.id, req.user.tenantId, { notes, lines },
         );
         sendSuccess(res, updated);
     } catch (err) {
@@ -313,6 +339,7 @@ module.exports = {
     submitGrn,
     approveGrn,
     rejectGrn,
+    resubmitGrn,
     postGrn,
     updateGrnStatus,
     updateGrn,
