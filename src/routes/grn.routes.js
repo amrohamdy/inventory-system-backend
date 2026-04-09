@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/authenticate');
-const { requirePermission } = require('../middleware/authorize');
+const { authorize, requirePermission } = require('../middleware/authorize');
 const ctrl = require('../controllers/grn.controller');
 
 router.use(authenticate);
@@ -25,7 +25,11 @@ router.post('/:id/submit', requirePermission('GRN_MANAGE'), ctrl.submitGrn);
 router.post('/:id/approve', requirePermission('GRN_MANAGE'), ctrl.approveGrn);
 router.post('/:id/reject', requirePermission('GRN_MANAGE'), ctrl.rejectGrn);
 router.post('/:id/resubmit', requirePermission('GRN_MANAGE'), ctrl.resubmitGrn);
-router.post('/:id/post', requirePermission('GRN_MANAGE'), ctrl.postGrn);
+router.post(
+    '/:id/post',
+    authorize('FINANCE_MANAGER', 'ADMIN', 'SUPER_ADMIN', 'ORG_MANAGER'),
+    ctrl.postGrn,
+);
 
 // ── Mutations (specific PATCH paths before `/:id`) ──
 router.patch('/:id/status', requirePermission('GRN_MANAGE'), ctrl.updateGrnStatus);

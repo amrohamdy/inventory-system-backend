@@ -60,10 +60,10 @@ const assertFinance = (req) => {
         );
 };
 
-/** POST /api/grn/:id/post — FINANCE_MANAGER or ADMIN (not Cost Control). */
+/** POST /api/grn/:id/post — Finance Manager or Admin only (not Cost Control). */
 const assertPostGrnRole = (req) => {
     const role = normalizeRole(req.user?.role);
-    if (!['FINANCE_MANAGER', 'ADMIN', 'SUPER_ADMIN'].includes(role))
+    if (!['FINANCE_MANAGER', 'ADMIN', 'SUPER_ADMIN', 'ORG_MANAGER'].includes(role))
         throw Object.assign(
             new Error('Insufficient permissions to post this GRN to the ledger.'),
             { status: 403 }

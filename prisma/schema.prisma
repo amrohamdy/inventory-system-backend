@@ -94,6 +94,7 @@ model User {
   getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
   grnApproved        GrnImport[]         @relation("GrnApprovedBy")
   grnImported        GrnImport[]         @relation("GrnImportedBy")
+  grnPosted          GrnImport[]         @relation("GrnPostedBy")
   grnRejected        GrnImport[]         @relation("GrnRejectedBy")
   importSessions     ImportSession[]
   ledgerEntries      InventoryLedger[]   @relation("LedgerCreatedBy")
@@ -732,12 +733,14 @@ model GrnImport {
   importedBy         String    @db.Uuid
   approvedBy         String?   @db.Uuid
   rejectedBy         String?   @db.Uuid
+  postedBy           String?   @db.Uuid
   postedAt           DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   approvedByUser     User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
   importedByUser     User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
   location           Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  postedByUser       User?     @relation("GrnPostedBy", fields: [postedBy], references: [id])
   rejectedByUser     User?     @relation("GrnRejectedBy", fields: [rejectedBy], references: [id])
   tenant             Tenant    @relation(fields: [tenantId], references: [id])
   vendor             Supplier? @relation(fields: [vendorId], references: [id], onDelete: SetNull)

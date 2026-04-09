@@ -337,8 +337,8 @@ const postGrn = async (grnId, tenantId, userId) => {
             if (qtyToPost <= 0)
                 throw new Error(`Line has zero or negative quantity — aborting post`);
 
-            const unitCost = Number(line.unitPrice);
-            const totalValue = qtyToPost * unitCost;
+            const lineUnitPrice = Number(line.unitPrice);
+            const totalValue = qtyToPost * lineUnitPrice;
 
             // WAC upsert
             const balance = await tx.stockBalance.findUnique({
@@ -355,8 +355,8 @@ const postGrn = async (grnId, tenantId, userId) => {
             const prevWac = balance ? Number(balance.wacUnitCost) : 0;
             const newQty = prevQty + qtyToPost;
             const newWac = newQty > 0
-                ? ((prevQty * prevWac) + (qtyToPost * unitCost)) / newQty
-                : unitCost;
+                ? ((prevQty * prevWac) + (qtyToPost * lineUnitPrice)) / newQty
+                : lineUnitPrice;
 
             await tx.stockBalance.upsert({
                 where: {
@@ -387,7 +387,7 @@ const postGrn = async (grnId, tenantId, userId) => {
                     movementType: 'RECEIVE',
                     qtyIn: qtyToPost,
                     qtyOut: 0,
-                    unitCost: newWac,
+                    unitCost: lineUnitPrice,
                     totalValue,
                     referenceType: 'GRN',
                     referenceId: grn.id,
@@ -400,7 +400,12 @@ const postGrn = async (grnId, tenantId, userId) => {
 
         await tx.grnImport.update({
             where: { id: grnId },
-            data: { status: 'POSTED', postedAt: new Date(), updatedAt: new Date() },
+            data: {
+                status: 'POSTED',
+                postedBy: userId,
+                postedAt: new Date(),
+                updatedAt: new Date(),
+            },
         });
     });
 
@@ -410,6 +415,7 @@ const postGrn = async (grnId, tenantId, userId) => {
             lines: true,
             vendor: { select: { name: true } },
             location: { select: { name: true } },
+            postedByUser: { select: { firstName: true, lastName: true } },
         },
     });
 };
@@ -445,6 +451,7 @@ const getGrn = async (grnId, tenantId) => {
             location: { select: { name: true } },
             importedByUser: { select: { firstName: true, lastName: true } },
             approvedByUser: { select: { firstName: true, lastName: true } },
+            postedByUser: { select: { firstName: true, lastName: true } },
             rejectedByUser: { select: { firstName: true, lastName: true } },
             lines: true,
         },
