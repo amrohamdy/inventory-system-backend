@@ -3,6 +3,9 @@ const { validate: uuidValidate } = require('uuid');
 const prisma = new PrismaClient();
 
 const MAX_LOCATION_PAGE = 1000;
+const MAX_LOCATION_SLIM = 5000;
+
+const isSlimQuery = (value) => value === 'true' || value === true;
 
 const parseLocationPagination = (querySkip, queryTake, defaultTake = 100) => {
     let skip = parseInt(querySkip, 10);
@@ -114,8 +117,8 @@ const createLocation = async (data, tenantId) => {
  * Get all locations
  */
 const getLocations = async (tenantId, query = {}) => {
-    const { search, type, isActive, departmentId, categoryId } = query;
-    const { skip, take } = parseLocationPagination(query.skip, query.take, 100);
+    const { search, type, isActive, departmentId, categoryId, slim } = query;
+    const slimMode = isSlimQuery(slim);
 
     if (departmentId) {
         if (!uuidValidate(departmentId)) {
@@ -143,6 +146,18 @@ const getLocations = async (tenantId, query = {}) => {
             name: { contains: search, mode: 'insensitive' }
         })
     };
+
+    if (slimMode) {
+        const locations = await prisma.location.findMany({
+            where,
+            take: MAX_LOCATION_SLIM,
+            orderBy: { name: 'asc' },
+            select: { id: true, name: true, type: true },
+        });
+        return { locations, slim: true };
+    }
+
+    const { skip, take } = parseLocationPagination(query.skip, query.take, 100);
 
     const [locations, total] = await Promise.all([
         prisma.location.findMany({

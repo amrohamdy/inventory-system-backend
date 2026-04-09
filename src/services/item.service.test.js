@@ -260,3 +260,40 @@ test('getItems rejects unknown department for tenant', async () => {
         }
     );
 });
+
+test('getItems slim mode uses select, caps take at 5000, skips count and meta path', async () => {
+    let findManyArgs;
+    let countCalled = false;
+    const service = loadServiceForListQueries({
+        department: { findFirst: async () => ({ id: SAMPLE_DEPT_UUID }) },
+        item: {
+            findMany: async (args) => {
+                findManyArgs = args;
+                return [{ id: 'i1', name: 'A', barcode: 'x' }];
+            },
+            count: async () => {
+                countCalled = true;
+                return 0;
+            },
+        },
+    });
+
+    const result = await service.getItems('tenant-1', {
+        slim: 'true',
+        departmentId: SAMPLE_DEPT_UUID,
+        isActive: 'true',
+        skip: '10',
+        take: '5',
+    });
+
+    assert.equal(result.slim, true);
+    assert.equal(result.items.length, 1);
+    assert.equal(findManyArgs.skip, undefined);
+    assert.equal(findManyArgs.take, 5000);
+    assert.deepEqual(findManyArgs.select, { id: true, name: true, barcode: true });
+    assert.equal(findManyArgs.include, undefined);
+    assert.equal(findManyArgs.where.tenantId, 'tenant-1');
+    assert.equal(findManyArgs.where.departmentId, SAMPLE_DEPT_UUID);
+    assert.equal(findManyArgs.where.isActive, true);
+    assert.equal(countCalled, false);
+});

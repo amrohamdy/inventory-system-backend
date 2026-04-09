@@ -3,6 +3,9 @@ const { validate: uuidValidate } = require('uuid');
 const prisma = new PrismaClient();
 
 const MAX_ITEM_PAGE = 1000;
+const MAX_ITEM_SLIM = 5000;
+
+const isSlimQuery = (value) => value === 'true' || value === true;
 
 const parseItemPagination = (querySkip, queryTake, defaultTake = 20) => {
     let skip = parseInt(querySkip, 10);
@@ -196,9 +199,11 @@ const createItem = async (data, tenantId) => {
 
 // ── LIST ───────────────────────────────────────────────────────────────────────
 const getItems = async (tenantId, query = {}) => {
-    const { search, categoryId, subcategoryId, departmentId, locationId, isActive, catalog, forGetPass } = query;
-    const catalogMode = catalog === 'true' || catalog === true || forGetPass === 'true' || forGetPass === true;
-    const { skip, take } = parseItemPagination(query.skip, query.take, 20);
+    const { search, categoryId, subcategoryId, departmentId, locationId, isActive, catalog, forGetPass, slim } = query;
+    const slimMode = isSlimQuery(slim);
+    const catalogMode =
+        !slimMode &&
+        (catalog === 'true' || catalog === true || forGetPass === 'true' || forGetPass === true);
 
     if (departmentId) {
         if (!uuidValidate(departmentId)) throw badRequest('Invalid departmentId');
@@ -224,6 +229,17 @@ const getItems = async (tenantId, query = {}) => {
         }),
     };
 
+    if (slimMode) {
+        const items = await prisma.item.findMany({
+            where,
+            take: MAX_ITEM_SLIM,
+            orderBy: { name: 'asc' },
+            select: { id: true, name: true, barcode: true },
+        });
+        return { items, slim: true };
+    }
+
+    const { skip, take } = parseItemPagination(query.skip, query.take, 20);
     const include = catalogMode ? ITEM_CATALOG_INCLUDE : ITEM_INCLUDE;
 
     const [items, total] = await Promise.all([

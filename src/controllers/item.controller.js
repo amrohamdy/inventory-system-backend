@@ -26,6 +26,9 @@ const createItem = async (req, res, next) => {
 const getItems = async (req, res, next) => {
     try {
         const result = await itemService.getItems(req.user.tenantId, req.query);
+        if (result.slim) {
+            return success(res, result.items, 'Items fetched successfully', 200);
+        }
         return success(res, result.items, 'Items fetched successfully', 200, {
             total: result.total,
             skip: result.skip,
@@ -197,7 +200,8 @@ function _styleHeaderRow(sheet, columnCount) {
 const exportItems = async (req, res, next) => {
     try {
         const ExcelJS = require('exceljs');
-        const result = await itemService.getItems(req.user.tenantId, { ...req.query, take: 10000 });
+        const { slim: _slim, ...exportQuery } = req.query;
+        const result = await itemService.getItems(req.user.tenantId, { ...exportQuery, take: 10000 });
         const items = result.items;
 
         const wb = new ExcelJS.Workbook();

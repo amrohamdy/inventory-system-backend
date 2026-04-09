@@ -23,6 +23,9 @@ const createLocation = async (req, res, next) => {
 const getLocations = async (req, res, next) => {
     try {
         const result = await locationService.getLocations(req.user.tenantId, req.query);
+        if (result.slim) {
+            return success(res, result.locations, 'Locations fetched successfully', 200);
+        }
         return success(res, result.locations, 'Locations fetched successfully', 200, {
             total: result.total,
             skip: result.skip,
