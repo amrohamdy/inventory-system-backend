@@ -60,6 +60,16 @@ const errorHandler = (err, req, res, next) => {
         return res.status(401).json({ success: false, message: 'Invalid token.' });
     }
 
+    // Opening Balance phase — explicit response (403 + code for clients)
+    if (err.code === 'OPENING_BALANCE_PHASE') {
+        return res.status(err.statusCode || 403).json({
+            success: false,
+            message: err.message,
+            code: err.code,
+            error: err.code,
+        });
+    }
+
     // Default 500
     const statusCode = err.statusCode || err.status || 500;
     const isClientError = statusCode >= 400 && statusCode < 500;

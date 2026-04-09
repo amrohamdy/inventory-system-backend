@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const settingService = require('./setting.service');
 
 /**
  * ============================================================================
@@ -144,9 +145,24 @@ const getOBStatus = async (tenantId) => {
     };
 };
 
+/**
+ * Blocks GRN, Get Pass, and similar operational flows while the tenant is still in
+ * Opening Balance phase (aligned with `GET /items/check-requirements` → canCreateItem).
+ */
+const assertOperationalTransactionsAllowed = async (tenantId) => {
+    const ob = await settingService.isOpeningBalanceAllowed(tenantId);
+    if (ob.allowed) {
+        throw Object.assign(
+            new Error('Opening balance must be finalized before starting transactions.'),
+            { statusCode: 403, code: 'OPENING_BALANCE_PHASE' },
+        );
+    }
+};
+
 module.exports = {
     checkPeriodLock,
     checkOBAllowed,
     checkOpeningBalanceAllowed,
     getOBStatus,
+    assertOperationalTransactionsAllowed,
 };

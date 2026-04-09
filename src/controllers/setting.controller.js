@@ -48,6 +48,14 @@ const getOBEligibility = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
+// ── GET /settings/inventory-status — OB gate + finalize snapshot (UI) ─────────
+const getInventoryStatus = async (req, res, next) => {
+    try {
+        const result = await settingService.getInventoryStatus(req.user.tenantId);
+        return success(res, result);
+    } catch (err) { next(err); }
+};
+
 // ── POST /settings/ob-lock — Lock OB import (SUPER_ADMIN / ADMIN) ─────────────
 const lockOB = async (req, res, next) => {
     try {
@@ -112,6 +120,8 @@ const enableOB = async (req, res, next) => {
             note: `OB import enabled by tenant administrator — reason: ${normalizedReason}`,
         });
 
+        await settingService.clearObFinalizeSnapshot(tenantId);
+
         return success(
             res,
             { key: 'allowOpeningBalance', value: 'OPEN' },
@@ -120,4 +130,37 @@ const enableOB = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-module.exports = { getSetting, setSetting, getOBEligibility, lockOB, enableOB };
+// ── POST /settings/ob-finalize — Strictly finalize Opening Balance ────────────
+const finalizeOpeningBalance = async (req, res, next) => {
+    try {
+        const { tenantId, id: userId, role } = req.user;
+        if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
+            const e = new Error('Only tenant administrators can finalize Opening Balance.');
+            e.statusCode = 403; throw e;
+        }
+
+        const result = await settingService.finalizeOpeningBalance(tenantId, userId);
+        return success(res, result, 'Opening Balance finalized successfully.');
+    } catch (err) {
+        if (err.details) {
+            const status = err.statusCode || err.status || 400;
+            return res.status(status).json({
+                success: false,
+                message: err.message,
+                code: err.code,
+                details: err.details,
+            });
+        }
+        next(err);
+    }
+};
+
+module.exports = {
+    getSetting,
+    setSetting,
+    getOBEligibility,
+    getInventoryStatus,
+    lockOB,
+    enableOB,
+    finalizeOpeningBalance,
+};

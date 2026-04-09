@@ -1,8 +1,10 @@
 const getPassService = require('../services/getPass.service');
 const getPassPdfService = require('../services/pdf/getPassPdf.service');
+const periodGuard = require('../services/periodGuard.service');
 
 const createGetPass = async (req, res) => {
     const { user } = req;
+    await periodGuard.assertOperationalTransactionsAllowed(user.tenantId);
     const result = await getPassService.createGetPass(user.tenantId, req.body, user.id);
     res.status(201).json({ success: true, data: result });
 };

@@ -69,6 +69,7 @@ const checkItemCreationRequirements = async (tenantId) => {
             canCreateItem: false,
             requirements,
             blockReason: 'MISSING_PREREQUISITES',
+            isOpeningBalanceAllowed: false,
         };
     }
 
@@ -78,10 +79,11 @@ const checkItemCreationRequirements = async (tenantId) => {
             canCreateItem: false,
             requirements,
             blockReason: 'OPENING_BALANCE',
+            isOpeningBalanceAllowed: false,
         };
     }
 
-    return { canCreateItem: true, requirements };
+    return { canCreateItem: true, requirements, isOpeningBalanceAllowed: true };
 };
 
 // ── Validate itemUnits array ───────────────────────────────────────────────────

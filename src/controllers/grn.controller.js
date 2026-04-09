@@ -2,6 +2,7 @@
 const path = require('path');
 const multer = require('multer');
 const grnService = require('../services/grn.service');
+const periodGuard = require('../services/periodGuard.service');
 
 // ─── Multer: invoice PDF upload ───────────────────────────────────────────────
 const invoiceUpload = multer({
@@ -60,6 +61,8 @@ const assertFinance = (req) => {
 /** POST /api/grn — create a new GRN using items from Item Master */
 const createGrn = async (req, res) => {
     try {
+        await periodGuard.assertOperationalTransactionsAllowed(req.user.tenantId);
+
         const invoiceFile = req.file;
         if (!invoiceFile)
             return res.status(400).json({ success: false, message: 'Invoice attachment (PDF or image) is required.' });
