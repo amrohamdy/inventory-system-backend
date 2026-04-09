@@ -91,6 +91,8 @@ model User {
   getPassesCreated   GetPass[]           @relation("GetPassCreatedBy")
   getPassesDeptApp   GetPass[]           @relation("GetPassDeptApprover")
   getPassesFinApp    GetPass[]           @relation("GetPassFinanceApprover")
+  getPassesCostCtrlApp GetPass[]         @relation("GetPassCostControlApprover")
+  getPassesGmApp     GetPass[]           @relation("GetPassGmApprover")
   getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
   grnApproved        GrnImport[]         @relation("GrnApprovedBy")
   grnImported        GrnImport[]         @relation("GrnImportedBy")
@@ -1071,8 +1073,12 @@ model GetPass {
   status             GetPassStatus @default(DRAFT)
   deptApprovedBy     String?       @db.Uuid
   deptApprovedAt     DateTime?
+  costControlApprovedBy String?    @db.Uuid
+  costControlApprovedAt DateTime?
   financeApprovedBy  String?       @db.Uuid
   financeApprovedAt  DateTime?
+  gmApprovedBy       String?       @db.Uuid
+  gmApprovedAt       DateTime?
   securityApprovedBy String?       @db.Uuid
   securityApprovedAt DateTime?
   checkedOutBy       String?       @db.Uuid
@@ -1081,6 +1087,7 @@ model GetPass {
   closedAt           DateTime?
   reason             String?
   notes              String?
+  rejectionReason    String?
   createdBy          String        @db.Uuid
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
@@ -1090,7 +1097,9 @@ model GetPass {
   createdByUser      User          @relation("GetPassCreatedBy", fields: [createdBy], references: [id])
   department         Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   deptApprover       User?         @relation("GetPassDeptApprover", fields: [deptApprovedBy], references: [id])
+  costControlApprover User?        @relation("GetPassCostControlApprover", fields: [costControlApprovedBy], references: [id])
   financeApprover    User?         @relation("GetPassFinanceApprover", fields: [financeApprovedBy], references: [id])
+  gmApprover         User?         @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
   securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
   tenant             Tenant        @relation(fields: [tenantId], references: [id])
 
@@ -1277,8 +1286,9 @@ enum GetPassType {
 enum GetPassStatus {
   DRAFT
   PENDING_DEPT
+  PENDING_COST_CONTROL
   PENDING_FINANCE
-  PENDING_SECURITY
+  PENDING_GM
   APPROVED
   OUT
   PARTIALLY_RETURNED

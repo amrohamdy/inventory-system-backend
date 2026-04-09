@@ -1,5 +1,6 @@
 /**
- * Verifies GENERAL_MANAGER exists and has GET_PASS_VIEW, GET_PASS_APPROVE_FINAL, VIEW_DASHBOARD.
+ * Verifies GENERAL_MANAGER exists and has GET_PASS_VIEW, GET_PASS_APPROVE_FINAL (legacy permission), VIEW_DASHBOARD.
+ * Get Pass final approval is enforced by role (GENERAL_MANAGER) in getPass.service.js, not route permissions.
  *
  * Run after seeding:
  *   node seed-super-admin.js && node scripts/verify-general-manager-rbac.js

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const getPassController = require('../controllers/getPass.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
-const { requirePermission, requireAnyPermission } = require('../middleware/authorize');
+const { requirePermission } = require('../middleware/authorize');
 
 router.use(protect);
 
@@ -16,11 +16,8 @@ router.get('/:id/pdf', requirePermission('GET_PASS_VIEW'), getPassController.exp
 
 // Workflow Actions
 router.post('/:id/submit', requirePermission('GET_PASS_CREATE'), getPassController.submitGetPass);
-router.post(
-    '/:id/approve',
-    requireAnyPermission('GET_PASS_APPROVE', 'GET_PASS_APPROVE_FINAL'),
-    getPassController.approveGetPass
-);
+router.post('/:id/approve', getPassController.approveGetPass);
+router.post('/:id/reject', getPassController.rejectGetPass);
 router.post('/:id/checkout', requirePermission('GET_PASS_APPROVE_EXIT'), getPassController.checkoutGetPass);
 router.post('/:id/return', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.returnGetPass);
 router.post('/:id/close', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.closeGetPass);

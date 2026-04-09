@@ -11,7 +11,9 @@ class GetPassPdfService {
                 department: true,
                 createdByUser: true,
                 deptApprover: true,
+                costControlApprover: true,
                 financeApprover: true,
+                gmApprover: true,
                 securityApprover: true,
                 checkoutUser: true,
                 lines: {
@@ -65,7 +67,7 @@ class GetPassPdfService {
         doc.font('Helvetica');
         
         doc.text('Status:', rightCol, y);
-        doc.font('Helvetica-Bold').text(pass.status.replace('_', ' '), rightCol + 80, y);
+        doc.font('Helvetica-Bold').text(pass.status.replace(/_/g, ' '), rightCol + 80, y);
         doc.font('Helvetica');
 
         y += 15;
@@ -156,31 +158,40 @@ class GetPassPdfService {
         currentY += 30;
         doc.font('Helvetica').fontSize(10);
 
-        const sigCols = [40, 220, 400];
-        
-        // Block 1: Prepared By
+        const sigCols = [40, 200, 360];
+
         doc.text('Prepared By:', sigCols[0], currentY);
         doc.text(pass.createdByUser ? `${pass.createdByUser.firstName} ${pass.createdByUser.lastName}` : 'System', sigCols[0], currentY + 15);
         doc.text(dayjs(pass.createdAt).format('DD MMM YYYY'), sigCols[0], currentY + 30);
 
-        // Block 2: Dept Approval
         doc.text('Department Head:', sigCols[1], currentY);
         doc.text(pass.deptApprover ? `${pass.deptApprover.firstName} ${pass.deptApprover.lastName}` : 'Pending', sigCols[1], currentY + 15);
         doc.text(pass.deptApprovedAt ? dayjs(pass.deptApprovedAt).format('DD MMM YYYY') : '', sigCols[1], currentY + 30);
 
-        // Block 3: Finance Approval
-        doc.text('Finance Manager:', sigCols[2], currentY);
-        doc.text(pass.financeApprover ? `${pass.financeApprover.firstName} ${pass.financeApprover.lastName}` : 'Pending', sigCols[2], currentY + 15);
-        doc.text(pass.financeApprovedAt ? dayjs(pass.financeApprovedAt).format('DD MMM YYYY') : '', sigCols[2], currentY + 30);
+        doc.text('Cost Control:', sigCols[2], currentY);
+        doc.text(
+            pass.costControlApprover ? `${pass.costControlApprover.firstName} ${pass.costControlApprover.lastName}` : 'Pending',
+            sigCols[2],
+            currentY + 15
+        );
+        doc.text(pass.costControlApprovedAt ? dayjs(pass.costControlApprovedAt).format('DD MMM YYYY') : '', sigCols[2], currentY + 30);
 
-        currentY += 70;
+        currentY += 55;
 
-        // Block 4: Security Checkout
+        doc.text('Finance Manager:', sigCols[0], currentY);
+        doc.text(pass.financeApprover ? `${pass.financeApprover.firstName} ${pass.financeApprover.lastName}` : 'Pending', sigCols[0], currentY + 15);
+        doc.text(pass.financeApprovedAt ? dayjs(pass.financeApprovedAt).format('DD MMM YYYY') : '', sigCols[0], currentY + 30);
+
+        doc.text('General Manager:', sigCols[1], currentY);
+        doc.text(pass.gmApprover ? `${pass.gmApprover.firstName} ${pass.gmApprover.lastName}` : 'Pending', sigCols[1], currentY + 15);
+        doc.text(pass.gmApprovedAt ? dayjs(pass.gmApprovedAt).format('DD MMM YYYY') : '', sigCols[1], currentY + 30);
+
+        currentY += 55;
+
         doc.text('Security (Exit Gate):', sigCols[0], currentY);
         doc.text(pass.checkoutUser ? `${pass.checkoutUser.firstName} ${pass.checkoutUser.lastName}` : 'Pending Exit', sigCols[0], currentY + 15);
         doc.text(pass.checkedOutAt ? dayjs(pass.checkedOutAt).format('DD MMM YYYY') : '', sigCols[0], currentY + 30);
 
-        // Block 5: Borrower Signature
         doc.text('Borrower / Receiver:', sigCols[1], currentY);
         doc.text('__________________', sigCols[1], currentY + 30);
     }

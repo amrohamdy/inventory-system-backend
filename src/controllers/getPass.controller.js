@@ -40,8 +40,14 @@ const submitGetPass = async (req, res) => {
 
 const approveGetPass = async (req, res) => {
     const { user } = req;
-    const { action, notes } = req.body; 
-    const result = await getPassService.approveGetPass(req.params.id, user.tenantId, user, action, notes);
+    const result = await getPassService.approveGetPass(req.params.id, user.tenantId, user);
+    res.json({ success: true, data: result });
+};
+
+const rejectGetPass = async (req, res) => {
+    const { user } = req;
+    const { rejectionReason } = req.body;
+    const result = await getPassService.rejectGetPass(req.params.id, user.tenantId, user, rejectionReason);
     res.json({ success: true, data: result });
 };
 
@@ -86,6 +92,7 @@ module.exports = {
     deleteGetPass,
     submitGetPass,
     approveGetPass,
+    rejectGetPass,
     checkoutGetPass,
     returnGetPass,
     closeGetPass,

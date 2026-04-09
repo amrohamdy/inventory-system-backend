@@ -5,6 +5,29 @@ const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { hasPermission } = require('../middleware/authorize');
 
+const PENDING_APPROVAL_STATUSES = [
+    'PENDING_DEPT',
+    'PENDING_COST_CONTROL',
+    'PENDING_FINANCE',
+    'PENDING_GM'
+];
+
+const STEP_ROLE = {
+    PENDING_DEPT: 'DEPT_MANAGER',
+    PENDING_COST_CONTROL: 'COST_CONTROL',
+    PENDING_FINANCE: 'FINANCE_MANAGER',
+    PENDING_GM: 'GENERAL_MANAGER'
+};
+
+const isAdminBypass = (role) => role === 'ADMIN' || role === 'SUPER_ADMIN';
+
+const assertCanActOnStatus = (status, role) => {
+    const required = STEP_ROLE[status];
+    if (!required) return;
+    if (isAdminBypass(role) || role === required) return;
+    throw new Error(`Unauthorized for this approval step (requires ${required})`);
+};
+
 const createGetPass = async (tenantId, data, userId) => {
     return prisma.$transaction(async (tx) => {
         const passNo = await generateDocNumber(tenantId, 'GP', new Date(), tx);
@@ -71,7 +94,9 @@ const getGetPassById = async (id, tenantId) => {
             department: true,
             createdByUser: true,
             deptApprover: true,
+            costControlApprover: true,
             financeApprover: true,
+            gmApprover: true,
             securityApprover: true,
             checkoutUser: true,
             closingUser: true,
@@ -143,70 +168,97 @@ const submitGetPass = async (id, tenantId, userId) => {
     const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
     if (getPass.status !== 'DRAFT') throw new Error('Only DRAFT can be submitted');
 
-    const updated = await prisma.getPass.update({
+    await prisma.getPass.update({
         where: { id },
-        data: { status: 'PENDING_DEPT' }
+        data: { status: 'PENDING_DEPT' },
     });
     await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'SUBMIT', changedBy: userId });
-    return updated;
+    return getGetPassById(id, tenantId);
 };
 
 /**
- * Handles the state machine for approvals:
- * DEPT -> FINANCE -> SECURITY -> APPROVED
+ * Strict 4-step chain: DEPT -> COST_CONTROL -> FINANCE -> GM -> APPROVED
  */
-const approveGetPass = async (id, tenantId, user, action, notes) => {
+const approveGetPass = async (id, tenantId, user) => {
     const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
-    if (!['PENDING_DEPT', 'PENDING_FINANCE', 'PENDING_SECURITY'].includes(getPass.status)) {
+    if (!getPass) throw new Error('Get Pass not found');
+    if (!PENDING_APPROVAL_STATUSES.includes(getPass.status)) {
         throw new Error('Get Pass is not pending any approval');
     }
 
-    if (action === 'REJECT') {
-        const updated = await prisma.getPass.update({
-            where: { id },
-            data: { status: 'REJECTED', notes: notes ? `${getPass.notes || ''}\nRejection Reason: ${notes}` : getPass.notes }
-        });
-        await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'REJECT', changedBy: user.id });
-        return updated;
+    assertCanActOnStatus(getPass.status, user.role);
+
+    const now = new Date();
+    let updateData;
+
+    switch (getPass.status) {
+        case 'PENDING_DEPT':
+            updateData = {
+                status: 'PENDING_COST_CONTROL',
+                deptApprovedBy: user.id,
+                deptApprovedAt: now
+            };
+            break;
+        case 'PENDING_COST_CONTROL':
+            updateData = {
+                status: 'PENDING_FINANCE',
+                costControlApprovedBy: user.id,
+                costControlApprovedAt: now
+            };
+            break;
+        case 'PENDING_FINANCE':
+            updateData = {
+                status: 'PENDING_GM',
+                financeApprovedBy: user.id,
+                financeApprovedAt: now
+            };
+            break;
+        case 'PENDING_GM':
+            updateData = {
+                status: 'APPROVED',
+                gmApprovedBy: user.id,
+                gmApprovedAt: now
+            };
+            break;
+        default:
+            throw new Error('Get Pass is not pending any approval');
     }
-
-    // APPROVE
-    let nextStatus = getPass.status;
-    const updateData = {};
-
-    if (getPass.status === 'PENDING_DEPT') {
-        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user, 'ISSUE_APPROVE'))) {
-            throw new Error('Unauthorized for Dept Approval');
-        }
-        nextStatus = 'PENDING_FINANCE';
-        updateData.deptApprovedBy = user.id;
-        updateData.deptApprovedAt = new Date();
-    } else if (getPass.status === 'PENDING_FINANCE') {
-        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user, 'ISSUE_APPROVE'))) {
-            throw new Error('Unauthorized for Finance Approval');
-        }
-        nextStatus = 'PENDING_SECURITY';
-        updateData.financeApprovedBy = user.id;
-        updateData.financeApprovedAt = new Date();
-    } else if (getPass.status === 'PENDING_SECURITY') {
-        if (
-            !(
-                user.role === 'SUPER_ADMIN' ||
-                hasPermission(user, 'GET_PASS_APPROVE') ||
-                hasPermission(user, 'GET_PASS_APPROVE_FINAL')
-            )
-        ) {
-            throw new Error('Unauthorized for Security Approval');
-        }
-        nextStatus = 'APPROVED';
-        updateData.securityApprovedBy = user.id;
-        updateData.securityApprovedAt = new Date();
-    }
-
-    updateData.status = nextStatus;
 
     const updated = await prisma.getPass.update({ where: { id }, data: updateData });
     await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: `APPROVE_${getPass.status}`, changedBy: user.id });
+    return updated;
+};
+
+const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
+    const reason = typeof rejectionReason === 'string' ? rejectionReason.trim() : '';
+    if (!reason) throw new Error('rejectionReason is required');
+
+    const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
+    if (!getPass) throw new Error('Get Pass not found');
+    if (!PENDING_APPROVAL_STATUSES.includes(getPass.status)) {
+        throw new Error('Get Pass is not pending any approval');
+    }
+
+    assertCanActOnStatus(getPass.status, user.role);
+
+    const updated = await prisma.getPass.update({
+        where: { id },
+        data: {
+            status: 'REJECTED',
+            rejectionReason: reason,
+            deptApprovedBy: null,
+            deptApprovedAt: null,
+            costControlApprovedBy: null,
+            costControlApprovedAt: null,
+            financeApprovedBy: null,
+            financeApprovedAt: null,
+            gmApprovedBy: null,
+            gmApprovedAt: null,
+            securityApprovedBy: null,
+            securityApprovedAt: null
+        }
+    });
+    await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'REJECT', changedBy: user.id });
     return updated;
 };
 
@@ -214,7 +266,7 @@ const approveGetPass = async (id, tenantId, user, action, notes) => {
  * Marks Get Pass as OUT. Deducts from StockBalance. Writes to InventoryLedger.
  */
 const checkoutGetPass = async (id, tenantId, user, linesOut) => {
-    if (!hasPermission(user.role, 'GET_PASS_APPROVE_EXIT')) throw new Error('Only Security can checkout items');
+    if (!hasPermission(user, 'GET_PASS_APPROVE_EXIT')) throw new Error('Only Security can checkout items');
 
     const getPass = await getGetPassById(id, tenantId);
     if (getPass.status !== 'APPROVED') throw new Error('Get Pass must be APPROVED before checkout');
@@ -459,6 +511,7 @@ module.exports = {
     deleteGetPass,
     submitGetPass,
     approveGetPass,
+    rejectGetPass,
     checkoutGetPass,
     processReturns,
     closeGetPass
