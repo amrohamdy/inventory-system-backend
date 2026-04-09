@@ -218,6 +218,52 @@ const rejectGrn = async (grnId, tenantId, userId, reason) => {
     });
 };
 
+/**
+ * Cost Control / Admin: transition VALIDATED → APPROVED or REJECTED (no PENDING_APPROVAL step).
+ * @param {string} grnId
+ * @param {string} tenantId
+ * @param {'APPROVED'|'REJECTED'} status
+ * @param {string|null} reason Required when status is REJECTED
+ * @param {string} userId
+ */
+const updateStatus = async (grnId, tenantId, status, reason, userId) => {
+    const grn = await prisma.grnImport.findFirst({ where: { id: grnId, tenantId } });
+    if (!grn) throw Object.assign(new Error('GRN not found'), { status: 404 });
+    if (grn.status !== 'VALIDATED')
+        throw Object.assign(
+            new Error(`GRN must be VALIDATED to approve or reject. Current status: ${grn.status}`),
+            { status: 422 }
+        );
+    if (status !== 'APPROVED' && status !== 'REJECTED')
+        throw Object.assign(new Error('Invalid target status.'), { status: 400 });
+
+    if (status === 'REJECTED') {
+        const r = (reason || '').trim();
+        if (!r)
+            throw Object.assign(new Error('Rejection reason is required.'), { status: 400 });
+        return prisma.grnImport.update({
+            where: { id: grnId },
+            data: {
+                status: 'REJECTED',
+                rejectedBy: userId,
+                rejectionReason: r,
+                updatedAt: new Date(),
+            },
+        });
+    }
+
+    return prisma.grnImport.update({
+        where: { id: grnId },
+        data: {
+            status: 'APPROVED',
+            approvedBy: userId,
+            rejectionReason: null,
+            rejectedBy: null,
+            updatedAt: new Date(),
+        },
+    });
+};
+
 // ─── Post GRN (Atomic) ───────────────────────────────────────────────────────
 
 /**
@@ -330,6 +376,7 @@ const listGrns = async (tenantId, { status, page = 1, limit = 20 } = {}) => {
                 vendor: { select: { name: true } },
                 location: { select: { name: true } },
                 importedByUser: { select: { firstName: true, lastName: true } },
+                rejectedByUser: { select: { firstName: true, lastName: true } },
                 _count: { select: { lines: true } },
             },
             orderBy: { createdAt: 'desc' },
@@ -754,6 +801,7 @@ module.exports = {
     submitForApproval,
     approveGrn,
     rejectGrn,
+    updateStatus,
     postGrn,
     listGrns,
     getGrn,

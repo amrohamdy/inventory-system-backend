@@ -60,6 +60,18 @@ const assertFinance = (req) => {
         );
 };
 
+/** PATCH /api/grn/:id/status — VALIDATED → APPROVED | REJECTED (Cost Control / Admin only). */
+const GRN_STATUS_UPDATE_ROLES = ['COST_CONTROL', 'ADMIN', 'SUPER_ADMIN'];
+
+const assertCostControlOrAdmin = (req) => {
+    const role = normalizeRole(req.user?.role);
+    if (!GRN_STATUS_UPDATE_ROLES.includes(role))
+        throw Object.assign(
+            new Error('Insufficient permissions to approve or reject this GRN at this stage.'),
+            { status: 403 }
+        );
+};
+
 const assertGrnCreateRole = (req) => {
     const role = normalizeRole(req.user?.role);
     if (!GRN_CREATE_ROLES.includes(role)) {
@@ -202,6 +214,31 @@ const postGrn = async (req, res) => {
     }
 };
 
+/** PATCH /api/grn/:id/status */
+const updateGrnStatus = async (req, res) => {
+    try {
+        assertCostControlOrAdmin(req);
+        const { status, reason } = req.body || {};
+        if (status !== 'APPROVED' && status !== 'REJECTED')
+            return res.status(400).json({ success: false, message: 'status must be APPROVED or REJECTED.' });
+        if (status === 'REJECTED') {
+            const r = typeof reason === 'string' ? reason.trim() : '';
+            if (!r)
+                return res.status(400).json({ success: false, message: 'Rejection reason is required.' });
+        }
+        const grn = await grnService.updateStatus(
+            req.params.id,
+            req.user.tenantId,
+            status,
+            status === 'REJECTED' ? String(reason).trim() : null,
+            req.user.id,
+        );
+        sendSuccess(res, grn);
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
 /** PATCH /api/grn/:id */
 const updateGrn = async (req, res) => {
     try {
@@ -277,6 +314,7 @@ module.exports = {
     approveGrn,
     rejectGrn,
     postGrn,
+    updateGrnStatus,
     updateGrn,
     deleteGrn,
     downloadTemplate,
