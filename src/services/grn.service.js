@@ -317,7 +317,8 @@ const resubmitRejectedGrn = async (grnId, tenantId, userId, creatorRole) => {
 // ─── Post GRN (Atomic) ───────────────────────────────────────────────────────
 
 /**
- * ATOMIC: Post all GRN lines to InventoryLedger + update StockBalance + WAC.
+ * ATOMIC: Post all GRN lines to InventoryLedger + update StockBalance + WAC,
+ * and mirror the receipt on MovementDocument + MovementLine (Inventory Movements UI).
  */
 const postGrn = async (grnId, tenantId, userId) => {
     const grn = await prisma.grnImport.findFirst({
@@ -327,6 +328,8 @@ const postGrn = async (grnId, tenantId, userId) => {
     if (!grn) throw Object.assign(new Error('GRN not found'), { status: 404 });
     if (grn.status !== 'APPROVED')
         throw Object.assign(new Error('GRN must be APPROVED before posting'), { status: 422 });
+    if (!grn.lines.length)
+        throw Object.assign(new Error('GRN has no lines to post'), { status: 422 });
 
     await prisma.$transaction(async (tx) => {
         for (const line of grn.lines) {
@@ -376,9 +379,6 @@ const postGrn = async (grnId, tenantId, userId) => {
                 update: { qtyOnHand: newQty, wacUnitCost: newWac, lastUpdated: new Date() },
             });
 
-            const prevBalance = balance ? (prevQty * prevWac) : 0;
-            const runningBalanceValue = prevBalance + totalValue;
-
             await tx.inventoryLedger.create({
                 data: {
                     tenantId,
@@ -389,6 +389,7 @@ const postGrn = async (grnId, tenantId, userId) => {
                     qtyOut: 0,
                     unitCost: lineUnitPrice,
                     totalValue,
+                    balanceAfter: newQty,
                     referenceType: 'GRN',
                     referenceId: grn.id,
                     referenceNo: grn.grnNumber,
@@ -398,12 +399,45 @@ const postGrn = async (grnId, tenantId, userId) => {
             });
         }
 
+        const postedAt = new Date();
+        const movementLinesCreate = grn.lines.map((line) => {
+            const qtyToPost = Number(line.qtyInBaseUnit);
+            const lineUnitPrice = Number(line.unitPrice);
+            return {
+                itemId: line.internalItemId,
+                locationId: grn.locationId,
+                unitId: line.internalUomId,
+                qtyRequested: qtyToPost,
+                qtyInBaseUnit: qtyToPost,
+                unitCost: lineUnitPrice,
+                totalValue: qtyToPost * lineUnitPrice,
+            };
+        });
+
+        await tx.movementDocument.create({
+            data: {
+                tenantId,
+                documentNo: grn.grnNumber,
+                movementType: 'RECEIVE',
+                status: 'POSTED',
+                destLocationId: grn.locationId,
+                supplierId: grn.vendorId,
+                documentDate: grn.receivingDate,
+                notes: grn.notes
+                    ? `GRN ${grn.grnNumber}: ${grn.notes}`
+                    : `Posted from GRN ${grn.grnNumber}`,
+                createdBy: userId,
+                postedAt,
+                lines: { create: movementLinesCreate },
+            },
+        });
+
         await tx.grnImport.update({
             where: { id: grnId },
             data: {
                 status: 'POSTED',
                 postedBy: userId,
-                postedAt: new Date(),
+                postedAt,
                 updatedAt: new Date(),
             },
         });

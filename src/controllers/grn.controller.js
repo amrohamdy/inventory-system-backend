@@ -70,8 +70,8 @@ const assertPostGrnRole = (req) => {
         );
 };
 
-/** PATCH /api/grn/:id/status — VALIDATED → APPROVED | REJECTED (Cost Control / Admin only). */
-const GRN_STATUS_UPDATE_ROLES = ['COST_CONTROL', 'ADMIN'];
+/** PATCH /api/grn/:id/status — VALIDATED → APPROVED | REJECTED (Cost Control / Admin / Org Manager / Super Admin). */
+const GRN_STATUS_UPDATE_ROLES = ['COST_CONTROL', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN'];
 
 const assertCostControlOrAdmin = (req) => {
     const role = normalizeRole(req.user?.role);
