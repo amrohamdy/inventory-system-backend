@@ -303,6 +303,7 @@ model Location {
   @@unique([tenantId, name])
   @@index([tenantId])
   @@index([departmentId])
+  @@index([tenantId, departmentId])
   @@map("locations")
 }
 

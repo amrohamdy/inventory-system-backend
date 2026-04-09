@@ -11,7 +11,11 @@ const createDepartment = async (req, res, next) => {
 const getDepartments = async (req, res, next) => {
     try {
         const result = await departmentService.getDepartments(req.user.tenantId, req.query);
-        return success(res, result.departments, { total: result.total });
+        return success(res, result.departments, 'Departments fetched successfully', 200, {
+            total: result.total,
+            skip: result.skip,
+            take: result.take,
+        });
     } catch (err) { next(err); }
 };
 

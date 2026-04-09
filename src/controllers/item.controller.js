@@ -28,8 +28,8 @@ const getItems = async (req, res, next) => {
         const result = await itemService.getItems(req.user.tenantId, req.query);
         return success(res, result.items, 'Items fetched successfully', 200, {
             total: result.total,
-            skip: parseInt(req.query.skip) || 0,
-            take: parseInt(req.query.take) || 20,
+            skip: result.skip,
+            take: result.take,
         });
     } catch (err) { next(err); }
 };

@@ -1,5 +1,29 @@
 const { PrismaClient } = require('@prisma/client');
+const { validate: uuidValidate } = require('uuid');
 const prisma = new PrismaClient();
+
+const MAX_LOCATION_PAGE = 1000;
+
+const parseLocationPagination = (querySkip, queryTake, defaultTake = 100) => {
+    let skip = parseInt(querySkip, 10);
+    if (!Number.isFinite(skip) || skip < 0) skip = 0;
+    let take = parseInt(queryTake, 10);
+    if (!Number.isFinite(take) || take < 1) take = defaultTake;
+    take = Math.min(take, MAX_LOCATION_PAGE);
+    return { skip, take };
+};
+
+const assertDepartmentInTenant = async (departmentId, tenantId) => {
+    const dept = await prisma.department.findFirst({
+        where: { id: departmentId, tenantId },
+        select: { id: true },
+    });
+    if (!dept) {
+        const e = new Error('Department not found');
+        e.statusCode = 404;
+        throw e;
+    }
+};
 
 const normalizeCategoryIds = (categoryIds) => {
     if (categoryIds === undefined) return undefined;
@@ -90,13 +114,26 @@ const createLocation = async (data, tenantId) => {
  * Get all locations
  */
 const getLocations = async (tenantId, query = {}) => {
-    const { skip = 0, take = 100, search, type, isActive, departmentId, categoryId } = query;
+    const { search, type, isActive, departmentId, categoryId } = query;
+    const { skip, take } = parseLocationPagination(query.skip, query.take, 100);
+
+    if (departmentId) {
+        if (!uuidValidate(departmentId)) {
+            const e = new Error('Invalid departmentId');
+            e.statusCode = 400;
+            throw e;
+        }
+        await assertDepartmentInTenant(departmentId, tenantId);
+    }
+
+    const hasExplicitIsActive = Object.prototype.hasOwnProperty.call(query, 'isActive');
 
     const where = {
         tenantId,
         ...(type && { type }),
         ...(departmentId && { departmentId }),
-        ...(isActive !== undefined && { isActive: isActive === 'true' }),
+        ...(departmentId && !hasExplicitIsActive ? { isActive: true } : {}),
+        ...(hasExplicitIsActive ? { isActive: isActive === 'true' } : {}),
         ...(categoryId && {
             locationCategories: {
                 some: { categoryId }
@@ -110,8 +147,8 @@ const getLocations = async (tenantId, query = {}) => {
     const [locations, total] = await Promise.all([
         prisma.location.findMany({
             where,
-            skip: parseInt(skip),
-            take: parseInt(take),
+            skip,
+            take,
             orderBy: { name: 'asc' },
             include: {
                 department: { select: { id: true, name: true, code: true } },
@@ -124,7 +161,7 @@ const getLocations = async (tenantId, query = {}) => {
         prisma.location.count({ where })
     ]);
 
-    return { locations: locations.map(mapLocationWithCategories), total };
+    return { locations: locations.map(mapLocationWithCategories), total, skip, take };
 };
 
 /**

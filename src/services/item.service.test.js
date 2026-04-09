@@ -45,6 +45,32 @@ function loadServiceWithMocks({
     return service;
 }
 
+const SAMPLE_DEPT_UUID = '123e4567-e89b-12d3-a456-426614174000';
+
+function loadServiceForListQueries(prismaMock) {
+    const originalLoad = Module._load;
+    Module._load = function patchedLoader(request, parent, isMain) {
+        if (request === '@prisma/client') {
+            return { PrismaClient: function PrismaClient() { return prismaMock; } };
+        }
+        if (request === 'xlsx') {
+            return {
+                readFile: () => ({}),
+                utils: { sheet_to_json: () => [] },
+            };
+        }
+        if (request === './audit.service') return {};
+        if (request === './setting.service') return {};
+        if (request === './periodGuard.service') return {};
+        return originalLoad(request, parent, isMain);
+    };
+
+    delete require.cache[servicePath];
+    const service = require(servicePath);
+    Module._load = originalLoad;
+    return service;
+}
+
 test('parseImportFile parses comma-formatted numbers correctly', async () => {
     const service = loadServiceWithMocks({
         rows: [
@@ -166,4 +192,71 @@ test('parseImportFile returns row-level validation error for unknown vendor', as
     const result = await service.parseImportFile('/tmp/fake.xlsx', 'tenant-1');
     assert.equal(result.preview[0].status, 'ERROR');
     assert.match(result.preview[0].errors.join(' | '), /Vendor 'Missing Vendor' not found/);
+});
+
+test('getItems clamps take to 1000', async () => {
+    let capturedTake;
+    const service = loadServiceForListQueries({
+        department: {
+            findFirst: async () => ({ id: SAMPLE_DEPT_UUID }),
+        },
+        item: {
+            findMany: async (args) => {
+                capturedTake = args.take;
+                return [];
+            },
+            count: async () => 0,
+        },
+    });
+
+    await service.getItems('tenant-1', { departmentId: SAMPLE_DEPT_UUID, take: '99999' });
+    assert.equal(capturedTake, 1000);
+});
+
+test('getItems catalog mode omits stockBalances from include', async () => {
+    let capturedInclude;
+    const service = loadServiceForListQueries({
+        department: { findFirst: async () => null },
+        item: {
+            findMany: async (args) => {
+                capturedInclude = args.include;
+                return [];
+            },
+            count: async () => 0,
+        },
+    });
+
+    await service.getItems('tenant-1', { catalog: 'true' });
+    assert.equal(capturedInclude.stockBalances, undefined);
+    assert.ok(capturedInclude.itemUnits);
+});
+
+test('getItems rejects invalid departmentId', async () => {
+    const service = loadServiceForListQueries({
+        department: { findFirst: async () => null },
+        item: { findMany: async () => [], count: async () => 0 },
+    });
+
+    await assert.rejects(
+        service.getItems('tenant-1', { departmentId: 'not-a-uuid' }),
+        (err) => {
+            assert.equal(err.statusCode, 400);
+            return true;
+        }
+    );
+});
+
+test('getItems rejects unknown department for tenant', async () => {
+    const service = loadServiceForListQueries({
+        department: { findFirst: async () => null },
+        item: { findMany: async () => [], count: async () => 0 },
+    });
+
+    await assert.rejects(
+        service.getItems('tenant-1', { departmentId: SAMPLE_DEPT_UUID }),
+        (err) => {
+            assert.equal(err.statusCode, 404);
+            return true;
+        }
+    );
 });

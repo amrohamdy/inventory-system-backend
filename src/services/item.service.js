@@ -1,5 +1,18 @@
 const { PrismaClient } = require('@prisma/client');
+const { validate: uuidValidate } = require('uuid');
 const prisma = new PrismaClient();
+
+const MAX_ITEM_PAGE = 1000;
+
+const parseItemPagination = (querySkip, queryTake, defaultTake = 20) => {
+    let skip = parseInt(querySkip, 10);
+    if (!Number.isFinite(skip) || skip < 0) skip = 0;
+    let take = parseInt(queryTake, 10);
+    if (!Number.isFinite(take) || take < 1) take = defaultTake;
+    take = Math.min(take, MAX_ITEM_PAGE);
+    return { skip, take };
+};
+
 const XLSX = require('xlsx');
 const path = require('path');
 const auditService = require('./audit.service');
@@ -18,6 +31,16 @@ const ITEM_INCLUDE = {
     stockBalances: { select: { qtyOnHand: true, location: { select: { id: true, name: true } } } },
 };
 
+/** Master catalog / Get Pass — no stock rows, smaller payload for large take */
+const ITEM_CATALOG_INCLUDE = {
+    department: { select: { id: true, name: true, code: true } },
+    category: { select: { id: true, name: true } },
+    subcategory: { select: { id: true, name: true } },
+    supplier: { select: { id: true, name: true } },
+    defaultStore: { select: { id: true, name: true, departmentId: true } },
+    itemUnits: { include: { unit: { select: { id: true, name: true, abbreviation: true } } } },
+};
+
 // ── Store relative image path — Vite proxy (/uploads) handles CORS in dev ─────
 const toRelativeImageUrl = (relativePath) => relativePath;
 
@@ -31,6 +54,14 @@ const badRequest = (msg) => {
     const e = new Error(msg);
     e.statusCode = 400;
     return e;
+};
+
+const assertDepartmentInTenant = async (departmentId, tenantId) => {
+    const dept = await prisma.department.findFirst({
+        where: { id: departmentId, tenantId },
+        select: { id: true },
+    });
+    if (!dept) throw notFound('Department not found');
 };
 
 const parseExcelNumber = (val) => {
@@ -165,7 +196,16 @@ const createItem = async (data, tenantId) => {
 
 // ── LIST ───────────────────────────────────────────────────────────────────────
 const getItems = async (tenantId, query = {}) => {
-    const { skip = 0, take = 20, search, categoryId, subcategoryId, departmentId, locationId, isActive } = query;
+    const { search, categoryId, subcategoryId, departmentId, locationId, isActive, catalog, forGetPass } = query;
+    const catalogMode = catalog === 'true' || catalog === true || forGetPass === 'true' || forGetPass === true;
+    const { skip, take } = parseItemPagination(query.skip, query.take, 20);
+
+    if (departmentId) {
+        if (!uuidValidate(departmentId)) throw badRequest('Invalid departmentId');
+        await assertDepartmentInTenant(departmentId, tenantId);
+    }
+
+    const hasExplicitIsActive = Object.prototype.hasOwnProperty.call(query, 'isActive');
 
     const where = {
         tenantId,
@@ -173,29 +213,31 @@ const getItems = async (tenantId, query = {}) => {
         ...(subcategoryId && { subcategoryId }),
         ...(departmentId && { departmentId }),
         ...(locationId && { stockBalances: { some: { locationId } } }),
-        ...(isActive !== undefined && { isActive: isActive === 'true' }),
+        ...(catalogMode && !hasExplicitIsActive ? { isActive: true } : {}),
+        ...(hasExplicitIsActive ? { isActive: isActive === 'true' } : {}),
         ...(search && {
             OR: [
                 { name: { contains: search, mode: 'insensitive' } },
                 { barcode: { contains: search, mode: 'insensitive' } },
-                // Note: department is a relation — search on its name field
                 { department: { name: { contains: search, mode: 'insensitive' } } },
             ],
         }),
     };
 
+    const include = catalogMode ? ITEM_CATALOG_INCLUDE : ITEM_INCLUDE;
+
     const [items, total] = await Promise.all([
         prisma.item.findMany({
             where,
-            skip: parseInt(skip),
-            take: parseInt(take),
+            skip,
+            take,
             orderBy: { name: 'asc' },
-            include: ITEM_INCLUDE,
+            include,
         }),
         prisma.item.count({ where }),
     ]);
 
-    return { items, total };
+    return { items, total, skip, take };
 };
 
 // ── GET BY ID ──────────────────────────────────────────────────────────────────

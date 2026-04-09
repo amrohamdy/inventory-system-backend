@@ -14,11 +14,28 @@ const createDepartment = async (data, tenantId) => {
     });
 };
 
+const MAX_DEPARTMENT_PAGE = 500;
+
+const parseDepartmentPagination = (querySkip, queryTake, defaultTake = 50) => {
+    let skip = parseInt(querySkip, 10);
+    if (!Number.isFinite(skip) || skip < 0) skip = 0;
+    let take = parseInt(queryTake, 10);
+    if (!Number.isFinite(take) || take < 1) take = defaultTake;
+    take = Math.min(take, MAX_DEPARTMENT_PAGE);
+    return { skip, take };
+};
+
 const getDepartments = async (tenantId, query = {}) => {
-    const { skip = 0, take = 50, search, isActive } = query;
+    const { search, isActive, includeInactive, slim } = query;
+    const { skip, take } = parseDepartmentPagination(query.skip, query.take, 50);
+
+    const hasExplicitIsActive = Object.prototype.hasOwnProperty.call(query, 'isActive');
+    const includeAllInactive = includeInactive === 'true' || includeInactive === true;
+
     const where = {
         tenantId,
-        ...(isActive !== undefined && { isActive: isActive === 'true' }),
+        ...(!hasExplicitIsActive && !includeAllInactive ? { isActive: true } : {}),
+        ...(hasExplicitIsActive ? { isActive: isActive === 'true' } : {}),
         ...(search && {
             OR: [
                 { name: { contains: search, mode: 'insensitive' } },
@@ -27,18 +44,25 @@ const getDepartments = async (tenantId, query = {}) => {
         }),
     };
 
+    const slimMode = slim === 'true' || slim === true;
+    const include = slimMode
+        ? { _count: { select: { locations: true, items: true } } }
+        : {
+              _count: { select: { locations: true, items: true } },
+              locations: { select: { id: true, name: true, type: true, isActive: true } },
+          };
+
     const [departments, total] = await Promise.all([
         prisma.department.findMany({
-            where, skip: parseInt(skip), take: parseInt(take),
+            where,
+            skip,
+            take,
             orderBy: { name: 'asc' },
-            include: {
-                _count: { select: { locations: true, items: true } },
-                locations: { select: { id: true, name: true, type: true, isActive: true } },
-            },
+            include,
         }),
         prisma.department.count({ where }),
     ]);
-    return { departments, total };
+    return { departments, total, skip, take };
 };
 
 const getDepartmentById = async (id, tenantId) => {

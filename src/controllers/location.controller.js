@@ -25,8 +25,8 @@ const getLocations = async (req, res, next) => {
         const result = await locationService.getLocations(req.user.tenantId, req.query);
         return success(res, result.locations, 'Locations fetched successfully', 200, {
             total: result.total,
-            skip: parseInt(req.query.skip) || 0,
-            take: parseInt(req.query.take) || 10,
+            skip: result.skip,
+            take: result.take,
         });
     } catch (error) {
         next(error);
