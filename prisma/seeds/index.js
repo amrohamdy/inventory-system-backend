@@ -6,6 +6,19 @@ const prisma = new PrismaClient();
 async function main() {
     console.log('🌱 Seeding OS&E Inventory System...');
 
+    // ─── Ensure system roles used by demo tenant (idempotent) ─────────────────
+    await prisma.role.upsert({
+        where: { code: 'GENERAL_MANAGER' },
+        update: { name: 'General Manager', isActive: true },
+        create: {
+            code: 'GENERAL_MANAGER',
+            name: 'General Manager',
+            tenantId: null,
+            isActive: true,
+        },
+    });
+    console.log('✅ Role GENERAL_MANAGER (global) ensured');
+
     // ─── Create Demo Tenant ─────────────────────────────────────────────────
     const tenant = await prisma.tenant.upsert({
         where: { slug: 'grand-horizon' },

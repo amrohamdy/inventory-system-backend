@@ -118,9 +118,23 @@ model User {
   @@map("users")
 }
 
+/// Stable role codes for memberships; keep in sync with `Role.code` and API validators.
+enum UserRole {
+  SUPER_ADMIN
+  ORG_MANAGER
+  ADMIN
+  STOREKEEPER
+  DEPT_MANAGER
+  COST_CONTROL
+  FINANCE_MANAGER
+  AUDITOR
+  SECURITY
+  GENERAL_MANAGER
+}
+
 model Role {
   id              String           @id @default(uuid()) @db.Uuid
-  code            String           @unique
+  code            UserRole         @unique
   name            String
   tenantId        String?          @db.Uuid
   isActive        Boolean          @default(true)

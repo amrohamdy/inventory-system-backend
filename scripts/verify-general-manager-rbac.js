@@ -1,0 +1,45 @@
+/**
+ * Verifies GENERAL_MANAGER exists and has GET_PASS_VIEW, GET_PASS_APPROVE_FINAL, VIEW_DASHBOARD.
+ *
+ * Run after seeding:
+ *   node seed-super-admin.js && node scripts/verify-general-manager-rbac.js
+ */
+const { PrismaClient } = require('@prisma/client');
+
+const prisma = new PrismaClient();
+
+const REQUIRED = ['GET_PASS_VIEW', 'GET_PASS_APPROVE_FINAL', 'VIEW_DASHBOARD'];
+
+async function main() {
+    const role = await prisma.role.findUnique({
+        where: { code: 'GENERAL_MANAGER' },
+        include: {
+            rolePermissions: {
+                include: { permission: { select: { code: true } } },
+            },
+        },
+    });
+
+    if (!role) {
+        console.error('❌ Role GENERAL_MANAGER not found. Run: node seed-super-admin.js');
+        process.exit(1);
+    }
+
+    const codes = new Set(role.rolePermissions.map((rp) => rp.permission.code));
+    const missing = REQUIRED.filter((c) => !codes.has(c));
+
+    if (missing.length > 0) {
+        console.error('❌ GENERAL_MANAGER missing permissions:', missing.join(', '));
+        console.error('   Granted:', [...codes].sort().join(', ') || '(none)');
+        process.exit(1);
+    }
+
+    console.log('✅ GENERAL_MANAGER role OK with permissions:', REQUIRED.join(', '));
+}
+
+main()
+    .catch((e) => {
+        console.error('❌', e.message);
+        process.exit(1);
+    })
+    .finally(() => prisma.$disconnect());

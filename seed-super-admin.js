@@ -23,6 +23,7 @@ const SYSTEM_ROLES = [
     { code: 'FINANCE_MANAGER', name: 'Finance Manager' },
     { code: 'AUDITOR', name: 'Auditor' },
     { code: 'SECURITY', name: 'Security' },
+    { code: 'GENERAL_MANAGER', name: 'General Manager' },
 ];
 
 async function seedSystemRoles() {

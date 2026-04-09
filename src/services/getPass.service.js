@@ -175,21 +175,27 @@ const approveGetPass = async (id, tenantId, user, action, notes) => {
     const updateData = {};
 
     if (getPass.status === 'PENDING_DEPT') {
-        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user.role, 'ISSUE_APPROVE'))) {
+        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user, 'ISSUE_APPROVE'))) {
             throw new Error('Unauthorized for Dept Approval');
         }
         nextStatus = 'PENDING_FINANCE';
         updateData.deptApprovedBy = user.id;
         updateData.deptApprovedAt = new Date();
     } else if (getPass.status === 'PENDING_FINANCE') {
-        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user.role, 'ISSUE_APPROVE'))) {
+        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user, 'ISSUE_APPROVE'))) {
             throw new Error('Unauthorized for Finance Approval');
         }
         nextStatus = 'PENDING_SECURITY';
         updateData.financeApprovedBy = user.id;
         updateData.financeApprovedAt = new Date();
     } else if (getPass.status === 'PENDING_SECURITY') {
-        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user.role, 'GET_PASS_APPROVE'))) {
+        if (
+            !(
+                user.role === 'SUPER_ADMIN' ||
+                hasPermission(user, 'GET_PASS_APPROVE') ||
+                hasPermission(user, 'GET_PASS_APPROVE_FINAL')
+            )
+        ) {
             throw new Error('Unauthorized for Security Approval');
         }
         nextStatus = 'APPROVED';

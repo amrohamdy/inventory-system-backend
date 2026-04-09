@@ -54,9 +54,21 @@ const PERMISSIONS = {
     REPORTS_VIEW: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
     REPORTS_EXPORT: ['ADMIN', 'STOREKEEPER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
 
+    VIEW_DASHBOARD: [
+        'ADMIN',
+        'STOREKEEPER',
+        'DEPT_MANAGER',
+        'COST_CONTROL',
+        'FINANCE_MANAGER',
+        'AUDITOR',
+        'SECURITY',
+        'GENERAL_MANAGER',
+    ],
+
     GET_PASS_CREATE: ['ADMIN', 'STOREKEEPER'],
-    GET_PASS_VIEW: ['ADMIN', 'STOREKEEPER', 'SECURITY', 'FINANCE_MANAGER', 'AUDITOR'],
+    GET_PASS_VIEW: ['ADMIN', 'STOREKEEPER', 'SECURITY', 'FINANCE_MANAGER', 'AUDITOR', 'GENERAL_MANAGER'],
     GET_PASS_APPROVE: ['ADMIN', 'SECURITY'],
+    GET_PASS_APPROVE_FINAL: ['GENERAL_MANAGER'],
     GET_PASS_APPROVE_EXIT: ['ADMIN', 'SECURITY'],
     GET_PASS_APPROVE_RETURN: ['ADMIN', 'SECURITY'],
 
@@ -146,10 +158,32 @@ const requirePermission = (permission) => {
     };
 };
 
+const requireAnyPermission = (...permissions) => {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(403).json({
+                success: false,
+                message: `Access denied. Insufficient permissions.`,
+                required: permissions,
+            });
+        }
+        const ok = permissions.some((p) => hasPermission(req.user, p));
+        if (!ok) {
+            return res.status(403).json({
+                success: false,
+                message: `Access denied. Insufficient permissions.`,
+                required: permissions,
+            });
+        }
+        next();
+    };
+};
+
 module.exports = {
     authorize,
     hasPermission,
     requirePermission,
+    requireAnyPermission,
     PERMISSIONS,
     getPermissionsForRole,
     resolvePermissionKey,

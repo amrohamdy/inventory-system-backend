@@ -2,6 +2,7 @@ const express = require('express');
 
 const authRoutes = require('./auth.routes');
 const usersRoutes = require('./users.routes');
+const rolesRoutes = require('./roles.routes');
 const auditRoutes = require('./audit.routes');
 
 const itemRoutes = require('./item.routes');
@@ -23,6 +24,7 @@ const router = express.Router();
 // M01 — Auth & Users
 router.use('/auth', authRoutes);
 router.use('/users', usersRoutes);
+router.use('/roles', rolesRoutes);
 
 // M14 — Audit Log
 router.use('/audit-log', auditRoutes);

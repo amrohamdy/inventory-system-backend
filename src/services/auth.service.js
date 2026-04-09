@@ -176,6 +176,7 @@ const issueSessionForMembership = async ({
             role: roleCode,
             permissions,
             department: user.department,
+            departmentId: membership.departmentId ?? null,
             tenantId: membership.tenantId,
             tenantName: membership.tenant?.name || null,
         },
@@ -600,6 +601,7 @@ const getMe = async (userId, tenantId) => {
         role: rc,
         permissions,
         tenant: membership.tenant || null,
+        departmentId: membership.departmentId ?? null,
     };
 };
 

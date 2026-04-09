@@ -21,7 +21,8 @@
         "db:reset": "prisma migrate reset --force",
         "db:up": "node scripts/db-up.js",
         "db:down": "node scripts/db-down.js",
-        "db:push": "prisma db push"
+        "db:push": "prisma db push",
+        "verify:general-manager": "node scripts/verify-general-manager-rbac.js"
     },
     "dependencies": {
         "@prisma/client": "^5.10.2",
