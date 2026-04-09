@@ -70,11 +70,12 @@ const assertPostGrnRole = (req) => {
         );
 };
 
-/** PATCH /api/grn/:id/status — VALIDATED → APPROVED | REJECTED (Cost Control / Admin / Org Manager / Super Admin). */
+/** PATCH /api/grn/:id/status — VALIDATED → APPROVED | REJECTED (Cost Control / Admin / …), or APPROVED → REJECTED (Finance Manager). */
 const GRN_STATUS_UPDATE_ROLES = ['COST_CONTROL', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN'];
 
-const assertCostControlOrAdmin = (req) => {
+const assertPatchGrnStatusRole = (req) => {
     const role = normalizeRole(req.user?.role);
+    if (role === 'FINANCE_MANAGER') return;
     if (!GRN_STATUS_UPDATE_ROLES.includes(role))
         throw Object.assign(
             new Error('Insufficient permissions to approve or reject this GRN at this stage.'),
@@ -243,10 +244,17 @@ const postGrn = async (req, res) => {
 /** PATCH /api/grn/:id/status */
 const updateGrnStatus = async (req, res) => {
     try {
-        assertCostControlOrAdmin(req);
+        assertPatchGrnStatusRole(req);
+        const role = normalizeRole(req.user?.role);
         const { status, reason } = req.body || {};
         if (status !== 'APPROVED' && status !== 'REJECTED')
             return res.status(400).json({ success: false, message: 'status must be APPROVED or REJECTED.' });
+        if (role === 'FINANCE_MANAGER' && status !== 'REJECTED')
+            return res.status(403).json({
+                success: false,
+                message:
+                    'Finance managers may only set status to REJECTED (to return an approved GRN before posting).',
+            });
         if (status === 'REJECTED') {
             const r = typeof reason === 'string' ? reason.trim() : '';
             if (!r)
@@ -258,6 +266,7 @@ const updateGrnStatus = async (req, res) => {
             status,
             status === 'REJECTED' ? String(reason).trim() : null,
             req.user.id,
+            role,
         );
         sendSuccess(res, grn);
     } catch (err) {

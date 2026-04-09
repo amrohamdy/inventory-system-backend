@@ -232,23 +232,49 @@ const rejectGrn = async (grnId, tenantId, userId, reason) => {
 };
 
 /**
- * Cost Control / Admin: transition VALIDATED → APPROVED or REJECTED (no PENDING_APPROVAL step).
+ * Cost Control / Admin: VALIDATED → APPROVED or REJECTED.
+ * Finance Manager: APPROVED → REJECTED only (unwind before ledger post).
  * @param {string} grnId
  * @param {string} tenantId
  * @param {'APPROVED'|'REJECTED'} status
  * @param {string|null} reason Required when status is REJECTED
  * @param {string} userId
+ * @param {string} [actorRole] JWT role (normalized) — FINANCE_MANAGER or ADMIN triggers the APPROVED→REJECTED path
  */
-const updateStatus = async (grnId, tenantId, status, reason, userId) => {
+const updateStatus = async (grnId, tenantId, status, reason, userId, actorRole) => {
     const grn = await prisma.grnImport.findFirst({ where: { id: grnId, tenantId } });
     if (!grn) throw Object.assign(new Error('GRN not found'), { status: 404 });
+    if (status !== 'APPROVED' && status !== 'REJECTED')
+        throw Object.assign(new Error('Invalid target status.'), { status: 400 });
+
+    const role = normalizeRole(actorRole);
+
+    // Finance Manager / Admin: APPROVED → REJECTED (return before ledger post)
+    if (
+        (role === 'FINANCE_MANAGER' || role === 'ADMIN') &&
+        status === 'REJECTED' &&
+        grn.status === 'APPROVED'
+    ) {
+        const r = (reason || '').trim();
+        if (!r)
+            throw Object.assign(new Error('Rejection reason is required.'), { status: 400 });
+        return prisma.grnImport.update({
+            where: { id: grnId },
+            data: {
+                status: 'REJECTED',
+                rejectedBy: userId,
+                rejectionReason: r,
+                approvedBy: null,
+                updatedAt: new Date(),
+            },
+        });
+    }
+
     if (grn.status !== 'VALIDATED')
         throw Object.assign(
             new Error(`GRN must be VALIDATED to approve or reject. Current status: ${grn.status}`),
             { status: 422 }
         );
-    if (status !== 'APPROVED' && status !== 'REJECTED')
-        throw Object.assign(new Error('Invalid target status.'), { status: 400 });
 
     if (status === 'REJECTED') {
         const r = (reason || '').trim();

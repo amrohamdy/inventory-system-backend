@@ -32,10 +32,10 @@ router.post(
 );
 
 // ── Mutations (specific PATCH paths before `/:id`) ──
-// VALIDATED → APPROVED | REJECTED: Cost Control / Admin only (not storekeeper), matches controller + Angular reviewers.
+// VALIDATED → APPROVED | REJECTED (Cost Control / Admin), or APPROVED → REJECTED (Finance Manager).
 router.patch(
     '/:id/status',
-    authorize('COST_CONTROL', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN'),
+    authorize('COST_CONTROL', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN', 'FINANCE_MANAGER'),
     ctrl.updateGrnStatus,
 );
 router.patch('/:id', requirePermission('GRN_MANAGE'), ctrl.updateGrn);
