@@ -94,6 +94,7 @@ model User {
   getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
   grnApproved        GrnImport[]         @relation("GrnApprovedBy")
   grnImported        GrnImport[]         @relation("GrnImportedBy")
+  grnLastEdited      GrnImport[]         @relation("GrnLastEditedBy")
   grnPosted          GrnImport[]         @relation("GrnPostedBy")
   grnRejected        GrnImport[]         @relation("GrnRejectedBy")
   importSessions     ImportSession[]
@@ -727,19 +728,22 @@ model GrnImport {
   locationId         String    @db.Uuid
   receivingDate      DateTime
   pdfAttachmentUrl   String
-  status             GrnStatus @default(DRAFT)
-  rejectionReason    String?
-  notes              String?
-  importedBy         String    @db.Uuid
-  approvedBy         String?   @db.Uuid
-  rejectedBy         String?   @db.Uuid
-  postedBy           String?   @db.Uuid
-  postedAt           DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  approvedByUser     User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
-  importedByUser     User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
-  location           Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  status                   GrnStatus @default(DRAFT)
+  rejectionReason          String?
+  notes                    String?
+  isEditedAfterRejection   Boolean   @default(false)
+  lastEditedBy             String?   @db.Uuid
+  importedBy               String    @db.Uuid
+  approvedBy               String?   @db.Uuid
+  rejectedBy               String?   @db.Uuid
+  postedBy                 String?   @db.Uuid
+  postedAt                 DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  approvedByUser           User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
+  importedByUser           User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
+  lastEditedByUser         User?     @relation("GrnLastEditedBy", fields: [lastEditedBy], references: [id])
+  location                 Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
   postedByUser       User?     @relation("GrnPostedBy", fields: [postedBy], references: [id])
   rejectedByUser     User?     @relation("GrnRejectedBy", fields: [rejectedBy], references: [id])
   tenant             Tenant    @relation(fields: [tenantId], references: [id])

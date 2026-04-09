@@ -216,7 +216,12 @@ const approveGrn = async (grnId, tenantId, userId, comment) => {
     await assertStatus(grnId, tenantId, 'PENDING_APPROVAL');
     return prisma.grnImport.update({
         where: { id: grnId },
-        data: { status: 'APPROVED', approvedBy: userId, updatedAt: new Date() },
+        data: {
+            status: 'APPROVED',
+            approvedBy: userId,
+            isEditedAfterRejection: false,
+            updatedAt: new Date(),
+        },
     });
 };
 
@@ -227,7 +232,14 @@ const rejectGrn = async (grnId, tenantId, userId, reason) => {
         throw Object.assign(new Error('GRN cannot be rejected in its current state'), { status: 422 });
     return prisma.grnImport.update({
         where: { id: grnId },
-        data: { status: 'REJECTED', rejectedBy: userId, rejectionReason: reason, updatedAt: new Date() },
+        data: {
+            status: 'REJECTED',
+            rejectedBy: userId,
+            rejectionReason: reason,
+            isEditedAfterRejection: false,
+            lastEditedBy: null,
+            updatedAt: new Date(),
+        },
     });
 };
 
@@ -265,6 +277,8 @@ const updateStatus = async (grnId, tenantId, status, reason, userId, actorRole) 
                 rejectedBy: userId,
                 rejectionReason: r,
                 approvedBy: null,
+                isEditedAfterRejection: false,
+                lastEditedBy: null,
                 updatedAt: new Date(),
             },
         });
@@ -286,6 +300,8 @@ const updateStatus = async (grnId, tenantId, status, reason, userId, actorRole) 
                 status: 'REJECTED',
                 rejectedBy: userId,
                 rejectionReason: r,
+                isEditedAfterRejection: false,
+                lastEditedBy: null,
                 updatedAt: new Date(),
             },
         });
@@ -298,6 +314,7 @@ const updateStatus = async (grnId, tenantId, status, reason, userId, actorRole) 
             approvedBy: userId,
             rejectionReason: null,
             rejectedBy: null,
+            isEditedAfterRejection: false,
             updatedAt: new Date(),
         },
     });
@@ -333,6 +350,7 @@ const resubmitRejectedGrn = async (grnId, tenantId, userId, creatorRole) => {
                 approvedBy: userId,
                 rejectionReason: null,
                 rejectedBy: null,
+                isEditedAfterRejection: false,
                 updatedAt: new Date(),
             },
         });
@@ -513,6 +531,7 @@ const getGrn = async (grnId, tenantId) => {
             approvedByUser: { select: { firstName: true, lastName: true } },
             postedByUser: { select: { firstName: true, lastName: true } },
             rejectedByUser: { select: { firstName: true, lastName: true } },
+            lastEditedByUser: { select: { firstName: true, lastName: true } },
             lines: true,
         },
     });
@@ -544,7 +563,7 @@ const getGrn = async (grnId, tenantId) => {
  * PATCH /api/grn/:id — optional `notes`; optional `lines` (full replacement) only when status is REJECTED.
  * POSTED / APPROVED (and any non-REJECTED status) cannot change line items.
  */
-const updateGrn = async (grnId, tenantId, body = {}) => {
+const updateGrn = async (grnId, tenantId, body = {}, userId) => {
     const { notes, lines } = body;
     const hasLines = lines !== undefined;
     const hasNotes = notes !== undefined;
@@ -612,12 +631,17 @@ const updateGrn = async (grnId, tenantId, body = {}) => {
             });
 
             await tx.grnLine.createMany({ data: createRows });
+            const linePatchData = {
+                ...(hasNotes ? { notes: notes ?? null } : {}),
+                updatedAt: new Date(),
+            };
+            if (grn.status === 'REJECTED') {
+                linePatchData.isEditedAfterRejection = true;
+                linePatchData.lastEditedBy = userId || null;
+            }
             await tx.grnImport.update({
                 where: { id: grnId },
-                data: {
-                    ...(hasNotes ? { notes: notes ?? null } : {}),
-                    updatedAt: new Date(),
-                },
+                data: linePatchData,
             });
         });
 

@@ -279,7 +279,7 @@ const updateGrn = async (req, res) => {
     try {
         const { notes, lines } = req.body || {};
         const updated = await grnService.updateGrn(
-            req.params.id, req.user.tenantId, { notes, lines },
+            req.params.id, req.user.tenantId, { notes, lines }, req.user.id,
         );
         sendSuccess(res, updated);
     } catch (err) {
