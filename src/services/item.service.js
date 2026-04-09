@@ -42,9 +42,10 @@ const parseExcelNumber = (val) => {
 };
 
 /**
- * Prerequisite counts for Item Master creation (tenant-scoped).
- * canCreateItem is true only when units, categories, vendors (suppliers), and locations all exist.
- * After prerequisites are met, the Opening Balance period must be active (not LOCKED) to add items.
+ * Prerequisite counts for Item Master (tenant-scoped).
+ * canCreateItem is true when units, categories, and locations all exist (independent of OB phase).
+ * isOpeningBalanceAllowed mirrors `settingService.isOpeningBalanceAllowed` (toggle / finalize state):
+ * when true, OB setup is active and operational transactions stay blocked until finalize.
  */
 const checkItemCreationRequirements = async (tenantId) => {
     const [units, categories, vendors, locations] = await Promise.all([
@@ -61,29 +62,22 @@ const checkItemCreationRequirements = async (tenantId) => {
         locations: { count: locations },
     };
 
-    const prerequisitesMet =
-        units > 0 && categories > 0 && vendors > 0 && locations > 0;
+    const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
+    const isOpeningBalanceAllowed = obCheck.allowed === true;
 
-    if (!prerequisitesMet) {
+    const canCreateItem =
+        units > 0 && categories > 0 && locations > 0;
+
+    if (!canCreateItem) {
         return {
             canCreateItem: false,
             requirements,
             blockReason: 'MISSING_PREREQUISITES',
-            isOpeningBalanceAllowed: false,
+            isOpeningBalanceAllowed,
         };
     }
 
-    const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
-    if (!obCheck.allowed) {
-        return {
-            canCreateItem: false,
-            requirements,
-            blockReason: 'OPENING_BALANCE',
-            isOpeningBalanceAllowed: false,
-        };
-    }
-
-    return { canCreateItem: true, requirements, isOpeningBalanceAllowed: true };
+    return { canCreateItem: true, requirements, isOpeningBalanceAllowed };
 };
 
 // ── Validate itemUnits array ───────────────────────────────────────────────────

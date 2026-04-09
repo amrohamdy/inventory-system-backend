@@ -147,7 +147,7 @@ const getOBStatus = async (tenantId) => {
 
 /**
  * Blocks GRN, Get Pass, and similar operational flows while the tenant is still in
- * Opening Balance phase (aligned with `GET /items/check-requirements` → canCreateItem).
+ * Opening Balance phase (aligned with `GET /items/check-requirements` → isOpeningBalanceAllowed).
  */
 const assertOperationalTransactionsAllowed = async (tenantId) => {
     const ob = await settingService.isOpeningBalanceAllowed(tenantId);
