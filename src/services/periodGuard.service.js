@@ -154,7 +154,7 @@ const assertOperationalTransactionsAllowed = async (tenantId) => {
     if (ob.allowed) {
         throw Object.assign(
             new Error('Opening balance must be finalized before starting transactions.'),
-            { statusCode: 403, code: 'OPENING_BALANCE_PHASE' },
+            { status: 403, statusCode: 403, code: 'OPENING_BALANCE_PHASE' },
         );
     }
 };

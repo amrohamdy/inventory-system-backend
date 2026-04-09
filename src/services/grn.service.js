@@ -96,23 +96,31 @@ const createGrn = async ({
             receivingDate: receivingDate ? new Date(receivingDate) : new Date(),
             pdfAttachmentUrl: invoiceUrl,
             notes: notes || null,
-            status: 'DRAFT',
+            status: 'VALIDATED',
             importedBy: userId,
             lines: {
-                create: lines.map(l => ({
+                create: lines.map(l => {
+                    const received = Number(l.receivedQty);
+                    const orderedRaw = l.orderedQty;
+                    const ordered =
+                        orderedRaw != null && orderedRaw !== ''
+                            ? Number(orderedRaw)
+                            : received;
+                    return {
                     futurelogItemCode: itemMap[l.itemId]?.barcode || l.itemId,
                     futurelogDescription: itemMap[l.itemId]?.name || '',
                     futurelogUom: l.uomId,  // store uomId here for now
-                    orderedQty: Number(l.orderedQty) || 0,
-                    receivedQty: Number(l.receivedQty),
+                    orderedQty: Number.isFinite(ordered) ? ordered : received,
+                    receivedQty: received,
                     unitPrice: Number(l.unitPrice) || 0,
                     internalItemId: l.itemId,
                     internalUomId: l.uomId,
                     conversionFactor: 1,
-                    qtyInBaseUnit: Number(l.receivedQty),
+                    qtyInBaseUnit: received,
                     isMapped: true,  // always true — items pre-validated
                     // notes per line stored in futurelogDescription + custom notes if exists
-                })),
+                    };
+                }),
             },
         },
         include: {
@@ -399,7 +407,7 @@ const deleteGrn = async (grnId, tenantId) => {
 
 /**
  * Generate a GRN Excel template with sample data.
- * Columns: Item Barcode | Item Name (for reference) | Ordered Qty | Received Qty* | Unit Price
+ * Columns: Item Barcode | Item Name (ref) | Qty* | Unit Price
  */
 const generateGrnTemplate = async () => {
     const wb = new ExcelJS.Workbook();
@@ -408,8 +416,7 @@ const generateGrnTemplate = async () => {
     ws.columns = [
         { header: 'Item Barcode *', key: 'barcode', width: 22 },
         { header: 'Item Name (ref)', key: 'itemName', width: 30 },
-        { header: 'Ordered Qty', key: 'orderedQty', width: 14 },
-        { header: 'Received Qty *', key: 'receivedQty', width: 14 },
+        { header: 'Qty *', key: 'receivedQty', width: 14 },
         { header: 'Unit Price', key: 'unitPrice', width: 14 },
     ];
 
@@ -421,8 +428,8 @@ const generateGrnTemplate = async () => {
     headerRow.height = 24;
 
     // Sample rows
-    ws.addRow({ barcode: 'ITEM-001', itemName: 'Example Item 1', orderedQty: 10, receivedQty: 10, unitPrice: 25.00 });
-    ws.addRow({ barcode: 'ITEM-002', itemName: 'Example Item 2', orderedQty: 5, receivedQty: 4, unitPrice: 12.50 });
+    ws.addRow({ barcode: 'ITEM-001', itemName: 'Example Item 1', receivedQty: 10, unitPrice: 25.00 });
+    ws.addRow({ barcode: 'ITEM-002', itemName: 'Example Item 2', receivedQty: 4, unitPrice: 12.50 });
 
     // Instructions sheet
     const info = wb.addWorksheet('Instructions');
@@ -430,9 +437,9 @@ const generateGrnTemplate = async () => {
     info.addRow(['GRN Import Template — Instructions']).font = { bold: true, size: 13 };
     info.addRow(['']);
     info.addRow(['1. Item Barcode is REQUIRED and must match an existing item in the system.']);
-    info.addRow(['2. Received Qty is REQUIRED and must be greater than 0.']);
+    info.addRow(['2. Qty is REQUIRED and must be greater than 0.']);
     info.addRow(['3. Item Name column is for your reference — it is NOT used during import.']);
-    info.addRow(['4. Leave Ordered Qty / Unit Price empty if not applicable.']);
+    info.addRow(['4. Leave Unit Price empty if not applicable.']);
     info.addRow(['5. Do NOT change column headers or add/remove columns.']);
     info.addRow(['6. After upload, any rows with invalid barcodes will be shown as errors and skipped.']);
 
@@ -467,8 +474,17 @@ const previewGrnExcel = async (filePath, tenantId) => {
         if (h.includes('price')) colMap.unitPrice = colNum;
     });
 
+    // "Qty" column (new template) — avoid matching "ordered qty"
+    if (!colMap.receivedQty) {
+        headerRow.eachCell((cell, colNum) => {
+            const h = (cell.value || '').toString().toLowerCase().trim();
+            const isQty = /\bqty\b/.test(h) || h === 'quantity' || h.endsWith(' qty') || h.startsWith('qty ');
+            if (isQty && !h.includes('ordered')) colMap.receivedQty = colNum;
+        });
+    }
+
     if (!colMap.barcode && !colMap.itemName) throw Object.assign(new Error('"Item Barcode" or "Item Name" column not found. Use the provided template.'), { status: 400 });
-    if (!colMap.receivedQty) throw Object.assign(new Error('"Received Qty" column not found. Use the provided template.'), { status: 400 });
+    if (!colMap.receivedQty) throw Object.assign(new Error('"Qty" or "Received Qty" column not found. Use the provided template.'), { status: 400 });
 
     // Collect rows — accept rows with barcode OR item name
     const rawRows = [];
@@ -480,11 +496,15 @@ const previewGrnExcel = async (filePath, tenantId) => {
         if (!barcode && !nameVal) return;
         const rcvCell = row.getCell(colMap.receivedQty);
         if (!rcvCell.value && rcvCell.value !== 0) return; // skip fully empty rows
+        const explicitOrdered = colMap.orderedQty
+            ? Number(row.getCell(colMap.orderedQty).value)
+            : NaN;
+        const rcvNum = Number(rcvCell.value);
         rawRows.push({
             rowNum,
             barcode: barcode || null,
             itemName: nameVal || null,
-            orderedQty: Number(colMap.orderedQty ? row.getCell(colMap.orderedQty).value : 0) || 0,
+            orderedQty: Number.isFinite(explicitOrdered) ? explicitOrdered : rcvNum,
             receivedQty: rcvCell.value,
             unitPrice: Number(colMap.unitPrice ? row.getCell(colMap.unitPrice).value : 0) || 0,
         });
@@ -521,7 +541,7 @@ const previewGrnExcel = async (filePath, tenantId) => {
         const rcvQty = Number(raw.receivedQty);
 
         if (!item) errors.push(`Item "${raw.barcode || raw.itemName}" not found in Item Master.`);
-        if (!rcvQty || rcvQty <= 0) errors.push('Received Qty must be greater than 0.');
+        if (!rcvQty || rcvQty <= 0) errors.push('Qty must be greater than 0.');
 
         const baseUnit = item?.itemUnits?.[0];
         const ok = errors.length === 0;
@@ -533,6 +553,8 @@ const previewGrnExcel = async (filePath, tenantId) => {
             itemName: item?.name || raw.itemName || '—',
             itemId: item?.id || null,
             uomId: baseUnit?.unitId || null,
+            uomName: baseUnit?.unit?.abbreviation || baseUnit?.unit?.name || '',
+            imageUrl: item?.imageUrl || null,
             orderedQty: raw.orderedQty,
             receivedQty: rcvQty,
             unitPrice: raw.unitPrice,

@@ -3,6 +3,10 @@ const path = require('path');
 const multer = require('multer');
 const grnService = require('../services/grn.service');
 const periodGuard = require('../services/periodGuard.service');
+const { normalizeRole } = require('../services/rbac.service');
+
+/** Roles allowed to create GRNs (POST /api/grn). */
+const GRN_CREATE_ROLES = ['COST_CONTROL', 'STOREKEEPER', 'ADMIN', 'SUPER_ADMIN'];
 
 // ─── Multer: invoice PDF upload ───────────────────────────────────────────────
 const invoiceUpload = multer({
@@ -56,12 +60,22 @@ const assertFinance = (req) => {
         );
 };
 
+const assertGrnCreateRole = (req) => {
+    const role = normalizeRole(req.user?.role);
+    if (!GRN_CREATE_ROLES.includes(role)) {
+        throw Object.assign(new Error('Permission denied. You cannot create goods receipt notes.'), {
+            status: 403,
+        });
+    }
+};
+
 // ─── Controllers ─────────────────────────────────────────────────────────────
 
 /** POST /api/grn — create a new GRN using items from Item Master */
 const createGrn = async (req, res) => {
     try {
         await periodGuard.assertOperationalTransactionsAllowed(req.user.tenantId);
+        assertGrnCreateRole(req);
 
         const invoiceFile = req.file;
         if (!invoiceFile)
