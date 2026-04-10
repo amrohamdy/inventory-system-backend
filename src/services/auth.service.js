@@ -581,6 +581,7 @@ const getMe = async (userId, tenantId) => {
         },
         include: {
             tenant: { select: { id: true, name: true, slug: true, logoUrl: true } },
+            role: { select: { id: true, code: true } },
         },
     });
     if (!membership) {
