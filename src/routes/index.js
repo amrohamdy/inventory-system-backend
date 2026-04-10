@@ -17,6 +17,7 @@ const ledgerRoutes = require('./ledger.routes');
 
 // M08 - Breakage
 const breakageRoutes = require('./breakage.routes');
+const lostItemsRoutes = require('./lostItems.routes');
 const stockCountRoutes = require('./stockCount.routes');
 
 const router = express.Router();
@@ -47,6 +48,7 @@ router.use('/units', unitRoutes);
 
 // M08 - Breakage
 router.use('/breakage', breakageRoutes);
+router.use('/lost-items', lostItemsRoutes);
 
 // M10: Stock Count
 router.use('/stock-count', stockCountRoutes);

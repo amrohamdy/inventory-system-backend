@@ -94,6 +94,9 @@ const PERMISSIONS = {
 
     /** Sidebar + read access to Breakage & Loss (Transactions); API may also use VIEW_INVENTORY. */
     BREAKAGE_VIEW: ['ADMIN', 'SUPER_ADMIN', 'DEPT_MANAGER', 'SECURITY'],
+
+    /** Get Pass loan write-offs (lost qty) — ledger LOAN_WRITE_OFF linked to GetPassReturn. */
+    LOST_ITEMS_VIEW: ['ADMIN', 'GENERAL_MANAGER', 'DEPT_MANAGER'],
     REPORTS_EXPORT: [
         'ADMIN',
         'STOREKEEPER',
