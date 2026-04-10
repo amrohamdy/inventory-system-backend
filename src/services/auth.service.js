@@ -623,6 +623,38 @@ const getProfile = async (userId, tenantId) => {
 };
 
 /**
+ * Authenticated user changes own password (current password verified with bcrypt).
+ */
+const changePassword = async ({ userId, currentPassword, newPassword }) => {
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, passwordHash: true, isActive: true },
+    });
+    if (!user || !user.isActive) {
+        throw Object.assign(new Error('User not found.'), { statusCode: 404, code: 'USER_NOT_FOUND' });
+    }
+    const currentOk = await comparePassword(currentPassword, user.passwordHash);
+    if (!currentOk) {
+        throw Object.assign(new Error('Current password is incorrect.'), {
+            statusCode: 401,
+            code: 'INVALID_CURRENT_PASSWORD',
+        });
+    }
+    const reuse = await comparePassword(newPassword, user.passwordHash);
+    if (reuse) {
+        throw Object.assign(new Error('New password must be different from your current password.'), {
+            statusCode: 400,
+            code: 'PASSWORD_UNCHANGED',
+        });
+    }
+    const passwordHash = await hashPassword(newPassword);
+    await prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash },
+    });
+};
+
+/**
  * Switch tenant context for an authenticated user
  */
 const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
@@ -755,4 +787,4 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     return result;
 };
 
-module.exports = { login, refresh, logout, getMe, getProfile, switchTenant };
+module.exports = { login, refresh, logout, getMe, getProfile, changePassword, switchTenant };

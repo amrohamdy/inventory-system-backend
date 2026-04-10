@@ -1,5 +1,5 @@
 const prisma = require('../config/database');
-const { hashPassword } = require('../utils/password');
+const { hashPassword, comparePassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const {
     countActiveSeats,
@@ -276,7 +276,7 @@ const createUser = async (tenantId, data, requestingUserId) => {
     return user;
 };
 
-const updateUser = async (tenantId, userId, data) => {
+const updateUser = async (tenantId, userId, data, requestingUserId) => {
     const membership = await prisma.tenantMember.findUnique({
         where: { tenantId_userId: { tenantId, userId } },
         include: { user: true, role: true },
@@ -290,7 +290,33 @@ const updateUser = async (tenantId, userId, data) => {
     if (data.lastName) updateData.lastName = data.lastName;
     if (data.department !== undefined) updateData.department = data.department;
     if (data.phone !== undefined) updateData.phone = data.phone;
-    if (data.password) updateData.passwordHash = await hashPassword(data.password);
+    if (data.password) {
+        const isSelfPasswordChange = requestingUserId && String(requestingUserId) === String(userId);
+        if (isSelfPasswordChange) {
+            const current = data.currentPassword;
+            if (current === undefined || current === null || String(current).trim() === '') {
+                throw Object.assign(new Error('Current password is required.'), {
+                    statusCode: 400,
+                    code: 'CURRENT_PASSWORD_REQUIRED',
+                });
+            }
+            const ok = await comparePassword(String(current), membership.user.passwordHash);
+            if (!ok) {
+                throw Object.assign(new Error('Current password is incorrect.'), {
+                    statusCode: 401,
+                    code: 'CURRENT_PASSWORD_INCORRECT',
+                });
+            }
+            const reuse = await comparePassword(data.password, membership.user.passwordHash);
+            if (reuse) {
+                throw Object.assign(
+                    new Error('New password must be different from your current password.'),
+                    { statusCode: 400, code: 'PASSWORD_UNCHANGED' },
+                );
+            }
+        }
+        updateData.passwordHash = await hashPassword(data.password);
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
         const updatedUser = await tx.user.update({

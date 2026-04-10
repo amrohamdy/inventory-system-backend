@@ -94,7 +94,12 @@ const createUser = async (req, res) => {
  */
 const updateUser = async (req, res) => {
     const before = await usersService.getUserById(req.user.tenantId, req.params.id);
-    const updated = await usersService.updateUser(req.user.tenantId, req.params.id, req.body);
+    const updated = await usersService.updateUser(
+        req.user.tenantId,
+        req.params.id,
+        req.body,
+        req.user.id,
+    );
 
     await auditService.log({
         tenantId: req.user.tenantId,

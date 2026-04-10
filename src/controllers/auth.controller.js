@@ -87,6 +87,19 @@ const profile = async (req, res) => {
 };
 
 /**
+ * POST /api/auth/change-password
+ */
+const changePassword = async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    await authService.changePassword({
+        userId: req.user.id,
+        currentPassword,
+        newPassword,
+    });
+    return success(res, null, 'Password updated successfully.');
+};
+
+/**
  * POST /api/auth/switch-tenant
  */
 const switchTenant = async (req, res) => {
@@ -102,4 +115,4 @@ const switchTenant = async (req, res) => {
     return success(res, result, 'Tenant switched successfully.');
 };
 
-module.exports = { login, refresh, logout, me, profile, switchTenant };
+module.exports = { login, refresh, logout, me, profile, changePassword, switchTenant };

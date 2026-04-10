@@ -37,6 +37,14 @@ const refreshValidator = [
     validate,
 ];
 
+const changePasswordValidator = [
+    body('currentPassword').notEmpty().withMessage('Current password is required.'),
+    body('newPassword')
+        .isLength({ min: 8 })
+        .withMessage('New password must be at least 8 characters.'),
+    validate,
+];
+
 // ─── User Validators ───────────────────────────────────────────────────────
 const createUserValidator = [
     body('email').isEmail().normalizeEmail().withMessage('Valid email required.'),
@@ -63,6 +71,7 @@ const createUserValidator = [
 const updateUserValidator = [
     body('firstName').optional().notEmpty().trim(),
     body('lastName').optional().notEmpty().trim(),
+    body('currentPassword').optional().isString().withMessage('currentPassword must be a string.'),
     body('password').optional().isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
     body('role')
         .optional()
@@ -366,6 +375,7 @@ module.exports = {
     validate,
     loginValidator,
     refreshValidator,
+    changePasswordValidator,
     createUserValidator,
     updateUserValidator,
     updateRoleValidator,
