@@ -1,13 +1,13 @@
 const express = require('express');
 const auditService = require('../services/audit.service');
 const { authenticate } = require('../middleware/authenticate');
-const { authorize } = require('../middleware/authorize');
+const { requirePermission } = require('../middleware/authorize');
 const { paginated } = require('../utils/response');
 
 const router = express.Router();
 
 router.use(authenticate);
-router.use(authorize('ADMIN', 'AUDITOR', 'FINANCE_MANAGER'));
+router.use(requirePermission('AUDIT_LOG_VIEW'));
 
 // GET /api/audit-log
 router.get('/', async (req, res) => {
