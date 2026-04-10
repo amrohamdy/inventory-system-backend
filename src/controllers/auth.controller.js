@@ -79,6 +79,14 @@ const me = async (req, res) => {
 };
 
 /**
+ * GET /api/profile
+ */
+const profile = async (req, res) => {
+    const data = await authService.getProfile(req.user.id, req.user.tenantId);
+    return success(res, data);
+};
+
+/**
  * POST /api/auth/switch-tenant
  */
 const switchTenant = async (req, res) => {
@@ -94,4 +102,4 @@ const switchTenant = async (req, res) => {
     return success(res, result, 'Tenant switched successfully.');
 };
 
-module.exports = { login, refresh, logout, me, switchTenant };
+module.exports = { login, refresh, logout, me, profile, switchTenant };

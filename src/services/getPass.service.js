@@ -20,7 +20,10 @@ const STEP_ROLE = {
     PENDING_GM: 'GENERAL_MANAGER'
 };
 
-const isAdminBypass = (role) => role === 'ADMIN' || role === 'SUPER_ADMIN';
+const isAdminBypass = (role) => {
+    const r = normalizeRole(role);
+    return r === 'ADMIN' || r === 'SUPER_ADMIN';
+};
 
 /**
  * First workflow step after submit: skip stages the submitter role already represents.
@@ -30,6 +33,19 @@ const isAdminBypass = (role) => role === 'ADMIN' || role === 'SUPER_ADMIN';
 const getSubmitInitialWorkflow = (role, userId) => {
     const r = normalizeRole(role);
     const now = new Date();
+    if (r === 'ADMIN' || r === 'SUPER_ADMIN') {
+        return {
+            status: 'APPROVED',
+            deptApprovedBy: userId,
+            deptApprovedAt: now,
+            costControlApprovedBy: userId,
+            costControlApprovedAt: now,
+            financeApprovedBy: userId,
+            financeApprovedAt: now,
+            gmApprovedBy: userId,
+            gmApprovedAt: now,
+        };
+    }
     if (r === 'DEPT_MANAGER') {
         return {
             status: 'PENDING_COST_CONTROL',

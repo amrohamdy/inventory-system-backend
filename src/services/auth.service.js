@@ -606,6 +606,23 @@ const getMe = async (userId, tenantId) => {
 };
 
 /**
+ * Profile: firstName, lastName, email, phone, department, role for settings UI.
+ * Reuses getMe (no passwordHash is ever selected).
+ */
+const getProfile = async (userId, tenantId) => {
+    const me = await getMe(userId, tenantId);
+    return {
+        id: me.id,
+        firstName: me.firstName,
+        lastName: me.lastName,
+        email: me.email,
+        phone: me.phone ?? null,
+        department: me.department ?? null,
+        role: me.role,
+    };
+};
+
+/**
  * Switch tenant context for an authenticated user
  */
 const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
@@ -738,4 +755,4 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     return result;
 };
 
-module.exports = { login, refresh, logout, getMe, switchTenant };
+module.exports = { login, refresh, logout, getMe, getProfile, switchTenant };

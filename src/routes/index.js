@@ -1,5 +1,7 @@
 const express = require('express');
 
+const { authenticate } = require('../middleware/authenticate');
+const authController = require('../controllers/auth.controller');
 const authRoutes = require('./auth.routes');
 const usersRoutes = require('./users.routes');
 const rolesRoutes = require('./roles.routes');
@@ -21,6 +23,9 @@ const lostItemsRoutes = require('./lostItems.routes');
 const stockCountRoutes = require('./stockCount.routes');
 
 const router = express.Router();
+
+// GET /api/profile — real-time profile for settings (authenticated)
+router.get('/profile', authenticate, authController.profile);
 
 // M01 — Auth & Users
 router.use('/auth', authRoutes);
