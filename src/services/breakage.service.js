@@ -146,8 +146,7 @@ const getBreakages = async (tenantId, query = {}) => {
             include: {
                 createdByUser: { select: { firstName: true, lastName: true } },
                 approvalRequests: {
-                    select: { status: true, currentStep: true, totalSteps: true },
-                    orderBy: { createdAt: 'asc' },
+                    select: { status: true, currentStep: true, totalSteps: true, createdAt: true },
                 },
                 _count: { select: { lines: true } },
             },
@@ -157,7 +156,10 @@ const getBreakages = async (tenantId, query = {}) => {
 
     const documents = rawDocuments.map((d) => ({
         ...d,
-        approvalRequests: (d.approvalRequests ?? []).slice(0, 1),
+        approvalRequests: [...(d.approvalRequests ?? [])]
+            .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+            .slice(0, 1)
+            .map(({ status, currentStep, totalSteps }) => ({ status, currentStep, totalSteps })),
     }));
 
     return { documents, total };
