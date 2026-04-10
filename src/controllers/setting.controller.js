@@ -1,6 +1,10 @@
 const settingService = require('../services/setting.service');
 const { logAction, EntityType } = require('../services/auditTrail.service');
 const { success } = require('../utils/response');
+const { normalizeRole } = require('../services/rbac.service');
+
+const canManageTenantOpeningBalance = (role) =>
+    ['SUPER_ADMIN', 'ADMIN', 'ORG_MANAGER'].includes(normalizeRole(role));
 
 // ── GET Setting ────────────────────────────────────────────────────────────────
 const getSetting = async (req, res, next) => {
@@ -23,8 +27,8 @@ const setSetting = async (req, res, next) => {
 
         // OB setting requires SUPER_ADMIN or ADMIN + mandatory reason
         if (key === 'allowOpeningBalance') {
-            if (!['SUPER_ADMIN', 'ADMIN'].includes(req.user.role)) {
-                const e = new Error('Only SUPER_ADMIN or ADMIN can modify Opening Balance setting');
+            if (!canManageTenantOpeningBalance(req.user.role)) {
+                const e = new Error('Only SUPER_ADMIN, ADMIN, or ORG_MANAGER can modify Opening Balance setting');
                 e.statusCode = 403; throw e;
             }
             if (value === 'OPEN' && !reason) {
@@ -63,7 +67,7 @@ const lockOB = async (req, res, next) => {
         const { tenantId, id: userId, role } = req.user;
 
         // Defense-in-depth role check (route middleware also enforces this).
-        if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
+        if (!canManageTenantOpeningBalance(role)) {
             const e = new Error('Only tenant administrators can lock or unlock Opening Balance.');
             e.statusCode = 403; throw e;
         }
@@ -75,6 +79,9 @@ const lockOB = async (req, res, next) => {
 
         await settingService.setSetting(
             tenantId, 'allowOpeningBalance', 'LOCKED', userId, reason
+        );
+        await settingService.setSetting(
+            tenantId, 'isOpeningBalanceAllowed', 'false', userId, reason
         );
 
         await logAction({
@@ -102,14 +109,12 @@ const enableOB = async (req, res, next) => {
         const normalizedReason = (reason && String(reason).trim()) || 'Initial Setup';
 
         // Defense-in-depth role check (route middleware also enforces this).
-        if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
+        if (!canManageTenantOpeningBalance(role)) {
             const e = new Error('Only tenant administrators can lock or unlock Opening Balance.');
             e.statusCode = 403; throw e;
         }
 
-        await settingService.setSetting(
-            tenantId, 'allowOpeningBalance', 'OPEN', userId, normalizedReason
-        );
+        await settingService.enableOpeningBalanceStage(tenantId, userId, normalizedReason);
 
         await logAction({
             tenantId,
@@ -119,8 +124,6 @@ const enableOB = async (req, res, next) => {
             changedBy: userId,
             note: `OB import enabled by tenant administrator — reason: ${normalizedReason}`,
         });
-
-        await settingService.clearObFinalizeSnapshot(tenantId);
 
         return success(
             res,
@@ -134,7 +137,7 @@ const enableOB = async (req, res, next) => {
 const finalizeOpeningBalance = async (req, res, next) => {
     try {
         const { tenantId, id: userId, role } = req.user;
-        if (!['SUPER_ADMIN', 'ADMIN'].includes(role)) {
+        if (!canManageTenantOpeningBalance(role)) {
             const e = new Error('Only tenant administrators can finalize Opening Balance.');
             e.statusCode = 403; throw e;
         }

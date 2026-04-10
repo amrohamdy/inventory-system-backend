@@ -1,4 +1,5 @@
 const { body, query, param, validationResult } = require('express-validator');
+const { REFRESH_TOKEN_COOKIE_NAME } = require('./refreshCookie');
 
 const applyLifetimeSubStatusDefault = (req) => {
     const payload = req.body;
@@ -32,10 +33,26 @@ const loginValidator = [
     validate,
 ];
 
-const refreshValidator = [
-    body('refreshToken').notEmpty().withMessage('Refresh token is required.'),
-    validate,
-];
+/** Accept refresh token from JSON body or httpOnly cookie (see refreshCookie). */
+const resolveRefreshToken = (req, res, next) => {
+    const fromBody = req.body?.refreshToken;
+    const fromCookie = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
+    const token =
+        (typeof fromBody === 'string' && fromBody.trim()) ||
+        (typeof fromCookie === 'string' && fromCookie.trim());
+    if (!token) {
+        return res.status(400).json({
+            success: false,
+            message: 'Refresh token is required.',
+            errors: [{ field: 'refreshToken', message: 'Provide refresh token in body or cookie.' }],
+        });
+    }
+    req.body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    req.body.refreshToken = token;
+    next();
+};
+
+const refreshValidator = [resolveRefreshToken];
 
 const changePasswordValidator = [
     body('currentPassword').notEmpty().withMessage('Current password is required.'),

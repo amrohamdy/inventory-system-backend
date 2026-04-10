@@ -1,6 +1,11 @@
 const authService = require('../services/auth.service');
 const auditService = require('../services/audit.service');
 const { success } = require('../utils/response');
+const {
+    REFRESH_TOKEN_COOKIE_NAME,
+    setRefreshTokenCookie,
+    clearRefreshTokenCookie,
+} = require('../utils/refreshCookie');
 
 /**
  * M01 — Auth Controller
@@ -35,6 +40,9 @@ const login = async (req, res) => {
         userAgent: req.headers['user-agent'],
     });
 
+    if (result.refreshToken) {
+        setRefreshTokenCookie(res, result.refreshToken);
+    }
     return success(res, result, 'Login successful.');
 };
 
@@ -51,8 +59,14 @@ const refresh = async (req, res) => {
  * POST /api/auth/logout
  */
 const logout = async (req, res) => {
-    const { refreshToken } = req.body;
+    const fromBody = req.body?.refreshToken;
+    const fromCookie = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
+    const refreshToken =
+        (typeof fromBody === 'string' && fromBody.trim()) ||
+        (typeof fromCookie === 'string' && fromCookie.trim()) ||
+        undefined;
     await authService.logout(refreshToken);
+    clearRefreshTokenCookie(res);
 
     // Audit logout
     if (req.user) {
@@ -112,6 +126,9 @@ const switchTenant = async (req, res) => {
         userAgent: req.headers['user-agent'],
     });
 
+    if (result.refreshToken) {
+        setRefreshTokenCookie(res, result.refreshToken);
+    }
     return success(res, result, 'Tenant switched successfully.');
 };
 

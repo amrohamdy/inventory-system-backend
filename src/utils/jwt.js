@@ -2,7 +2,9 @@ const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
-const ACCESS_TOKEN_EXPIRES = process.env.ACCESS_TOKEN_EXPIRES || '15m';
+/** Prefer JWT_EXPIRES_IN for access token TTL; ACCESS_TOKEN_EXPIRES is a legacy alias. */
+const ACCESS_TOKEN_EXPIRES =
+    process.env.JWT_EXPIRES_IN || process.env.ACCESS_TOKEN_EXPIRES || '15m';
 const REFRESH_TOKEN_EXPIRES = process.env.REFRESH_TOKEN_EXPIRES || '7d';
 
 if (!JWT_SECRET || !JWT_REFRESH_SECRET) {

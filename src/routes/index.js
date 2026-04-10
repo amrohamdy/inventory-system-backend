@@ -118,6 +118,10 @@ router.use('/reorder', reorderRoutes);
 const settingRoutes = require('./setting.routes');
 router.use('/settings', settingRoutes);
 
+// Inventory status (OB phase) — PATCH contract for SPA
+const inventoryRoutes = require('./inventory.routes');
+router.use('/inventory', inventoryRoutes);
+
 // Super Admin — Tenant Management & Platform Controls
 const superAdminRoutes = require('./superAdmin.routes');
 router.use('/super-admin', superAdminRoutes);

@@ -97,6 +97,15 @@ const clearObFinalizeSnapshot = async (tenantId) => {
     });
 };
 
+/**
+ * Enable OB setup phase: OPEN allowOpeningBalance, align isOpeningBalanceAllowed tenant flag, clear snapshot.
+ */
+const enableOpeningBalanceStage = async (tenantId, userId, reason = 'Initial Setup') => {
+    await setSetting(tenantId, 'allowOpeningBalance', 'OPEN', userId, reason);
+    await setSetting(tenantId, 'isOpeningBalanceAllowed', 'true', userId, reason);
+    await clearObFinalizeSnapshot(tenantId);
+};
+
 // ── Inventory / OB status for settings UI and clients ─────────────────────────
 const getInventoryStatus = async (tenantId) => {
     const ob = await isOpeningBalanceAllowed(tenantId);
@@ -353,4 +362,5 @@ module.exports = {
     finalizeOpeningBalance,
     clearObFinalizeSnapshot,
     getInventoryStatus,
+    enableOpeningBalanceStage,
 };
