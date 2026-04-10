@@ -38,7 +38,6 @@ const PERMISSIONS = {
         'COST_CONTROL',
         'FINANCE_MANAGER',
         'AUDITOR',
-        'SECURITY',
         'GENERAL_MANAGER',
     ],
 
@@ -49,7 +48,6 @@ const PERMISSIONS = {
         'COST_CONTROL',
         'FINANCE_MANAGER',
         'AUDITOR',
-        'SECURITY',
         'GENERAL_MANAGER',
     ],
     MOVEMENT_CREATE: ['ADMIN', 'STOREKEEPER'],
@@ -91,7 +89,6 @@ const PERMISSIONS = {
         'COST_CONTROL',
         'FINANCE_MANAGER',
         'AUDITOR',
-        'SECURITY',
         'GENERAL_MANAGER',
     ],
 
@@ -113,7 +110,6 @@ const PERMISSIONS = {
         'COST_CONTROL',
         'FINANCE_MANAGER',
         'AUDITOR',
-        'SECURITY',
         'GENERAL_MANAGER',
     ],
 
@@ -128,9 +124,9 @@ const PERMISSIONS = {
         'AUDITOR',
         'GENERAL_MANAGER',
     ],
-    GET_PASS_APPROVE: ['ADMIN', 'SECURITY'],
+    GET_PASS_APPROVE: ['ADMIN'],
     GET_PASS_APPROVE_FINAL: ['GENERAL_MANAGER', 'SECURITY'],
-    GET_PASS_APPROVE_EXIT: ['ADMIN', 'SECURITY'],
+    GET_PASS_APPROVE_EXIT: ['ADMIN'],
     GET_PASS_APPROVE_RETURN: ['ADMIN', 'SECURITY'],
 
     IMPORT_CREATE: ['ADMIN', 'STOREKEEPER'],

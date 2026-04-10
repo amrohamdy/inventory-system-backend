@@ -58,7 +58,7 @@ async function seedPermissions() {
  * Role ↔ Permission links aligned with getPermissionsForRole() (idempotent).
  */
 async function seedRolePermissions() {
-    console.log('\n── Seeding role_permissions ──');
+    console.log('\n── Seeding role_permissions (sync: remove stale links) ──');
     let linkCount = 0;
     for (const { code: roleCode } of SYSTEM_ROLES) {
         const role = await prisma.role.findUnique({
@@ -69,13 +69,31 @@ async function seedRolePermissions() {
             throw new Error(`Role not found: ${roleCode}`);
         }
         const permissionCodes = getPermissionsForRole(roleCode);
+        const permissionRows = await prisma.permission.findMany({
+            where: { code: { in: permissionCodes } },
+            select: { id: true, code: true },
+        });
+        const allowedIds = permissionRows.map((p) => p.id);
+        if (permissionRows.length !== permissionCodes.length) {
+            const found = new Set(permissionRows.map((p) => p.code));
+            const missing = permissionCodes.filter((c) => !found.has(c));
+            throw new Error(`Permission(s) missing in DB: ${missing.join(', ')}`);
+        }
+
+        const removed = await prisma.rolePermission.deleteMany({
+            where: {
+                roleId: role.id,
+                permissionId: { notIn: allowedIds },
+            },
+        });
+        if (removed.count > 0) {
+            console.log(`  ↪ ${roleCode}: removed ${removed.count} stale permission link(s)`);
+        }
+
         for (const permCode of permissionCodes) {
-            const permission = await prisma.permission.findUnique({
-                where: { code: permCode },
-                select: { id: true },
-            });
+            const permission = permissionRows.find((p) => p.code === permCode);
             if (!permission) {
-                throw new Error(`Permission not found: ${permCode} (run seedPermissions first)`);
+                throw new Error(`Permission not found: ${permCode}`);
             }
             await prisma.rolePermission.upsert({
                 where: {
@@ -93,6 +111,7 @@ async function seedRolePermissions() {
             linkCount += 1;
         }
     }
+    console.log(`  ✅ ${linkCount} role_permission link(s) in sync`);
 }
 
 async function main() {

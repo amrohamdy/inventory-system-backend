@@ -3,7 +3,7 @@ const { validate: uuidValidate } = require('uuid');
 const router = express.Router();
 const itemController = require('../controllers/item.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
-const { requirePermission } = require('../middleware/authorize');
+const { requireAnyPermission, requirePermission } = require('../middleware/authorize');
 const { uploadImage, uploadImport, uploadZip } = require('../middleware/upload.middleware');
 
 // All item routes require authentication
@@ -57,7 +57,7 @@ router.post(
 // ── Prerequisites for creating items (must be before /:id) ─────────────────────
 router.get(
     '/check-requirements',
-    requirePermission('VIEW_MASTER_DATA'),
+    requireAnyPermission('BASIC_DATA_VIEW', 'GET_PASS_VIEW'),
     itemController.checkItemCreationRequirements
 );
 

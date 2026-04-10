@@ -134,20 +134,31 @@ const getBreakages = async (tenantId, query = {}) => {
         }),
     };
 
-    const [documents, total] = await Promise.all([
+    const skipN = Number.parseInt(String(skip), 10) || 0;
+    const takeN = Number.parseInt(String(take), 10) || 20;
+
+    const [rawDocuments, total] = await Promise.all([
         prisma.movementDocument.findMany({
             where,
-            skip: parseInt(skip),
-            take: parseInt(take),
+            skip: skipN,
+            take: takeN,
             orderBy: { createdAt: 'desc' },
             include: {
                 createdByUser: { select: { firstName: true, lastName: true } },
-                approvalRequests: { select: { status: true, currentStep: true, totalSteps: true }, take: 1 },
+                approvalRequests: {
+                    select: { status: true, currentStep: true, totalSteps: true },
+                    orderBy: { createdAt: 'asc' },
+                },
                 _count: { select: { lines: true } },
             },
         }),
         prisma.movementDocument.count({ where }),
     ]);
+
+    const documents = rawDocuments.map((d) => ({
+        ...d,
+        approvalRequests: (d.approvalRequests ?? []).slice(0, 1),
+    }));
 
     return { documents, total };
 };
