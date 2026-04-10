@@ -1,6 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const { generateDocNumber } = require('./docNumbering.service');
+const { generateDocNumber, DocPrefix } = require('./docNumbering.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { hasPermission } = require('../middleware/authorize');
@@ -375,6 +375,45 @@ const checkoutGetPass = async (id, tenantId, user, linesOut) => {
 };
 
 /**
+ * Parse return line payload: supports qtyGood + lostQty | damagedQty, or legacy qtyReturned + isLost/isDamaged.
+ */
+const parseReturnQuantities = (input, remainingQty, itemName) => {
+    const n = (v) => Math.max(0, Number(v ?? 0));
+    const legacyTotal = n(input.qtyReturned);
+    const hasSplit =
+        input.qtyGood !== undefined ||
+        input.lostQty !== undefined ||
+        input.damagedQty !== undefined;
+
+    let qtyGood = 0;
+    let qtyLost = 0;
+    let qtyDamaged = 0;
+
+    if (hasSplit) {
+        qtyGood = n(input.qtyGood);
+        qtyLost = n(input.lostQty);
+        qtyDamaged = n(input.damagedQty);
+    } else {
+        if (legacyTotal <= 0) return null;
+        const flagLost = Boolean(input.isLost);
+        const flagDamaged = Boolean(input.isDamaged) && !flagLost;
+        if (flagLost) qtyLost = legacyTotal;
+        else if (flagDamaged) qtyDamaged = legacyTotal;
+        else qtyGood = legacyTotal;
+    }
+
+    if (qtyLost > 0 && qtyDamaged > 0) {
+        throw new Error(`Cannot report both lost and damaged quantities for ${itemName}`);
+    }
+    const total = qtyGood + qtyLost + qtyDamaged;
+    if (total <= 0) return null;
+    if (total > remainingQty + 1e-9) {
+        throw new Error(`Cannot return more than remaining qty for ${itemName}`);
+    }
+    return { qtyGood, qtyLost, qtyDamaged, total };
+};
+
+/**
  * Process incoming returned items for Temporary / Catering passes
  */
 const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
@@ -386,32 +425,75 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
 
     const result = await prisma.$transaction(async (tx) => {
         for (const input of linesPayload) {
-            const line = getPass.lines.find(l => l.id === input.lineId);
+            const line = await tx.getPassLine.findFirst({
+                where: { id: input.lineId, getPassId: id },
+                include: { item: true },
+            });
             if (!line) continue;
-            
-            const returnQty = Number(input.qtyReturned);
-            if (returnQty <= 0) continue;
 
+            const itemName = line.item?.name || 'item';
             const remainingQty = Number(line.qty) - Number(line.qtyReturned);
-            if (returnQty > remainingQty) throw new Error(`Cannot return more than remaining qty for ${line.item.name}`);
+            const parsed = parseReturnQuantities(input, remainingQty, itemName);
+            if (!parsed) continue;
 
-            // 1. Create Return Log
+            const { qtyGood, qtyLost, qtyDamaged, total } = parsed;
+            const isLost = qtyLost > 0;
+            const isDamaged = qtyDamaged > 0;
+
             const returnRecord = await tx.getPassReturn.create({
                 data: {
                     getPassLineId: line.id,
-                    qtyReturned: returnQty,
+                    qtyReturned: total,
+                    qtyGood,
+                    qtyLost,
+                    qtyDamaged,
+                    isLost,
+                    isDamaged,
                     conditionIn: input.conditionIn,
                     notes: input.notes,
                     registeredBy: userId,
-                    securityVerifiedBy: input.securityId || null, 
-                }
+                    securityVerifiedBy: input.securityId || null,
+                },
             });
 
-            // 2. Ledger & Stock Update
-            const wac = Number(line.unitCost); // The WAC it left with
+            const wac = Number(line.unitCost);
 
-            if (input.isLost) {
-                // LOST -> Written off as expense. Movement = LOAN_WRITE_OFF.
+            const postGoodToStock = async (qty) => {
+                if (qty <= 0) return;
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'GET_PASS_RETURN',
+                        qtyIn: qty,
+                        qtyOut: 0,
+                        unitCost: wac,
+                        totalValue: qty * wac,
+                        referenceType: 'GET_PASS_RETURN',
+                        referenceId: returnRecord.id,
+                        referenceNo: getPass.passNo,
+                        createdBy: userId,
+                    },
+                });
+                const currentStock = await tx.stockBalance.findUnique({
+                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                });
+                const curQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
+                const curWac = currentStock ? Number(currentStock.wacUnitCost) : 0;
+                const totalValBefore = curQty * curWac;
+                const newVal = totalValBefore + qty * wac;
+                const newWac = curQty + qty > 0 ? newVal / (curQty + qty) : 0;
+                await tx.stockBalance.upsert({
+                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                    update: { qtyOnHand: { increment: qty }, wacUnitCost: newWac },
+                    create: { tenantId, itemId: line.itemId, locationId: line.locationId, qtyOnHand: qty, wacUnitCost: wac },
+                });
+            };
+
+            await postGoodToStock(qtyGood);
+
+            if (qtyLost > 0) {
                 await tx.inventoryLedger.create({
                     data: {
                         tenantId,
@@ -419,82 +501,108 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
                         locationId: line.locationId,
                         movementType: 'LOAN_WRITE_OFF',
                         qtyIn: 0,
-                        qtyOut: returnQty, // Technically it's a writeoff value
+                        qtyOut: qtyLost,
                         unitCost: wac,
-                        totalValue: returnQty * wac,
+                        totalValue: qtyLost * wac,
                         referenceType: 'GET_PASS_RETURN',
                         referenceId: returnRecord.id,
                         referenceNo: getPass.passNo,
-                        createdBy: userId
-                    }
-                });
-                // No StockBalance update because it was already deducted on OUT. It never came back.
-            } else if (input.isDamaged) {
-                // DAMAGED -> Bring it back into stock so we can immediately break it, OR just break it.
-                // Best practice is to bring it back then break it so ledger shows receipt then breakage.
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId, itemId: line.itemId, locationId: line.locationId,
-                        movementType: 'GET_PASS_RETURN',
-                        qtyIn: returnQty, qtyOut: 0, unitCost: wac, totalValue: returnQty * wac,
-                        referenceType: 'GET_PASS_RETURN', referenceId: returnRecord.id, referenceNo: getPass.passNo, createdBy: userId
-                    }
-                });
-                
-                // Immediately break it
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId, itemId: line.itemId, locationId: line.locationId,
-                        movementType: 'BREAKAGE',
-                        qtyIn: 0, qtyOut: returnQty, unitCost: wac, totalValue: returnQty * wac,
-                        referenceType: 'GET_PASS_RETURN', referenceId: returnRecord.id, referenceNo: getPass.passNo, createdBy: userId
-                    }
-                });
-                // Net StockBalance = +0 (brings in, immediately removes)
-            } else {
-                // GOOD -> Normal receipt
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId, itemId: line.itemId, locationId: line.locationId,
-                        movementType: 'GET_PASS_RETURN',
-                        qtyIn: returnQty, qtyOut: 0, unitCost: wac, totalValue: returnQty * wac,
-                        referenceType: 'GET_PASS_RETURN', referenceId: returnRecord.id, referenceNo: getPass.passNo, createdBy: userId
-                    }
-                });
-
-                // Calculate new WAC for StockBalance
-                const currentStock = await tx.stockBalance.findUnique({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } }
-                });
-                const curQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
-                const curWac = currentStock ? Number(currentStock.wacUnitCost) : 0;
-                const totalValBefore = curQty * curWac;
-                const newVal = totalValBefore + (returnQty * wac);
-                const newWac = (curQty + returnQty) > 0 ? newVal / (curQty + returnQty) : 0;
-
-                await tx.stockBalance.upsert({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                    update: { qtyOnHand: { increment: returnQty }, wacUnitCost: newWac },
-                    create: { tenantId, itemId: line.itemId, locationId: line.locationId, qtyOnHand: returnQty, wacUnitCost: wac }
+                        createdBy: userId,
+                    },
                 });
             }
 
-            // 3. Update Line
-            const newReturned = Number(line.qtyReturned) + returnQty;
-            const lineStatus = newReturned >= Number(line.qty) 
-                ? (input.isLost ? 'LOST' : 'RETURNED') 
-                : 'PARTIALLY_RETURNED';
-                
+            if (qtyDamaged > 0) {
+                const documentNo = await generateDocNumber(tenantId, DocPrefix.BREAKAGE, new Date());
+                const brkReason = `Damaged return — Get Pass ${getPass.passNo}`;
+                const brkDoc = await tx.movementDocument.create({
+                    data: {
+                        tenantId,
+                        documentNo,
+                        movementType: 'BREAKAGE',
+                        status: 'POSTED',
+                        postedAt: new Date(),
+                        sourceLocationId: line.locationId,
+                        reason: brkReason,
+                        notes: `Auto from get pass return ${returnRecord.id}`,
+                        documentDate: new Date(),
+                        createdBy: userId,
+                        lines: {
+                            create: [
+                                {
+                                    itemId: line.itemId,
+                                    locationId: line.locationId,
+                                    qtyRequested: qtyDamaged,
+                                    qtyInBaseUnit: qtyDamaged,
+                                    unitCost: wac,
+                                    totalValue: qtyDamaged * wac,
+                                    notes: input.notes?.trim() || null,
+                                },
+                            ],
+                        },
+                    },
+                });
+
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'GET_PASS_RETURN',
+                        qtyIn: qtyDamaged,
+                        qtyOut: 0,
+                        unitCost: wac,
+                        totalValue: qtyDamaged * wac,
+                        referenceType: 'GET_PASS_RETURN',
+                        referenceId: returnRecord.id,
+                        referenceNo: getPass.passNo,
+                        createdBy: userId,
+                    },
+                });
+
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'BREAKAGE',
+                        qtyIn: 0,
+                        qtyOut: qtyDamaged,
+                        unitCost: wac,
+                        totalValue: qtyDamaged * wac,
+                        referenceType: 'BREAKAGE',
+                        referenceId: brkDoc.id,
+                        referenceNo: brkDoc.documentNo,
+                        notes: brkReason,
+                        createdBy: userId,
+                    },
+                });
+            }
+
+            const newReturned = Number(line.qtyReturned) + total;
+            const lineQty = Number(line.qty);
+            let lineStatus = 'PARTIALLY_RETURNED';
+            if (newReturned >= lineQty - 1e-9) {
+                const agg = await tx.getPassReturn.aggregate({
+                    where: { getPassLineId: line.id },
+                    _sum: { qtyGood: true, qtyLost: true, qtyDamaged: true },
+                });
+                const sumG = Number(agg._sum.qtyGood || 0);
+                const sumL = Number(agg._sum.qtyLost || 0);
+                const sumD = Number(agg._sum.qtyDamaged || 0);
+                const allLost = sumL >= lineQty - 1e-9 && sumG < 1e-9 && sumD < 1e-9;
+                lineStatus = allLost ? 'LOST' : 'RETURNED';
+            }
+
             await tx.getPassLine.update({
                 where: { id: line.id },
-                data: { qtyReturned: newReturned, status: lineStatus }
+                data: { qtyReturned: newReturned, status: lineStatus },
             });
         }
 
-        // 4. Re-evaluate Header Status using tx scope
         const allLines = await tx.getPassLine.findMany({ where: { getPassId: id } });
-        const allReturned = allLines.every(l => Number(l.qtyReturned) >= Number(l.qty));
-        const someReturned = allLines.some(l => Number(l.qtyReturned) > 0);
+        const allReturned = allLines.every((l) => Number(l.qtyReturned) >= Number(l.qty));
+        const someReturned = allLines.some((l) => Number(l.qtyReturned) > 0);
 
         let newStatus = getPass.status;
         if (allReturned) newStatus = 'RETURNED';
@@ -503,14 +611,14 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
         if (notes && notes.trim() !== '') {
             await tx.getPass.update({
                 where: { id },
-                data: { notes: `${getPass.notes || ''}\nReturn Note: ${notes}` }
+                data: { notes: `${getPass.notes || ''}\nReturn Note: ${notes}` },
             });
         }
 
         if (newStatus !== getPass.status) {
             await tx.getPass.update({
                 where: { id },
-                data: { status: newStatus }
+                data: { status: newStatus },
             });
         }
     });

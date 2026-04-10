@@ -162,12 +162,14 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
         const qOut = Number(p._sum.qtyOut || 0);
         const val = Number(p._sum.totalValue || 0);
 
-        if (p.movementType === 'RECEIVE' || p.movementType === 'RETURN' || p.movementType === 'TRANSFER_IN') {
+        if (p.movementType === 'RECEIVE' || p.movementType === 'RETURN' || p.movementType === 'TRANSFER_IN' || p.movementType === 'GET_PASS_RETURN') {
             m.inQty += qIn; m.inVal += val;
         } else if (p.movementType === 'BREAKAGE') {
             m.brkQty += qOut; m.brkVal += val;
-        } else if (p.movementType === 'ISSUE' || p.movementType === 'TRANSFER_OUT') {
+        } else if (p.movementType === 'ISSUE' || p.movementType === 'TRANSFER_OUT' || p.movementType === 'GET_PASS_OUT') {
             m.outQty += qOut; m.outVal += val;
+        } else if (p.movementType === 'LOAN_WRITE_OFF') {
+            m.brkQty += qOut; m.brkVal += val;
         } else if (p.movementType === 'OPENING_BALANCE') {
             m.obQty += qIn; m.obVal += val;
         } else if (p.movementType === 'ADJUSTMENT' || p.movementType === 'COUNT_ADJUSTMENT') {
@@ -488,12 +490,12 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
             case 'OPENING_BALANCE':
                 // ← Separate bucket: Initial Load
                 m.obQty += qIn; m.obValue += val; break;
-            case 'RECEIVE': case 'RETURN':
+            case 'RECEIVE': case 'RETURN': case 'GET_PASS_RETURN':
                 // ← Operational receipts only
                 m.inQty += qIn; m.inValue += val; break;
             case 'TRANSFER_IN':
                 m.inQty += qIn; m.inValue += val; m.tfrInQty += qIn; break;
-            case 'ISSUE': case 'BREAKAGE':
+            case 'ISSUE': case 'BREAKAGE': case 'GET_PASS_OUT': case 'LOAN_WRITE_OFF':
                 m.outQty += qOut; m.outValue += val; break;
             case 'TRANSFER_OUT':
                 m.outQty += qOut; m.outValue += val; m.tfrOutQty += qOut; break;
@@ -965,7 +967,8 @@ const generateValuationReport = async (tenantId, asOfDate, filters = {}) => {
             case 'RECEIVE':
             case 'OPENING_BALANCE':
             case 'RETURN':
-            case 'TRANSFER_IN': {
+            case 'TRANSFER_IN':
+            case 'GET_PASS_RETURN': {
                 // Recalculate WAC on receipt
                 const newTotalQty = b.qty + qIn;
                 const newTotalVal = b.value + val;
@@ -977,6 +980,8 @@ const generateValuationReport = async (tenantId, asOfDate, filters = {}) => {
             case 'ISSUE':
             case 'BREAKAGE':
             case 'TRANSFER_OUT':
+            case 'GET_PASS_OUT':
+            case 'LOAN_WRITE_OFF':
                 b.qty   -= qOut;
                 b.value  = b.qty * b.wac;  // WAC unchanged on outbound
                 break;

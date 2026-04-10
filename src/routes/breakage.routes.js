@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/breakage.controller');
 const { authenticate } = require('../middleware/authenticate');
-const { requirePermission } = require('../middleware/authorize');
+const { requireAnyPermission, requirePermission } = require('../middleware/authorize');
 const { uploadAttachment } = require('../middleware/upload.middleware');
 
 // All routes require authentication
@@ -10,8 +10,8 @@ router.use(authenticate);
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
 router.post('/', requirePermission('MANAGE_INVENTORY'), ctrl.createBreakage);
-router.get('/', requirePermission('VIEW_INVENTORY'), ctrl.getBreakages);
-router.get('/:id', requirePermission('VIEW_INVENTORY'), ctrl.getBreakage);
+router.get('/', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getBreakages);
+router.get('/:id', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getBreakage);
 
 // ── Workflow ──────────────────────────────────────────────────────────────────
 router.post('/:id/submit', requirePermission('MANAGE_INVENTORY'), ctrl.submitBreakage);
@@ -23,7 +23,7 @@ router.post('/:id/void', requirePermission('MANAGE_INVENTORY'), ctrl.voidBreakag
 router.post('/:id/attachment', requirePermission('MANAGE_INVENTORY'), uploadAttachment.single('file'), ctrl.uploadAttachment);
 
 // ── Evidence ──────────────────────────────────────────────────────────────────
-router.get('/:id/evidence', requirePermission('VIEW_INVENTORY'), ctrl.getEvidence);
-router.get('/:id/evidence/pdf', requirePermission('VIEW_INVENTORY'), ctrl.getEvidencePDF);
+router.get('/:id/evidence', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getEvidence);
+router.get('/:id/evidence/pdf', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getEvidencePDF);
 
 module.exports = router;

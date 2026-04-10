@@ -1137,6 +1137,14 @@ model GetPassReturn {
   id                 String      @id @default(uuid()) @db.Uuid
   getPassLineId      String      @db.Uuid
   qtyReturned        Decimal     @db.Decimal(15, 4)
+  /// Quantity received in good condition (restores stock).
+  qtyGood            Decimal     @default(0) @db.Decimal(15, 4)
+  /// Written off; does not restore stock.
+  qtyLost            Decimal     @default(0) @db.Decimal(15, 4)
+  /// Returned but removed via breakage (GET_PASS_RETURN in + BREAKAGE out).
+  qtyDamaged         Decimal     @default(0) @db.Decimal(15, 4)
+  isLost             Boolean     @default(false)
+  isDamaged          Boolean     @default(false)
   conditionIn        String?
   returnDate         DateTime    @default(now())
   registeredBy       String      @db.Uuid

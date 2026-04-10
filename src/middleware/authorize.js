@@ -49,6 +49,7 @@ const PERMISSIONS = {
         'COST_CONTROL',
         'FINANCE_MANAGER',
         'AUDITOR',
+        'SECURITY',
         'GENERAL_MANAGER',
     ],
     MOVEMENT_CREATE: ['ADMIN', 'STOREKEEPER'],
@@ -90,8 +91,12 @@ const PERMISSIONS = {
         'COST_CONTROL',
         'FINANCE_MANAGER',
         'AUDITOR',
+        'SECURITY',
         'GENERAL_MANAGER',
     ],
+
+    /** Sidebar + read access to Breakage & Loss (Transactions); API may also use VIEW_INVENTORY. */
+    BREAKAGE_VIEW: ['ADMIN', 'SUPER_ADMIN', 'DEPT_MANAGER', 'SECURITY'],
     REPORTS_EXPORT: [
         'ADMIN',
         'STOREKEEPER',
