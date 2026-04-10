@@ -65,7 +65,7 @@ const PERMISSIONS = {
         'GENERAL_MANAGER',
     ],
 
-    GET_PASS_CREATE: ['ADMIN', 'STOREKEEPER'],
+    GET_PASS_CREATE: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
     GET_PASS_VIEW: [
         'ADMIN',
         'STOREKEEPER',
