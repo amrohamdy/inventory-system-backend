@@ -4,6 +4,7 @@ const { generateDocNumber } = require('./docNumbering.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { hasPermission } = require('../middleware/authorize');
+const { normalizeRole } = require('./rbac.service');
 
 const PENDING_APPROVAL_STATUSES = [
     'PENDING_DEPT',
@@ -20,6 +21,31 @@ const STEP_ROLE = {
 };
 
 const isAdminBypass = (role) => role === 'ADMIN' || role === 'SUPER_ADMIN';
+
+/**
+ * First workflow step after submit: skip stages the submitter role already represents.
+ * DEPT_MANAGER → Cost Control queue (HOD step recorded as self on submit).
+ * COST_CONTROL → Finance queue (CC step recorded as self on submit).
+ */
+const getSubmitInitialWorkflow = (role, userId) => {
+    const r = normalizeRole(role);
+    const now = new Date();
+    if (r === 'DEPT_MANAGER') {
+        return {
+            status: 'PENDING_COST_CONTROL',
+            deptApprovedBy: userId,
+            deptApprovedAt: now,
+        };
+    }
+    if (r === 'COST_CONTROL') {
+        return {
+            status: 'PENDING_FINANCE',
+            costControlApprovedBy: userId,
+            costControlApprovedAt: now,
+        };
+    }
+    return { status: 'PENDING_DEPT' };
+};
 
 const assertCanActOnStatus = (status, role) => {
     const required = STEP_ROLE[status];
@@ -164,20 +190,25 @@ const deleteGetPass = async (id, tenantId, userId) => {
     return true;
 };
 
-const submitGetPass = async (id, tenantId, userId) => {
+const submitGetPass = async (id, tenantId, user) => {
+    const userId = user.id;
     const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
     if (getPass.status !== 'DRAFT') throw new Error('Only DRAFT can be submitted');
 
+    const workflow = getSubmitInitialWorkflow(user.role, userId);
+
     await prisma.getPass.update({
         where: { id },
-        data: { status: 'PENDING_DEPT' },
+        data: workflow,
     });
     await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'SUBMIT', changedBy: userId });
     return getGetPassById(id, tenantId);
 };
 
 /**
- * Strict 4-step chain: DEPT -> COST_CONTROL -> FINANCE -> GM -> APPROVED
+ * Strict 4-step chain (each approve advances one step):
+ * PENDING_DEPT → PENDING_COST_CONTROL → PENDING_FINANCE → PENDING_GM → APPROVED.
+ * DEPT_MANAGER acting on PENDING_DEPT moves to PENDING_COST_CONTROL; same pattern for CC / Finance / GM.
  */
 const approveGetPass = async (id, tenantId, user) => {
     const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });

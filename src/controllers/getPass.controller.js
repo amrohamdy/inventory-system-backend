@@ -34,7 +34,7 @@ const deleteGetPass = async (req, res) => {
 // Workflow
 const submitGetPass = async (req, res) => {
     const { user } = req;
-    const result = await getPassService.submitGetPass(req.params.id, user.tenantId, user.id);
+    const result = await getPassService.submitGetPass(req.params.id, user.tenantId, user);
     res.json({ success: true, data: result });
 };
 
