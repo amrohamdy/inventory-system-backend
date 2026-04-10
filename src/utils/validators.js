@@ -62,6 +62,22 @@ const changePasswordValidator = [
     validate,
 ];
 
+const forgotPasswordValidator = [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email required.'),
+    validate,
+];
+
+const resetPasswordValidator = [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email required.'),
+    body('otp')
+        .matches(/^\d{6}$/)
+        .withMessage('OTP must be a 6-digit code.'),
+    body('newPassword')
+        .isLength({ min: 8 })
+        .withMessage('New password must be at least 8 characters.'),
+    validate,
+];
+
 // ─── User Validators ───────────────────────────────────────────────────────
 const createUserValidator = [
     body('email').isEmail().normalizeEmail().withMessage('Valid email required.'),
@@ -393,6 +409,8 @@ module.exports = {
     loginValidator,
     refreshValidator,
     changePasswordValidator,
+    forgotPasswordValidator,
+    resetPasswordValidator,
     createUserValidator,
     updateUserValidator,
     updateRoleValidator,

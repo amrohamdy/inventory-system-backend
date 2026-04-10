@@ -1,5 +1,7 @@
+const crypto = require('crypto');
 const prisma = require('../config/database');
 const { hashPassword, comparePassword } = require('../utils/password');
+const { sendPasswordResetOtpEmail } = require('../utils/mailer');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, getRefreshTokenExpiry } = require('../utils/jwt');
 const logger = require('../utils/logger');
 const { getPermissionsForMembership, membershipRoleCode, getRoleIdByCode } = require('./rbac.service');
@@ -7,6 +9,12 @@ const { getPermissionsForMembership, membershipRoleCode, getRoleIdByCode } = req
 /**
  * M01 — Auth Service
  */
+
+/** OTP validity window (15 minutes). */
+const PASSWORD_RESET_OTP_TTL_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_EXPIRES_MINUTES = 15;
+
+const generateSixDigitOtp = () => String(crypto.randomInt(100000, 1000000));
 
 const formatMembershipOption = (membership) => ({
     tenantId: membership.tenantId,
@@ -788,4 +796,112 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     return result;
 };
 
-module.exports = { login, refresh, logout, getMe, getProfile, changePassword, switchTenant };
+/**
+ * Request password reset: save 6-digit OTP on PasswordReset, email via mailer (active users only).
+ */
+const requestPasswordReset = async ({ email }) => {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const user = await prisma.user.findUnique({
+        where: { email: normalizedEmail },
+        select: { id: true, email: true, isActive: true },
+    });
+
+    if (!user || !user.isActive) {
+        throw Object.assign(new Error('No account found for this email.'), {
+            statusCode: 404,
+            code: 'USER_NOT_FOUND',
+        });
+    }
+
+    await prisma.passwordReset.deleteMany({ where: { email: user.email } });
+
+    const otp = generateSixDigitOtp();
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_OTP_TTL_MS);
+
+    await prisma.passwordReset.create({
+        data: {
+            email: user.email,
+            otp,
+            expiresAt,
+        },
+    });
+
+    try {
+        await sendPasswordResetOtpEmail({
+            to: user.email,
+            otp,
+            expiresMinutes: PASSWORD_RESET_EXPIRES_MINUTES,
+        });
+    } catch (err) {
+        await prisma.passwordReset.deleteMany({ where: { email: user.email } });
+        throw err;
+    }
+
+    return { email: user.email };
+};
+
+/**
+ * Complete password reset: match email + OTP + expiry, hash new password, remove reset row.
+ */
+const resetPasswordWithOtp = async ({ email, otp, newPassword }) => {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const plainOtp = String(otp || '').trim();
+
+    const row = await prisma.passwordReset.findFirst({
+        where: {
+            email: normalizedEmail,
+            otp: plainOtp,
+            expiresAt: { gt: new Date() },
+        },
+        orderBy: { id: 'desc' },
+    });
+
+    if (!row) {
+        throw Object.assign(new Error('Invalid or expired reset code.'), {
+            statusCode: 400,
+            code: 'INVALID_OR_EXPIRED_OTP',
+        });
+    }
+
+    const user = await prisma.user.findUnique({
+        where: { email: normalizedEmail },
+        select: { id: true, passwordHash: true, isActive: true },
+    });
+    if (!user || !user.isActive) {
+        await prisma.passwordReset.delete({ where: { id: row.id } });
+        throw Object.assign(new Error('No account found for this email.'), {
+            statusCode: 404,
+            code: 'USER_NOT_FOUND',
+        });
+    }
+
+    const reuse = await comparePassword(newPassword, user.passwordHash);
+    if (reuse) {
+        throw Object.assign(new Error('New password must be different from your current password.'), {
+            statusCode: 400,
+            code: 'PASSWORD_UNCHANGED',
+        });
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+
+    await prisma.$transaction([
+        prisma.user.update({
+            where: { id: user.id },
+            data: { passwordHash },
+        }),
+        prisma.passwordReset.delete({ where: { id: row.id } }),
+    ]);
+};
+
+module.exports = {
+    login,
+    refresh,
+    logout,
+    getMe,
+    getProfile,
+    changePassword,
+    switchTenant,
+    requestPasswordReset,
+    resetPasswordWithOtp,
+};

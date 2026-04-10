@@ -120,6 +120,17 @@ model User {
   @@map("users")
 }
 
+/// One-time password reset codes; row deleted after successful reset.
+model PasswordReset {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String
+  otp       String
+  expiresAt DateTime
+
+  @@index([email])
+  @@map("password_resets")
+}
+
 /// Stable role codes for memberships; keep in sync with `Role.code` and API validators.
 enum UserRole {
   SUPER_ADMIN

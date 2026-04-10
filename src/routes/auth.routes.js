@@ -1,9 +1,21 @@
 const express = require('express');
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/authenticate');
-const { loginValidator, refreshValidator, changePasswordValidator } = require('../utils/validators');
+const {
+    loginValidator,
+    refreshValidator,
+    changePasswordValidator,
+    forgotPasswordValidator,
+    resetPasswordValidator,
+} = require('../utils/validators');
 
 const router = express.Router();
+
+// POST /api/auth/forgot-password
+router.post('/forgot-password', forgotPasswordValidator, authController.forgotPassword);
+
+// POST /api/auth/reset-password
+router.post('/reset-password', resetPasswordValidator, authController.resetPassword);
 
 // POST /api/auth/login
 router.post('/login', loginValidator, authController.login);

@@ -114,6 +114,24 @@ const changePassword = async (req, res) => {
 };
 
 /**
+ * POST /api/auth/forgot-password
+ */
+const forgotPassword = async (req, res) => {
+    const { email } = req.body;
+    await authService.requestPasswordReset({ email });
+    return success(res, null, 'A reset code has been sent to your email.');
+};
+
+/**
+ * POST /api/auth/reset-password
+ */
+const resetPassword = async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+    await authService.resetPasswordWithOtp({ email, otp, newPassword });
+    return success(res, null, 'Password has been reset. You can sign in with your new password.');
+};
+
+/**
  * POST /api/auth/switch-tenant
  */
 const switchTenant = async (req, res) => {
@@ -132,4 +150,14 @@ const switchTenant = async (req, res) => {
     return success(res, result, 'Tenant switched successfully.');
 };
 
-module.exports = { login, refresh, logout, me, profile, changePassword, switchTenant };
+module.exports = {
+    login,
+    refresh,
+    logout,
+    me,
+    profile,
+    changePassword,
+    forgotPassword,
+    resetPassword,
+    switchTenant,
+};
