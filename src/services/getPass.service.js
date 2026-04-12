@@ -312,7 +312,8 @@ const getGetPasses = async (tenantId, params = {}, user) => {
 };
 
 /**
- * Target hotel — internal transfers that are approved or already checked out from source (OUT).
+ * Target hotel — internal transfers only after source security checkout (status OUT).
+ * APPROVED (not yet dispatched) is excluded so the destination does not see the pass until exit.
  */
 const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
     const { page = 1, limit = 50 } = params;
@@ -324,14 +325,14 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
     if (listContext?.organizationRootId) {
         where = {
             isInternalTransfer: true,
-            status: { in: ['APPROVED', 'OUT'] },
+            status: 'OUT',
             targetTenant: { parentId: listContext.organizationRootId },
         };
     } else {
         where = {
             targetTenantId,
             isInternalTransfer: true,
-            status: { in: ['APPROVED', 'OUT'] },
+            status: 'OUT',
         };
     }
 
