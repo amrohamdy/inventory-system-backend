@@ -173,6 +173,15 @@ const issueSessionForMembership = async ({
         data: { lastLoginAt: new Date() },
     });
 
+    /** Always load from DB so refresh/inherited memberships still expose parentId for branch hotel admins. */
+    const tenantSnapshot =
+        membership.tenantId != null
+            ? await prisma.tenant.findUnique({
+                  where: { id: membership.tenantId },
+                  select: { id: true, name: true, slug: true, parentId: true },
+              })
+            : null;
+
     return {
         accessToken,
         refreshToken,
@@ -186,7 +195,17 @@ const issueSessionForMembership = async ({
             department: user.department,
             departmentId: membership.departmentId ?? null,
             tenantId: membership.tenantId,
-            tenantName: membership.tenant?.name || null,
+            tenantName: tenantSnapshot?.name || membership.tenant?.name || null,
+            ...(tenantSnapshot
+                ? {
+                      tenant: {
+                          id: tenantSnapshot.id,
+                          name: tenantSnapshot.name,
+                          slug: tenantSnapshot.slug,
+                          parentId: tenantSnapshot.parentId,
+                      },
+                  }
+                : {}),
         },
     };
 };
@@ -588,7 +607,7 @@ const getMe = async (userId, tenantId) => {
             isActive: true,
         },
         include: {
-            tenant: { select: { id: true, name: true, slug: true, logoUrl: true } },
+            tenant: { select: { id: true, name: true, slug: true, logoUrl: true, parentId: true } },
             role: { select: { id: true, code: true } },
         },
     });

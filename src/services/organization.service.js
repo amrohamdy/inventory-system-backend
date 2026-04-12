@@ -22,6 +22,7 @@ const getSisterHotels = async (currentTenantId) => {
         throw err;
     }
 
+    // Org root: sister hotels are direct child branches.
     if (tenant.parentId == null) {
         return prisma.tenant.findMany({
             where: { parentId: tenant.id, isActive: true },
@@ -37,10 +38,11 @@ const getSisterHotels = async (currentTenantId) => {
         });
     }
 
-    const orgId = organizationRootId(tenant);
+    // Branch hotel: siblings share the same parent organization (same parentId), excluding self.
+    const siblingGroupParentId = tenant.parentId;
     return prisma.tenant.findMany({
         where: {
-            parentId: orgId,
+            parentId: siblingGroupParentId,
             id: { not: currentTenantId },
             isActive: true,
         },
