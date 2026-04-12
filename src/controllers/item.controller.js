@@ -292,7 +292,6 @@ const downloadTemplate = async (req, res, next) => {
         // Fixed columns + dynamic store columns
         const fixedColumns = [
             { header: 'Name', key: 'name', width: 28 },
-            { header: 'Barcode', key: 'barcode', width: 16 },
             { header: 'Department', key: 'department', width: 20 },
             { header: 'Category', key: 'category', width: 22 },
             { header: 'Vendor', key: 'vendor', width: 22 },
@@ -317,7 +316,6 @@ const downloadTemplate = async (req, res, next) => {
             : '';
         const exRowData = {
             name: '',
-            barcode: '',
             department: departments[0]?.name ?? '',
             category: categories[0]?.name ?? '',
             vendor: suppliers[0]?.name ?? '',

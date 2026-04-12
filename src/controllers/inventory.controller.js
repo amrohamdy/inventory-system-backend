@@ -1,3 +1,4 @@
+const itemService = require('../services/item.service');
 const settingService = require('../services/setting.service');
 const { logAction, EntityType } = require('../services/auditTrail.service');
 const { success } = require('../utils/response');
@@ -53,6 +54,20 @@ const patchInventoryStatus = async (req, res, next) => {
     }
 };
 
+/**
+ * GET /inventory/items-by-locations/:locationId — catalog for GRN / receiving at this warehouse.
+ */
+const getItemsByLocation = async (req, res, next) => {
+    try {
+        const { locationId } = req.params;
+        const data = await itemService.getItemsByLocationId(req.user.tenantId, locationId, req.query);
+        return success(res, data, 'Items fetched successfully');
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     patchInventoryStatus,
+    getItemsByLocation,
 };

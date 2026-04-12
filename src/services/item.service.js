@@ -256,6 +256,75 @@ const getItems = async (tenantId, query = {}) => {
     return { items, total, skip, take };
 };
 
+/**
+ * Items receivable at a warehouse (GRN destination): in stock there, default store = location,
+ * or item category is linked to this location via LocationCategory.
+ * Each row includes `currentStock` (qty on hand at this location, 0 if no balance row).
+ */
+const getItemsByLocationId = async (tenantId, locationId, query = {}) => {
+    if (!uuidValidate(locationId)) throw badRequest('Invalid locationId');
+
+    const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true },
+    });
+    if (!location) {
+        const e = new Error('Location not found');
+        e.statusCode = 404;
+        throw e;
+    }
+
+    const { search } = query;
+    const term = search && String(search).trim() ? String(search).trim() : '';
+
+    const locationOr = [
+        { stockBalances: { some: { locationId } } },
+        { defaultStoreId: locationId },
+        { category: { locationCategories: { some: { locationId } } } },
+    ];
+
+    const where = {
+        tenantId,
+        isActive: true,
+        AND: [
+            { OR: locationOr },
+            ...(term
+                ? [{
+                    OR: [
+                        { name: { contains: term, mode: 'insensitive' } },
+                        { barcode: { contains: term, mode: 'insensitive' } },
+                        { code: { contains: term, mode: 'insensitive' } },
+                    ],
+                }]
+                : []),
+        ],
+    };
+
+    let take = parseInt(query.take, 10);
+    if (!Number.isFinite(take) || take < 1) take = 500;
+    take = Math.min(take, 1000);
+
+    const items = await prisma.item.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        take,
+        include: {
+            ...ITEM_CATALOG_INCLUDE,
+            stockBalances: {
+                where: { locationId },
+                select: { qtyOnHand: true },
+            },
+        },
+    });
+
+    return items.map((it) => {
+        const sb = it.stockBalances?.[0];
+        const currentStock = sb && sb.qtyOnHand != null ? Number(sb.qtyOnHand) : 0;
+        const { stockBalances, ...rest } = it;
+        return { ...rest, currentStock };
+    });
+};
+
 // ── GET BY ID ──────────────────────────────────────────────────────────────────
 const getItemById = async (id, tenantId) => {
     const item = await prisma.item.findFirst({
@@ -561,15 +630,10 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
             .map(row => String(row['Name'] || row['name'] || '').trim().toLowerCase())
             .filter(Boolean)
     )];
-    const incomingBarcodes = [...new Set(
-        rows
-            .map(row => String(row['Barcode'] || row['barcode'] || '').trim().toLowerCase())
-            .filter(Boolean)
-    )];
-    const existingItems = (incomingNames.length > 0 || incomingBarcodes.length > 0)
+    const existingItems = incomingNames.length > 0
         ? await prisma.item.findMany({
             where: { tenantId },
-            select: { id: true, name: true, barcode: true },
+            select: { id: true, name: true },
         })
         : [];
     const existingByNameMap = new Map(
@@ -577,15 +641,9 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
             .filter(item => item.name)
             .map(item => [String(item.name).toLowerCase(), item])
     );
-    const existingByBarcodeMap = new Map(
-        existingItems
-            .filter(item => item.barcode)
-            .map(item => [String(item.barcode).toLowerCase(), item])
-    );
 
     // In-file duplicate detection
     const seenNames = new Set();
-    const seenBarcodes = new Set();
 
     const preview = rows.map((row, idx) => {
         const issues = [];
@@ -595,7 +653,6 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
         };
 
         const name = String(row['Name'] || row['name'] || '').trim();
-        const barcode = String(row['Barcode'] || row['barcode'] || '').trim();
         const unitPrice = parseExcelNumber(row['Unit Price'] || row['unitPrice'] || row['unit_price'] || 0);
         const catName = String(row['Category'] || row['category'] || '').trim();
         const baseUnit = String(row['Base Unit'] || row['baseUnit'] || row['base_unit'] || '').trim();
@@ -606,19 +663,11 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
         if (isNaN(unitPrice) || unitPrice < 0) addIssue('unitPrice', 'Invalid unit price', 'error', 'INVALID_NUMBER');
 
         const normalizedName = name.toLowerCase();
-        const normalizedBarcode = barcode.toLowerCase();
         if (name) {
             if (seenNames.has(normalizedName)) {
                 addIssue('name', `Name '${name}' is duplicated in file`, 'error', 'DUPLICATE_IN_FILE');
             } else {
                 seenNames.add(normalizedName);
-            }
-        }
-        if (barcode) {
-            if (seenBarcodes.has(normalizedBarcode)) {
-                addIssue('barcode', `Barcode '${barcode}' is duplicated in file`, 'error', 'DUPLICATE_IN_FILE');
-            } else {
-                seenBarcodes.add(normalizedBarcode);
             }
         }
 
@@ -646,32 +695,15 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
         if (deptName && !departmentId) addIssue('department', `Department '${deptName}' not found`, 'error', 'NOT_FOUND');
         if (!deptName) addIssue('department', 'Department is required', 'error', 'REQUIRED');
 
-        // DB existence / update intent
+        // DB existence / update intent (match by name only; barcodes are system-generated)
         const existingByName = name ? existingByNameMap.get(normalizedName) : null;
-        const existingByBarcode = barcode ? existingByBarcodeMap.get(normalizedBarcode) : null;
-        const matchedExisting = existingByName || existingByBarcode || null;
+        const matchedExisting = existingByName || null;
         const isUpdate = Boolean(matchedExisting);
         if (isUpdate) {
             addIssue(
-                existingByName ? 'name' : 'barcode',
+                'name',
                 `Row matches existing item in DB (${matchedExisting.name}). Import will update it.`,
                 'warning',
-                'EXISTS_IN_DB'
-            );
-        }
-        // Manual barcode uniqueness guard (tenant scoped): barcode must not point to another item
-        if (barcode && existingByBarcode && existingByName && existingByBarcode.id !== existingByName.id) {
-            addIssue(
-                'barcode',
-                `Barcode '${barcode}' already belongs to another item (${existingByBarcode.name}).`,
-                'error',
-                'EXISTS_IN_DB'
-            );
-        } else if (barcode && existingByBarcode && !existingByName) {
-            addIssue(
-                'barcode',
-                `Barcode '${barcode}' already belongs to existing item (${existingByBarcode.name}).`,
-                'error',
                 'EXISTS_IN_DB'
             );
         }
@@ -704,7 +736,6 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
             errors,
             data: {
                 name,
-                barcode: barcode || null,
                 unitPrice: isNaN(unitPrice) ? 0 : unitPrice,
                 departmentId: departmentId || null,
                 defaultStoreId,
@@ -877,7 +908,7 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
             continue;
         }
 
-        const { name, barcode, unitPrice, departmentId, defaultStoreId, categoryId, supplierId, baseUnitId, storeQuantities } = row.data;
+        const { name, unitPrice, departmentId, defaultStoreId, categoryId, supplierId, baseUnitId, storeQuantities } = row.data;
 
         try {
             const txResult = await prisma.$transaction(async (tx) => {
@@ -893,7 +924,6 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                     await tx.item.update({
                         where: { id: existing.id },
                         data: {
-                            ...(barcode && { barcode }),
                             ...(unitPrice !== undefined && { unitPrice }),
                             ...(departmentId && { departmentId }),
                             ...(defaultStoreId && { defaultStoreId }),
@@ -904,7 +934,7 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                     itemId = existing.id;
                     wasUpdated = true;
                 } else {
-                    const finalBarcode = barcode || Math.floor(100000000000 + Math.random() * 900000000000).toString();
+                    const finalBarcode = Math.floor(100000000000 + Math.random() * 900000000000).toString();
                     const created = await tx.item.create({
                         data: {
                             name, unitPrice, categoryId,
@@ -1070,6 +1100,7 @@ module.exports = {
     checkItemCreationRequirements,
     createItem,
     getItems,
+    getItemsByLocationId,
     getItemById,
     updateItem,
     updateItemImage,

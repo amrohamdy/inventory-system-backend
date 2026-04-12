@@ -1,9 +1,16 @@
 const express = require('express');
 const { authenticate } = require('../middleware/authenticate');
-const { authorize } = require('../middleware/authorize');
+const { authorize, requirePermission } = require('../middleware/authorize');
 const inventoryController = require('../controllers/inventory.controller');
 
 const router = express.Router();
+
+router.get(
+    '/items-by-locations/:locationId',
+    authenticate,
+    requirePermission('GRN_MANAGE'),
+    inventoryController.getItemsByLocation,
+);
 
 router.patch(
     '/status',
