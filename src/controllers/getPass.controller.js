@@ -71,6 +71,13 @@ const confirmDestinationReceipt = async (req, res) => {
     res.json({ success: true, data: result });
 };
 
+const acceptDestinationDepartment = async (req, res) => {
+    const { user } = req;
+    const { id } = req.params;
+    const result = await getPassService.acceptDestinationDepartment(id, user.tenantId, user);
+    res.json({ success: true, data: result });
+};
+
 const returnGetPass = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
@@ -108,6 +115,7 @@ module.exports = {
     rejectGetPass,
     checkoutGetPass,
     confirmDestinationReceipt,
+    acceptDestinationDepartment,
     returnGetPass,
     closeGetPass,
     exportPdf

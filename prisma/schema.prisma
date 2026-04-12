@@ -97,6 +97,7 @@ model User {
   getPassesGmApp     GetPass[]           @relation("GetPassGmApprover")
   getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
   getPassesReceived  GetPass[]           @relation("GetPassReceivedAtDestinationBy")
+  getPassesDestinationDeptAccepted GetPass[] @relation("GetPassDestinationDeptAccepter")
   grnApproved        GrnImport[]         @relation("GrnApprovedBy")
   grnImported        GrnImport[]         @relation("GrnImportedBy")
   grnLastEdited      GrnImport[]         @relation("GrnLastEditedBy")
@@ -1111,6 +1112,9 @@ model GetPass {
   receivedAt         DateTime?
   receivedCondition  String?
   receivedNotes      String?
+  /// Destination hotel: department manager final acceptance (internal transfers).
+  destinationDeptAcceptedAt DateTime?
+  destinationDeptAcceptedBy String?       @db.Uuid
   reason             String?
   notes              String?
   rejectionReason    String?
@@ -1128,6 +1132,7 @@ model GetPass {
   gmApprover         User?         @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
   securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
   receivedBy         User?         @relation("GetPassReceivedAtDestinationBy", fields: [receivedById], references: [id])
+  destinationDeptAccepter User?    @relation("GetPassDestinationDeptAccepter", fields: [destinationDeptAcceptedBy], references: [id])
   tenant             Tenant        @relation(fields: [tenantId], references: [id])
   targetTenant       Tenant?       @relation("GetPassTargetTenant", fields: [targetTenantId], references: [id], onDelete: SetNull)
 

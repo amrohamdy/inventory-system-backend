@@ -25,6 +25,7 @@ router.post(
     requirePermission('GET_PASS_CONFIRM_DESTINATION'),
     getPassController.confirmDestinationReceipt
 );
+router.post('/:id/accept-into-department', getPassController.acceptDestinationDepartment);
 router.post('/:id/return', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.returnGetPass);
 router.post('/:id/close', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.closeGetPass);
 

@@ -39,6 +39,7 @@ const getPassDetailInclude = {
     checkoutUser: true,
     closingUser: true,
     receivedBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+    destinationDeptAccepter: { select: { id: true, firstName: true, lastName: true } },
     lines: {
         include: {
             item: true,
@@ -423,6 +424,73 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
     });
 
     return getGetPassById(id, targetTenantId);
+};
+
+/**
+ * Destination hotel: department manager (or org manager) records final acceptance after gate receipt.
+ */
+const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
+    const getPass = await findReadablePass(prisma, id, viewerTenantId);
+    if (!getPass) {
+        throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
+    }
+    if (!getPass.isInternalTransfer || getPass.targetTenantId !== viewerTenantId) {
+        throw Object.assign(new Error('Only the destination property can accept into department.'), {
+            statusCode: 403,
+        });
+    }
+    if (getPass.destinationDeptAcceptedAt) {
+        throw Object.assign(new Error('Already accepted into department.'), { statusCode: 400 });
+    }
+    if (!getPass.receivedAt || getPass.status === 'OUT' || getPass.status === 'APPROVED') {
+        throw Object.assign(new Error('Gate receipt must be confirmed before department acceptance.'), {
+            statusCode: 400,
+        });
+    }
+    if (
+        !['RECEIVED_AT_DESTINATION', 'PARTIALLY_RETURNED', 'RETURNED', 'CLOSED'].includes(getPass.status)
+    ) {
+        throw Object.assign(new Error('Invalid status for department acceptance.'), { statusCode: 400 });
+    }
+
+    const role = normalizeRole(user.role);
+    if (isAdminBypass(role) || role === 'ORG_MANAGER') {
+        // ok
+    } else if (role === 'DEPT_MANAGER') {
+        const dbUser = await prisma.user.findUnique({
+            where: { id: user.id },
+            select: { department: true },
+        });
+        const passDept = getPass.department?.name?.trim().toLowerCase() ?? '';
+        const uDept = (dbUser?.department ?? '').trim().toLowerCase();
+        if (!passDept || passDept !== uDept) {
+            throw Object.assign(
+                new Error('Only the receiving department manager can accept items into the department.'),
+                { statusCode: 403 },
+            );
+        }
+    } else {
+        throw Object.assign(new Error('Unauthorized for department acceptance.'), { statusCode: 403 });
+    }
+
+    const now = new Date();
+    await prisma.getPass.update({
+        where: { id },
+        data: {
+            destinationDeptAcceptedAt: now,
+            destinationDeptAcceptedBy: user.id,
+        },
+    });
+
+    await logAction({
+        tenantId: viewerTenantId,
+        entityType: EntityType.GET_PASS,
+        entityId: id,
+        action: 'ACCEPT_DESTINATION_DEPARTMENT',
+        changedBy: user.id,
+    });
+
+    return getGetPassById(id, viewerTenantId);
 };
 
 /**
@@ -975,6 +1043,7 @@ module.exports = {
     getIncomingGetPasses,
     getGetPassById,
     confirmDestinationReceipt,
+    acceptDestinationDepartment,
     updateGetPass,
     deleteGetPass,
     submitGetPass,
