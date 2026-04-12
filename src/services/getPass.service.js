@@ -6,7 +6,57 @@ const { checkPeriodLock } = require('./periodGuard.service');
 const { hasPermission } = require('../middleware/authorize');
 const { normalizeRole } = require('./rbac.service');
 const { organizationRootId } = require('./organization.service');
-const { notifyIncomingInternalGetPass } = require('./systemNotification.service');
+const {
+    notifyIncomingInternalGetPass,
+    notifySourceTenantAdminsOfPermanentReceipt,
+} = require('./systemNotification.service');
+
+/** Prisma include graph for Get Pass detail (issuer + reader). */
+const getPassDetailInclude = {
+    department: true,
+    tenant: { select: { id: true, name: true, slug: true, email: true, phone: true, address: true } },
+    targetTenant: { select: { id: true, name: true, slug: true, email: true } },
+    createdByUser: true,
+    deptApprover: true,
+    costControlApprover: true,
+    financeApprover: true,
+    gmApprover: true,
+    securityApprover: true,
+    checkoutUser: true,
+    closingUser: true,
+    receivedBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+    lines: {
+        include: {
+            item: true,
+            location: true,
+            returns: { include: { registeredByUser: true, securityUser: true } },
+        },
+    },
+};
+
+const findIssuerPass = (tx, id, issuerTenantId) =>
+    tx.getPass.findFirst({
+        where: { id, tenantId: issuerTenantId },
+        include: getPassDetailInclude,
+    });
+
+const findReadablePass = (tx, id, viewerTenantId) =>
+    tx.getPass.findFirst({
+        where: {
+            id,
+            OR: [{ tenantId: viewerTenantId }, { targetTenantId: viewerTenantId, isInternalTransfer: true }],
+        },
+        include: getPassDetailInclude,
+    });
+
+/**
+ * Issuing hotel only — mutations (update, checkout, returns, …).
+ */
+const getIssuerGetPassById = async (id, issuerTenantId) => {
+    const getPass = await findIssuerPass(prisma, id, issuerTenantId);
+    if (!getPass) throw new Error('Get Pass not found');
+    return getPass;
+};
 
 const PENDING_APPROVAL_STATUSES = [
     'PENDING_DEPT',
@@ -232,35 +282,116 @@ const getGetPasses = async (tenantId, params = {}) => {
     return { data, total, page: Number(page), limit: Number(limit) };
 };
 
-const getGetPassById = async (id, tenantId) => {
-    const getPass = await prisma.getPass.findUnique({
-        where: { id, tenantId },
+/**
+ * Target hotel — internal transfers that are approved or already checked out from source (OUT).
+ */
+const getIncomingGetPasses = async (targetTenantId, params = {}) => {
+    const { page = 1, limit = 50 } = params;
+    const skip = (page - 1) * limit;
+
+    const where = {
+        targetTenantId,
+        isInternalTransfer: true,
+        status: { in: ['APPROVED', 'OUT'] },
+    };
+
+    const [rows, total] = await Promise.all([
+        prisma.getPass.findMany({
+            where,
+            include: {
+                tenant: { select: { id: true, name: true, slug: true, email: true } },
+                department: true,
+                createdByUser: { select: { firstName: true, lastName: true } },
+            },
+            orderBy: { updatedAt: 'desc' },
+            skip,
+            take: Number(limit),
+        }),
+        prisma.getPass.count({ where }),
+    ]);
+
+    const data = rows.map(({ tenant, ...rest }) => ({
+        ...rest,
+        sourceTenant: tenant,
+    }));
+
+    return { data, total, page: Number(page), limit: Number(limit) };
+};
+
+/**
+ * Destination hotel confirms physical receipt (internal transfers only; prior status must be OUT).
+ */
+const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
+    const receivedCondition = typeof body.receivedCondition === 'string' ? body.receivedCondition.trim() : '';
+    const receivedNotes = typeof body.notes === 'string' ? body.notes.trim() : '';
+    if (!receivedCondition) {
+        throw Object.assign(new Error('receivedCondition is required.'), { statusCode: 400 });
+    }
+
+    const existing = await prisma.getPass.findFirst({
+        where: {
+            id,
+            targetTenantId,
+            isInternalTransfer: true,
+            status: 'OUT',
+        },
         include: {
-            department: true,
-            targetTenant: { select: { id: true, name: true, slug: true, email: true } },
-            createdByUser: true,
-            deptApprover: true,
-            costControlApprover: true,
-            financeApprover: true,
-            gmApprover: true,
-            securityApprover: true,
-            checkoutUser: true,
-            closingUser: true,
-            lines: {
-                include: {
-                    item: true,
-                    location: true,
-                    returns: { include: { registeredByUser: true, securityUser: true } }
-                }
-            }
-        }
+            targetTenant: { select: { id: true, name: true, slug: true } },
+        },
     });
+
+    if (!existing) {
+        throw Object.assign(
+            new Error(
+                'Gate pass not found, not an internal transfer to your hotel, or not ready for receipt (must be OUT).'
+            ),
+            { statusCode: 400 }
+        );
+    }
+
+    await prisma.$transaction(async (tx) => {
+        await tx.getPass.update({
+            where: { id },
+            data: {
+                status: 'RECEIVED_AT_DESTINATION',
+                receivedById: userId,
+                receivedAt: new Date(),
+                receivedCondition,
+                receivedNotes: receivedNotes || null,
+            },
+        });
+
+        if (existing.transferType === 'PERMANENT') {
+            await notifySourceTenantAdminsOfPermanentReceipt(tx, existing.tenantId, {
+                getPassId: id,
+                passNo: existing.passNo,
+                targetTenantName: existing.targetTenant?.name,
+            });
+        }
+
+        await logAction({
+            tenantId: existing.tenantId,
+            entityType: EntityType.GET_PASS,
+            entityId: id,
+            action: 'CONFIRM_RECEIPT_DESTINATION',
+            changedBy: userId,
+        });
+    });
+
+    return getGetPassById(id, targetTenantId);
+};
+
+/**
+ * Issuer or internal target hotel — read-only API / PDF.
+ */
+const getGetPassById = async (id, tenantId) => {
+    const getPass = await findReadablePass(prisma, id, tenantId);
     if (!getPass) throw new Error('Get Pass not found');
     return getPass;
 };
 
 const updateGetPass = async (id, tenantId, data, userId) => {
-    const existing = await getGetPassById(id, tenantId);
+    const existing = await getIssuerGetPassById(id, tenantId);
     if (existing.status !== 'DRAFT') {
         throw new Error('Can only update DRAFT Get Passes');
     }
@@ -321,7 +452,8 @@ const updateGetPass = async (id, tenantId, data, userId) => {
 };
 
 const deleteGetPass = async (id, tenantId, userId) => {
-    const existing = await prisma.getPass.findUnique({ where: { id, tenantId } });
+    const existing = await prisma.getPass.findFirst({ where: { id, tenantId } });
+    if (!existing) throw new Error('Get Pass not found');
     if (!['DRAFT', 'REJECTED'].includes(existing.status)) {
         throw new Error('Can only delete DRAFT or REJECTED passes');
     }
@@ -333,7 +465,8 @@ const deleteGetPass = async (id, tenantId, userId) => {
 
 const submitGetPass = async (id, tenantId, user) => {
     const userId = user.id;
-    const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
+    const getPass = await prisma.getPass.findFirst({ where: { id, tenantId } });
+    if (!getPass) throw new Error('Get Pass not found');
     if (getPass.status !== 'DRAFT') throw new Error('Only DRAFT can be submitted');
 
     const workflow = getSubmitInitialWorkflow(user.role, userId);
@@ -352,7 +485,7 @@ const submitGetPass = async (id, tenantId, user) => {
  * DEPT_MANAGER acting on PENDING_DEPT moves to PENDING_COST_CONTROL; same pattern for CC / Finance / GM.
  */
 const approveGetPass = async (id, tenantId, user) => {
-    const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
+    const getPass = await prisma.getPass.findFirst({ where: { id, tenantId } });
     if (!getPass) throw new Error('Get Pass not found');
     if (!PENDING_APPROVAL_STATUSES.includes(getPass.status)) {
         throw new Error('Get Pass is not pending any approval');
@@ -405,7 +538,7 @@ const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
     const reason = typeof rejectionReason === 'string' ? rejectionReason.trim() : '';
     if (!reason) throw new Error('rejectionReason is required');
 
-    const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
+    const getPass = await prisma.getPass.findFirst({ where: { id, tenantId } });
     if (!getPass) throw new Error('Get Pass not found');
     if (!PENDING_APPROVAL_STATUSES.includes(getPass.status)) {
         throw new Error('Get Pass is not pending any approval');
@@ -440,7 +573,7 @@ const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
 const checkoutGetPass = async (id, tenantId, user, linesOut) => {
     if (!hasPermission(user, 'GET_PASS_APPROVE_EXIT')) throw new Error('Only Security can checkout items');
 
-    const getPass = await getGetPassById(id, tenantId);
+    const getPass = await getIssuerGetPassById(id, tenantId);
     if (getPass.status !== 'APPROVED') throw new Error('Get Pass must be APPROVED before checkout');
 
     await checkPeriodLock(tenantId, new Date());
@@ -496,15 +629,17 @@ const checkoutGetPass = async (id, tenantId, user, linesOut) => {
             });
         }
 
-        const newStatus = getPass.transferType === 'PERMANENT' ? 'CLOSED' : 'OUT';
+        const internalToDestination = Boolean(getPass.isInternalTransfer && getPass.targetTenantId);
+        const permanentCloseAtSource = getPass.transferType === 'PERMANENT' && !internalToDestination;
+        const newStatus = permanentCloseAtSource ? 'CLOSED' : 'OUT';
         const updated = await tx.getPass.update({
             where: { id },
             data: {
                 status: newStatus,
                 checkedOutBy: user.id,
                 checkedOutAt: new Date(),
-                closedBy: getPass.transferType === 'PERMANENT' ? user.id : null,
-                closedAt: getPass.transferType === 'PERMANENT' ? new Date() : null,
+                closedBy: permanentCloseAtSource ? user.id : null,
+                closedAt: permanentCloseAtSource ? new Date() : null,
             }
         });
 
@@ -558,7 +693,7 @@ const parseReturnQuantities = (input, remainingQty, itemName) => {
  * Process incoming returned items for Temporary / Catering passes
  */
 const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
-    const getPass = await getGetPassById(id, tenantId);
+    const getPass = await getIssuerGetPassById(id, tenantId);
     if (!['OUT', 'PARTIALLY_RETURNED'].includes(getPass.status)) throw new Error('Get Pass is not currently checked out');
     if (getPass.transferType === 'PERMANENT') throw new Error('Cannot return items on a PERMANENT pass');
 
@@ -769,7 +904,8 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
 };
 
 const closeGetPass = async (id, tenantId, userId) => {
-    const getPass = await prisma.getPass.findUnique({ where: { id, tenantId } });
+    const getPass = await prisma.getPass.findFirst({ where: { id, tenantId } });
+    if (!getPass) throw new Error('Get Pass not found');
     if (!['OUT', 'PARTIALLY_RETURNED', 'RETURNED'].includes(getPass.status)) {
         throw new Error('Can only close active Get Passes.');
     }
@@ -786,7 +922,9 @@ const closeGetPass = async (id, tenantId, userId) => {
 module.exports = {
     createGetPass,
     getGetPasses,
+    getIncomingGetPasses,
     getGetPassById,
+    confirmDestinationReceipt,
     updateGetPass,
     deleteGetPass,
     submitGetPass,
@@ -794,5 +932,5 @@ module.exports = {
     rejectGetPass,
     checkoutGetPass,
     processReturns,
-    closeGetPass
+    closeGetPass,
 };

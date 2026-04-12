@@ -14,6 +14,11 @@ const getGetPasses = async (req, res) => {
     res.json({ success: true, ...result });
 };
 
+const getIncomingGetPasses = async (req, res) => {
+    const result = await getPassService.getIncomingGetPasses(req.user.tenantId, req.query);
+    res.json({ success: true, ...result });
+};
+
 const getGetPassById = async (req, res) => {
     const result = await getPassService.getGetPassById(req.params.id, req.user.tenantId);
     res.json({ success: true, data: result });
@@ -59,6 +64,13 @@ const checkoutGetPass = async (req, res) => {
     res.json({ success: true, data: result });
 };
 
+const confirmDestinationReceipt = async (req, res) => {
+    const { user } = req;
+    const { id } = req.params;
+    const result = await getPassService.confirmDestinationReceipt(id, user.tenantId, user.id, req.body);
+    res.json({ success: true, data: result });
+};
+
 const returnGetPass = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
@@ -87,6 +99,7 @@ const exportPdf = async (req, res) => {
 module.exports = {
     createGetPass,
     getGetPasses,
+    getIncomingGetPasses,
     getGetPassById,
     updateGetPass,
     deleteGetPass,
@@ -94,6 +107,7 @@ module.exports = {
     approveGetPass,
     rejectGetPass,
     checkoutGetPass,
+    confirmDestinationReceipt,
     returnGetPass,
     closeGetPass,
     exportPdf

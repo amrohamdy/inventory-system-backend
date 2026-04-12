@@ -39,7 +39,21 @@ const notifyIncomingInternalGetPass = async (tx, { targetTenantId, getPassId, pa
     });
 };
 
+/**
+ * Notify source hotel admins that a permanent internal transfer was received at the destination.
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+const notifySourceTenantAdminsOfPermanentReceipt = async (tx, sourceTenantId, { getPassId, passNo, targetTenantName }) => {
+    await notifyTenantAdmins(tx, sourceTenantId, {
+        type: 'GET_PASS_RECEIVED_AT_DESTINATION',
+        title: 'Internal gate pass received',
+        body: `${targetTenantName || 'Destination hotel'} confirmed receipt of permanent transfer ${passNo}.`,
+        payload: { getPassId, passNo, targetTenantName },
+    });
+};
+
 module.exports = {
     notifyTenantAdmins,
     notifyIncomingInternalGetPass,
+    notifySourceTenantAdminsOfPermanentReceipt,
 };

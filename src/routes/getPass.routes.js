@@ -9,6 +9,7 @@ router.use(protect);
 // Basic CRUD
 router.post('/', requirePermission('GET_PASS_CREATE'), getPassController.createGetPass);
 router.get('/', requirePermission('GET_PASS_VIEW'), getPassController.getGetPasses);
+router.get('/incoming', requirePermission('GET_PASS_VIEW'), getPassController.getIncomingGetPasses);
 router.get('/:id', requirePermission('GET_PASS_VIEW'), getPassController.getGetPassById);
 router.put('/:id', requirePermission('GET_PASS_CREATE'), getPassController.updateGetPass);
 router.delete('/:id', requirePermission('GET_PASS_CREATE'), getPassController.deleteGetPass);
@@ -19,6 +20,11 @@ router.post('/:id/submit', requirePermission('GET_PASS_CREATE'), getPassControll
 router.post('/:id/approve', getPassController.approveGetPass);
 router.post('/:id/reject', getPassController.rejectGetPass);
 router.post('/:id/checkout', requirePermission('GET_PASS_APPROVE_EXIT'), getPassController.checkoutGetPass);
+router.post(
+    '/:id/confirm-receipt',
+    requirePermission('GET_PASS_CONFIRM_DESTINATION'),
+    getPassController.confirmDestinationReceipt
+);
 router.post('/:id/return', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.returnGetPass);
 router.post('/:id/close', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.closeGetPass);
 

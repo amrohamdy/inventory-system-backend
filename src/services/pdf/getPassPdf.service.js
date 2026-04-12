@@ -1,31 +1,15 @@
 const PDFDocument = require('pdfkit');
-const prisma = require('../../config/database');
 const dayjs = require('dayjs');
+const getPassService = require('../getPass.service');
 
 class GetPassPdfService {
     async generatePdf(passId, tenantId) {
-        const getPass = await prisma.getPass.findFirst({
-            where: { id: passId, tenantId },
-            include: {
-                tenant: true,
-                department: true,
-                createdByUser: true,
-                deptApprover: true,
-                costControlApprover: true,
-                financeApprover: true,
-                gmApprover: true,
-                securityApprover: true,
-                checkoutUser: true,
-                lines: {
-                    include: {
-                        item: true,
-                        location: true
-                    }
-                }
-            }
-        });
-
-        if (!getPass) throw Object.assign(new Error('Get Pass not found'), { status: 404 });
+        let getPass;
+        try {
+            getPass = await getPassService.getGetPassById(passId, tenantId);
+        } catch {
+            throw Object.assign(new Error('Get Pass not found'), { status: 404 });
+        }
 
         return new Promise((resolve, reject) => {
             try {
