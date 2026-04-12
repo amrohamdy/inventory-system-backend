@@ -11,6 +11,19 @@ const {
     notifySourceTenantAdminsOfPermanentReceipt,
 } = require('./systemNotification.service');
 
+/**
+ * ORG_MANAGER with JWT scoped to the organization root: list aggregates across all child hotels.
+ */
+const resolveOrgWideGetPassListContext = async (tenantId, role) => {
+    if (normalizeRole(role) !== 'ORG_MANAGER') return null;
+    const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { id: true, parentId: true },
+    });
+    if (!tenant || tenant.parentId !== null) return null;
+    return { organizationRootId: tenant.id };
+};
+
 /** Prisma include graph for Get Pass detail (issuer + reader). */
 const getPassDetailInclude = {
     department: true,
@@ -256,27 +269,39 @@ const createGetPass = async (tenantId, data, userId) => {
     });
 };
 
-const getGetPasses = async (tenantId, params = {}) => {
+const getGetPasses = async (tenantId, params = {}, user) => {
     const { status, transferType, page = 1, limit = 50 } = params;
     const skip = (page - 1) * limit;
 
-    const where = { tenantId };
+    const listContext = user ? await resolveOrgWideGetPassListContext(tenantId, user.role) : null;
+
+    let where;
+    if (listContext?.organizationRootId) {
+        where = { tenant: { parentId: listContext.organizationRootId } };
+    } else {
+        where = { tenantId };
+    }
     if (status) where.status = status;
     if (transferType) where.transferType = transferType;
+
+    const include = {
+        department: true,
+        targetTenant: { select: { id: true, name: true, slug: true } },
+        createdByUser: { select: { firstName: true, lastName: true } },
+    };
+    if (listContext?.organizationRootId) {
+        include.tenant = { select: { id: true, name: true, slug: true, email: true } };
+    }
 
     const [data, total] = await Promise.all([
         prisma.getPass.findMany({
             where,
-            include: {
-                department: true,
-                targetTenant: { select: { id: true, name: true, slug: true } },
-                createdByUser: { select: { firstName: true, lastName: true } }
-            },
+            include,
             orderBy: { createdAt: 'desc' },
             skip,
-            take: Number(limit)
+            take: Number(limit),
         }),
-        prisma.getPass.count({ where })
+        prisma.getPass.count({ where }),
     ]);
 
     return { data, total, page: Number(page), limit: Number(limit) };
@@ -285,24 +310,40 @@ const getGetPasses = async (tenantId, params = {}) => {
 /**
  * Target hotel — internal transfers that are approved or already checked out from source (OUT).
  */
-const getIncomingGetPasses = async (targetTenantId, params = {}) => {
+const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
     const { page = 1, limit = 50 } = params;
     const skip = (page - 1) * limit;
 
-    const where = {
-        targetTenantId,
-        isInternalTransfer: true,
-        status: { in: ['APPROVED', 'OUT'] },
+    const listContext = user ? await resolveOrgWideGetPassListContext(targetTenantId, user.role) : null;
+
+    let where;
+    if (listContext?.organizationRootId) {
+        where = {
+            isInternalTransfer: true,
+            status: { in: ['APPROVED', 'OUT'] },
+            targetTenant: { parentId: listContext.organizationRootId },
+        };
+    } else {
+        where = {
+            targetTenantId,
+            isInternalTransfer: true,
+            status: { in: ['APPROVED', 'OUT'] },
+        };
+    }
+
+    const include = {
+        tenant: { select: { id: true, name: true, slug: true, email: true } },
+        department: true,
+        createdByUser: { select: { firstName: true, lastName: true } },
     };
+    if (listContext?.organizationRootId) {
+        include.targetTenant = { select: { id: true, name: true, slug: true, email: true } };
+    }
 
     const [rows, total] = await Promise.all([
         prisma.getPass.findMany({
             where,
-            include: {
-                tenant: { select: { id: true, name: true, slug: true, email: true } },
-                department: true,
-                createdByUser: { select: { firstName: true, lastName: true } },
-            },
+            include,
             orderBy: { updatedAt: 'desc' },
             skip,
             take: Number(limit),

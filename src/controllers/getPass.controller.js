@@ -10,12 +10,12 @@ const createGetPass = async (req, res) => {
 };
 
 const getGetPasses = async (req, res) => {
-    const result = await getPassService.getGetPasses(req.user.tenantId, req.query);
+    const result = await getPassService.getGetPasses(req.user.tenantId, req.query, req.user);
     res.json({ success: true, ...result });
 };
 
 const getIncomingGetPasses = async (req, res) => {
-    const result = await getPassService.getIncomingGetPasses(req.user.tenantId, req.query);
+    const result = await getPassService.getIncomingGetPasses(req.user.tenantId, req.query, req.user);
     res.json({ success: true, ...result });
 };
 
