@@ -4,7 +4,12 @@ const { hashPassword, comparePassword } = require('../utils/password');
 const { sendPasswordResetOtpEmail } = require('../utils/mailer');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, getRefreshTokenExpiry } = require('../utils/jwt');
 const logger = require('../utils/logger');
-const { getPermissionsForMembership, membershipRoleCode, getRoleIdByCode } = require('./rbac.service');
+const {
+    getPermissionsForMembership,
+    membershipRoleCode,
+    getRoleIdByCode,
+    normalizeRole,
+} = require('./rbac.service');
 
 /**
  * M01 — Auth Service
@@ -134,22 +139,57 @@ const ensureTenantNotSuspended = async (tenantId) => {
     }
 };
 
+/**
+ * Effective session role: keep SUPER_ADMIN / ORG_MANAGER from the membership row; if the
+ * current row has no/lower role, promote to ORG_MANAGER when the user has any active ORG_MANAGER membership.
+ */
+const resolveUserBestRole = async (userId, currentMembershipRole) => {
+    if (currentMembershipRole != null && String(currentMembershipRole).trim() !== '') {
+        const n = normalizeRole(currentMembershipRole);
+        if (n === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+        if (n === 'ORG_MANAGER') return 'ORG_MANAGER';
+    }
+
+    const hasOrgManagerMembership = await prisma.tenantMember.findFirst({
+        where: {
+            userId,
+            isActive: true,
+            role: { code: 'ORG_MANAGER' },
+        },
+        select: { id: true },
+    });
+
+    if (hasOrgManagerMembership) {
+        return 'ORG_MANAGER';
+    }
+
+    if (currentMembershipRole != null && String(currentMembershipRole).trim() !== '') {
+        return normalizeRole(currentMembershipRole);
+    }
+
+    return null;
+};
+
 const issueSessionForMembership = async ({
     user,
     membership,
     ipAddress,
     userAgent,
 }) => {
-    const roleCode = membershipRoleCode(membership);
+    const roleCodeRaw = membershipRoleCode(membership);
+    const bestRole = await resolveUserBestRole(user.id, roleCodeRaw);
     let roleId = membership.roleId ?? membership.role?.id;
-    if (!roleId && roleCode) {
-        roleId = await getRoleIdByCode(roleCode);
+    if (bestRole) {
+        const bestRoleId = await getRoleIdByCode(bestRole);
+        if (bestRoleId) roleId = bestRoleId;
+    } else if (!roleId && roleCodeRaw) {
+        roleId = await getRoleIdByCode(roleCodeRaw);
     }
-    const permissions = await getPermissionsForMembership({ roleId, roleCode });
+    const permissions = await getPermissionsForMembership({ roleId, roleCode: bestRole });
     const tokenPayload = {
         userId: user.id,
         tenantId: membership.tenantId,
-        role: roleCode,
+        role: bestRole,
         email: user.email,
         ...(roleId ? { roleId } : {}),
         permissions,
@@ -190,7 +230,7 @@ const issueSessionForMembership = async ({
             email: user.email,
             firstName: user.firstName,
             lastName: user.lastName,
-            role: roleCode,
+            role: bestRole,
             permissions,
             department: user.department,
             departmentId: membership.departmentId ?? null,
@@ -546,17 +586,21 @@ const refresh = async (refreshToken) => {
         }
     }
 
-    const roleCode = membershipRoleCode(membership);
+    const roleCodeRaw = membershipRoleCode(membership);
+    const bestRole = await resolveUserBestRole(user.id, roleCodeRaw);
     let roleId = membership.roleId ?? membership.role?.id;
-    if (!roleId && roleCode) {
-        roleId = await getRoleIdByCode(roleCode);
+    if (bestRole) {
+        const bestRoleId = await getRoleIdByCode(bestRole);
+        if (bestRoleId) roleId = bestRoleId;
+    } else if (!roleId && roleCodeRaw) {
+        roleId = await getRoleIdByCode(roleCodeRaw);
     }
-    const permissions = await getPermissionsForMembership({ roleId, roleCode });
+    const permissions = await getPermissionsForMembership({ roleId, roleCode: bestRole });
 
     const newAccessToken = generateAccessToken({
         userId: user.id,
         tenantId: membership.tenantId,
-        role: roleCode,
+        role: bestRole,
         email: user.email,
         ...(roleId ? { roleId } : {}),
         permissions,
@@ -619,14 +663,20 @@ const getMe = async (userId, tenantId) => {
     }
 
     const rc = membershipRoleCode(membership);
+    const bestRole = await resolveUserBestRole(userId, rc);
+    let roleIdForPerm = membership.roleId ?? membership.role?.id;
+    if (bestRole) {
+        const bestRoleId = await getRoleIdByCode(bestRole);
+        if (bestRoleId) roleIdForPerm = bestRoleId;
+    }
     const permissions = await getPermissionsForMembership({
-        roleId: membership.roleId,
-        roleCode: rc,
+        roleId: roleIdForPerm,
+        roleCode: bestRole,
     });
 
     return {
         ...user,
-        role: rc,
+        role: bestRole,
         permissions,
         tenant: membership.tenant || null,
         departmentId: membership.departmentId ?? null,
@@ -763,6 +813,7 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
         where: { userId, tenantId: targetTenant.id },
         include: {
             tenant: { select: { id: true, slug: true, name: true, parentId: true } },
+            role: { select: { id: true, code: true } },
         },
     });
 
