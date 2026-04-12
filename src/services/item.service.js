@@ -59,6 +59,12 @@ const badRequest = (msg) => {
     return e;
 };
 
+const forbidden = (msg) => {
+    const e = new Error(msg);
+    e.statusCode = 403;
+    return e;
+};
+
 const assertDepartmentInTenant = async (departmentId, tenantId) => {
     const dept = await prisma.department.findFirst({
         where: { id: departmentId, tenantId },
@@ -77,12 +83,13 @@ const parseExcelNumber = (val) => {
 
 /**
  * Prerequisite counts for Item Master (tenant-scoped).
- * canCreateItem is true when units, categories, and locations all exist (independent of OB phase).
+ * canCreateItem is true when departments, units, categories, suppliers (vendors), and locations all exist (independent of OB phase).
  * isOpeningBalanceAllowed mirrors `settingService.isOpeningBalanceAllowed` (toggle / finalize state):
  * when true, OB setup is active and operational transactions stay blocked until finalize.
  */
 const checkItemCreationRequirements = async (tenantId) => {
-    const [units, categories, vendors, locations] = await Promise.all([
+    const [departments, units, categories, vendors, locations] = await Promise.all([
+        prisma.department.count({ where: { tenantId } }),
         prisma.unit.count({ where: { tenantId } }),
         prisma.category.count({ where: { tenantId } }),
         prisma.supplier.count({ where: { tenantId } }),
@@ -90,6 +97,7 @@ const checkItemCreationRequirements = async (tenantId) => {
     ]);
 
     const requirements = {
+        departments: { count: departments },
         units: { count: units },
         categories: { count: categories },
         vendors: { count: vendors },
@@ -100,7 +108,11 @@ const checkItemCreationRequirements = async (tenantId) => {
     const isOpeningBalanceAllowed = obCheck.allowed === true;
 
     const canCreateItem =
-        units > 0 && categories > 0 && locations > 0;
+        departments > 0 &&
+        units > 0 &&
+        categories > 0 &&
+        vendors > 0 &&
+        locations > 0;
 
     if (!canCreateItem) {
         return {
@@ -139,6 +151,11 @@ const validateItemUnits = (itemUnits) => {
 
 // ── CREATE ─────────────────────────────────────────────────────────────────────
 const createItem = async (data, tenantId) => {
+    const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
+    if (!obCheck.allowed) {
+        throw forbidden('Item creation is currently locked.');
+    }
+
     const { itemUnits, ...mainData } = data;
 
     validateItemUnits(itemUnits);

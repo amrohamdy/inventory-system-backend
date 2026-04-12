@@ -126,6 +126,11 @@ const importPreview = async (req, res, next) => {
         if (!req.file) {
             const e = new Error('No file uploaded.'); e.statusCode = 400; throw e;
         }
+        const settingService = require('../services/setting.service');
+        const obCheck = await settingService.isOpeningBalanceAllowed(req.user.tenantId);
+        if (!obCheck.allowed) {
+            const e = new Error('Item creation is currently locked.'); e.statusCode = 403; throw e;
+        }
         const asOpeningBalance = String(req.body?.asOpeningBalance ?? req.query?.asOpeningBalance ?? '').toLowerCase() === 'true';
         const result = await itemService.parseImportFile(req.file.path, req.user.tenantId, { asOpeningBalance });
         // Store file path in session-like manner via response for confirm step
@@ -144,13 +149,10 @@ const importConfirm = async (req, res, next) => {
             const e = new Error('Invalid import payload.'); e.statusCode = 400; throw e;
         }
 
-        // If OB requested, validate eligibility first
-        if (asOpeningBalance) {
-            const settingService = require('../services/setting.service');
-            const obCheck = await settingService.isOpeningBalanceAllowed(req.user.tenantId);
-            if (!obCheck.allowed) {
-                const e = new Error(obCheck.reason); e.statusCode = 403; throw e;
-            }
+        const settingService = require('../services/setting.service');
+        const obCheck = await settingService.isOpeningBalanceAllowed(req.user.tenantId);
+        if (!obCheck.allowed) {
+            const e = new Error('Item creation is currently locked.'); e.statusCode = 403; throw e;
         }
 
         const result = await itemService.confirmImport(rows, req.user.tenantId, req.user.id, !!asOpeningBalance);
