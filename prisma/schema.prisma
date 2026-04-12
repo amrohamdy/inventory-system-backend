@@ -96,6 +96,7 @@ model User {
   getPassesCostCtrlApp GetPass[]         @relation("GetPassCostControlApprover")
   getPassesGmApp     GetPass[]           @relation("GetPassGmApprover")
   getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
+  getPassesDestinationSecApp GetPass[] @relation("GetPassDestinationSecurityApprover")
   getPassesReceived  GetPass[]           @relation("GetPassReceivedAtDestinationBy")
   getPassesDestinationDeptAccepted GetPass[] @relation("GetPassDestinationDeptAccepter")
   grnApproved        GrnImport[]         @relation("GrnApprovedBy")
@@ -1104,6 +1105,9 @@ model GetPass {
   gmApprovedAt       DateTime?
   securityApprovedBy String?       @db.Uuid
   securityApprovedAt DateTime?
+  /// Destination hotel: security verification at entry gate (internal transfers; set on receipt confirmation).
+  destinationSecurityApprovedBy String?       @db.Uuid
+  destinationSecurityApprovedAt DateTime?
   checkedOutBy       String?       @db.Uuid
   checkedOutAt       DateTime?
   closedBy           String?       @db.Uuid
@@ -1131,6 +1135,7 @@ model GetPass {
   financeApprover    User?         @relation("GetPassFinanceApprover", fields: [financeApprovedBy], references: [id])
   gmApprover         User?         @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
   securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
+  destinationSecurityApprover User? @relation("GetPassDestinationSecurityApprover", fields: [destinationSecurityApprovedBy], references: [id])
   receivedBy         User?         @relation("GetPassReceivedAtDestinationBy", fields: [receivedById], references: [id])
   destinationDeptAccepter User?    @relation("GetPassDestinationDeptAccepter", fields: [destinationDeptAcceptedBy], references: [id])
   tenant             Tenant        @relation(fields: [tenantId], references: [id])

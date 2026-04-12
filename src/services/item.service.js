@@ -84,8 +84,8 @@ const parseExcelNumber = (val) => {
 /**
  * Prerequisite counts for Item Master (tenant-scoped).
  * canCreateItem is true when departments, units, categories, suppliers (vendors), and locations all exist (independent of OB phase).
- * isOpeningBalanceAllowed mirrors `settingService.isOpeningBalanceAllowed` (toggle / finalize state):
- * when true, OB setup is active and operational transactions stay blocked until finalize.
+ * isOpeningBalanceAllowed mirrors `settingService.isOpeningBalanceAllowed` (OPEN phase vs finalized/locked).
+ * Used for UI banners / period guards; item create/import are not blocked when this is false.
  */
 const checkItemCreationRequirements = async (tenantId) => {
     const [departments, units, categories, vendors, locations] = await Promise.all([
@@ -151,11 +151,6 @@ const validateItemUnits = (itemUnits) => {
 
 // ── CREATE ─────────────────────────────────────────────────────────────────────
 const createItem = async (data, tenantId) => {
-    const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
-    if (!obCheck.allowed) {
-        throw forbidden('Item creation is currently locked.');
-    }
-
     const { itemUnits, ...mainData } = data;
 
     validateItemUnits(itemUnits);

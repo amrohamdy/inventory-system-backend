@@ -36,6 +36,7 @@ const getPassDetailInclude = {
     financeApprover: true,
     gmApprover: true,
     securityApprover: true,
+    destinationSecurityApprover: { select: { id: true, firstName: true, lastName: true, email: true } },
     checkoutUser: true,
     closingUser: true,
     receivedBy: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -312,8 +313,9 @@ const getGetPasses = async (tenantId, params = {}, user) => {
 };
 
 /**
- * Target hotel — internal transfers only after source security checkout (status OUT).
- * APPROVED (not yet dispatched) is excluded so the destination does not see the pass until exit.
+ * Target hotel — full history of internal transfers addressed to this property after dispatch (OUT+).
+ * Includes finished transfers (CLOSED, RETURNED, etc.) so the list is not only “pending”.
+ * APPROVED (not yet dispatched from source) is excluded until checkout.
  */
 const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
     const { page = 1, limit = 50 } = params;
@@ -321,18 +323,26 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
 
     const listContext = user ? await resolveOrgWideGetPassListContext(targetTenantId, user.role) : null;
 
+    const incomingStatuses = [
+        'OUT',
+        'RECEIVED_AT_DESTINATION',
+        'PARTIALLY_RETURNED',
+        'RETURNED',
+        'CLOSED',
+    ];
+
     let where;
     if (listContext?.organizationRootId) {
         where = {
             isInternalTransfer: true,
-            status: 'OUT',
+            status: { in: incomingStatuses },
             targetTenant: { parentId: listContext.organizationRootId },
         };
     } else {
         where = {
             targetTenantId,
             isInternalTransfer: true,
-            status: 'OUT',
+            status: { in: incomingStatuses },
         };
     }
 
@@ -395,15 +405,19 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
         );
     }
 
+    const receivedAt = new Date();
+
     await prisma.$transaction(async (tx) => {
         await tx.getPass.update({
             where: { id },
             data: {
                 status: 'RECEIVED_AT_DESTINATION',
                 receivedById: userId,
-                receivedAt: new Date(),
+                receivedAt,
                 receivedCondition,
                 receivedNotes: receivedNotes || null,
+                destinationSecurityApprovedBy: userId,
+                destinationSecurityApprovedAt: receivedAt,
             },
         });
 
@@ -448,9 +462,7 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
             statusCode: 400,
         });
     }
-    if (
-        !['RECEIVED_AT_DESTINATION', 'PARTIALLY_RETURNED', 'RETURNED', 'CLOSED'].includes(getPass.status)
-    ) {
+    if (!['RECEIVED_AT_DESTINATION', 'PARTIALLY_RETURNED', 'RETURNED'].includes(getPass.status)) {
         throw Object.assign(new Error('Invalid status for department acceptance.'), { statusCode: 400 });
     }
 
@@ -475,11 +487,26 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
     }
 
     const now = new Date();
+    // Archive as CLOSED when the internal transfer lifecycle is finished at destination.
+    // PERMANENT: no returns — safe to close here for reporting "completed" passes.
+    // TEMPORARY: returns are processed at the issuing hotel while status stays OUT / PARTIALLY_RETURNED;
+    // closing here would block processReturns, so we only record destinationDeptAccepted* until source closes.
+    const closeAsArchived =
+        getPass.transferType === 'PERMANENT' ||
+        (getPass.transferType === 'TEMPORARY' && getPass.status === 'RETURNED');
+
     await prisma.getPass.update({
         where: { id },
         data: {
             destinationDeptAcceptedAt: now,
             destinationDeptAcceptedBy: user.id,
+            ...(closeAsArchived
+                ? {
+                      status: 'CLOSED',
+                      closedBy: user.id,
+                      closedAt: now,
+                  }
+                : {}),
         },
     });
 
@@ -638,10 +665,9 @@ const approveGetPass = async (id, tenantId, user) => {
             };
             break;
         case 'PENDING_SECURITY':
+            // securityApprovedAt/By are set at checkout (exit gate), not here.
             updateData = {
                 status: 'APPROVED',
-                securityApprovedBy: user.id,
-                securityApprovedAt: now
             };
             break;
         default:
@@ -679,7 +705,9 @@ const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
             gmApprovedBy: null,
             gmApprovedAt: null,
             securityApprovedBy: null,
-            securityApprovedAt: null
+            securityApprovedAt: null,
+            destinationSecurityApprovedBy: null,
+            destinationSecurityApprovedAt: null,
         }
     });
     await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'REJECT', changedBy: user.id });
@@ -697,7 +725,8 @@ const checkoutGetPass = async (id, tenantId, user, linesOut) => {
 
     await checkPeriodLock(tenantId, new Date());
 
-    const result = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
+        const exitAt = new Date();
         for (const line of getPass.lines) {
             // Find current stock to get WAC and check availability
             const stock = await tx.stockBalance.findUnique({
@@ -751,22 +780,22 @@ const checkoutGetPass = async (id, tenantId, user, linesOut) => {
         const internalToDestination = Boolean(getPass.isInternalTransfer && getPass.targetTenantId);
         const permanentCloseAtSource = getPass.transferType === 'PERMANENT' && !internalToDestination;
         const newStatus = permanentCloseAtSource ? 'CLOSED' : 'OUT';
-        const updated = await tx.getPass.update({
+        await tx.getPass.update({
             where: { id },
             data: {
                 status: newStatus,
                 checkedOutBy: user.id,
-                checkedOutAt: new Date(),
+                checkedOutAt: exitAt,
+                securityApprovedBy: user.id,
+                securityApprovedAt: exitAt,
                 closedBy: permanentCloseAtSource ? user.id : null,
-                closedAt: permanentCloseAtSource ? new Date() : null,
+                closedAt: permanentCloseAtSource ? exitAt : null,
             }
         });
-
-        return updated;
     });
 
     await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'CHECKOUT', changedBy: user.id });
-    return result;
+    return getGetPassById(id, tenantId);
 };
 
 /**
