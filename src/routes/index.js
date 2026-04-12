@@ -130,5 +130,9 @@ router.use('/super-admin', superAdminRoutes);
 const organizationRoutes = require('./organization.routes');
 router.use('/v1/organizations', organizationRoutes);
 
+// Tenant-scoped organization helpers (sister hotels, etc.)
+const organizationPortalRoutes = require('./organization.portal.routes');
+router.use('/organization', organizationPortalRoutes);
+
 module.exports = router;
 

@@ -1,4 +1,15 @@
 const superAdminService = require('../services/superAdmin.service');
+const organizationService = require('../services/organization.service');
+const { success } = require('../utils/response');
+
+const getSisterHotels = async (req, res, next) => {
+    try {
+        const data = await organizationService.getSisterHotels(req.user.tenantId);
+        return success(res, data);
+    } catch (e) {
+        next(e);
+    }
+};
 
 const updateOrganization = async (req, res, next) => {
     try {
@@ -14,4 +25,4 @@ const updateOrganization = async (req, res, next) => {
     }
 };
 
-module.exports = { updateOrganization };
+module.exports = { updateOrganization, getSisterHotels };

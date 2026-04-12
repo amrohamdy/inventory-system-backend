@@ -78,8 +78,10 @@ const getLowStockAlerts = async (tenantId) => {
 
 /**
  * Get notification summary (counts for bell badge)
+ * @param {string} tenantId
+ * @param {string} [userId] — when set, includes unread in-app system notifications for this user
  */
-const getNotificationSummary = async (tenantId) => {
+const getNotificationSummary = async (tenantId, userId) => {
     const alerts = await getLowStockAlerts(tenantId);
 
     // Count pending approvals
@@ -119,8 +121,17 @@ const getNotificationSummary = async (tenantId) => {
         take: 5
     }).catch(() => []);
 
+    let systemUnread = 0;
+    if (userId) {
+        systemUnread = await prisma.systemNotification
+            .count({
+                where: { tenantId, userId, readAt: null },
+            })
+            .catch(() => 0);
+    }
+
     return {
-        totalCount: alerts.length + pendingApprovals + overdueLoans,
+        totalCount: alerts.length + pendingApprovals + overdueLoans + systemUnread,
         lowStock: alerts.length,
         criticalStock: alerts.filter(a => a.severity === 'critical').length,
         warningStock: alerts.filter(a => a.severity === 'warning').length,
@@ -130,6 +141,7 @@ const getNotificationSummary = async (tenantId) => {
         pendingStockReports,
         overdueLoans,
         overdueLoansList,
+        systemUnread,
         alerts: alerts.slice(0, 20), // Top 20 alerts
     };
 };

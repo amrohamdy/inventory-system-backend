@@ -5,6 +5,8 @@ const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { hasPermission } = require('../middleware/authorize');
 const { normalizeRole } = require('./rbac.service');
+const { organizationRootId } = require('./organization.service');
+const { notifyIncomingInternalGetPass } = require('./systemNotification.service');
 
 const PENDING_APPROVAL_STATUSES = [
     'PENDING_DEPT',
@@ -70,8 +72,92 @@ const assertCanActOnStatus = (status, role) => {
     throw new Error(`Unauthorized for this approval step (requires ${required})`);
 };
 
+const resolveTemporaryDatesForCreate = (data) => {
+    let returnDate = data.returnDate ? new Date(data.returnDate) : null;
+    let expectedReturnDate = data.expectedReturnDate ? new Date(data.expectedReturnDate) : null;
+    if (data.transferType === 'TEMPORARY') {
+        const effective = returnDate || expectedReturnDate;
+        if (!effective) {
+            throw Object.assign(new Error('returnDate or expectedReturnDate is required for TEMPORARY transfers.'), {
+                statusCode: 400,
+            });
+        }
+        returnDate = returnDate || effective;
+        expectedReturnDate = expectedReturnDate || effective;
+    } else {
+        returnDate = null;
+    }
+    return { returnDate, expectedReturnDate };
+};
+
+const resolveTemporaryDatesForUpdate = (data, existing) => {
+    const transferType = data.transferType !== undefined ? data.transferType : existing.transferType;
+    let returnDate =
+        data.returnDate !== undefined
+            ? (data.returnDate ? new Date(data.returnDate) : null)
+            : existing.returnDate;
+    let expectedReturnDate =
+        data.expectedReturnDate !== undefined
+            ? (data.expectedReturnDate ? new Date(data.expectedReturnDate) : null)
+            : existing.expectedReturnDate;
+    if (transferType === 'TEMPORARY') {
+        const effective = returnDate || expectedReturnDate;
+        if (!effective) {
+            throw Object.assign(new Error('returnDate or expectedReturnDate is required for TEMPORARY transfers.'), {
+                statusCode: 400,
+            });
+        }
+        returnDate = returnDate || effective;
+        expectedReturnDate = expectedReturnDate || effective;
+    } else {
+        returnDate = null;
+    }
+    return { returnDate, expectedReturnDate };
+};
+
+const assertInternalTransferAllowed = async (tx, sourceTenantId, targetTenantId) => {
+    if (!targetTenantId || targetTenantId === sourceTenantId) {
+        throw Object.assign(new Error('targetTenantId must be a different hotel in your organization.'), {
+            statusCode: 400,
+        });
+    }
+    const [source, target] = await Promise.all([
+        tx.tenant.findUnique({
+            where: { id: sourceTenantId },
+            select: { id: true, parentId: true, isActive: true },
+        }),
+        tx.tenant.findUnique({
+            where: { id: targetTenantId },
+            select: { id: true, parentId: true, isActive: true },
+        }),
+    ]);
+    if (!source?.isActive) {
+        throw Object.assign(new Error('Source tenant is not active.'), { statusCode: 400 });
+    }
+    if (!target?.isActive) {
+        throw Object.assign(new Error('Target hotel not found or inactive.'), { statusCode: 400 });
+    }
+    if (organizationRootId(source) !== organizationRootId(target)) {
+        throw Object.assign(new Error('Target hotel must belong to the same organization.'), { statusCode: 400 });
+    }
+};
+
 const createGetPass = async (tenantId, data, userId) => {
     return prisma.$transaction(async (tx) => {
+        const isInternalTransfer = Boolean(data.isInternalTransfer);
+        let targetTenantId = null;
+        if (isInternalTransfer) {
+            if (!data.targetTenantId) {
+                throw Object.assign(new Error('targetTenantId is required for internal transfers.'), {
+                    statusCode: 400,
+                });
+            }
+            await assertInternalTransferAllowed(tx, tenantId, data.targetTenantId);
+            targetTenantId = data.targetTenantId;
+        }
+
+        const { returnDate, expectedReturnDate } = resolveTemporaryDatesForCreate(data);
+
         const passNo = await generateDocNumber(tenantId, 'GP', new Date(), tx);
 
         const getPass = await tx.getPass.create({
@@ -79,25 +165,41 @@ const createGetPass = async (tenantId, data, userId) => {
                 tenantId,
                 passNo,
                 transferType: data.transferType,
+                isInternalTransfer,
+                targetTenantId,
+                returnDate,
                 departmentId: data.departmentId || null,
                 borrowingEntity: data.borrowingEntity,
-                expectedReturnDate: data.expectedReturnDate ? new Date(data.expectedReturnDate) : null,
+                expectedReturnDate,
                 status: 'DRAFT',
                 reason: data.reason,
                 notes: data.notes,
                 createdBy: userId,
                 lines: {
-                    create: data.lines.map(line => ({
+                    create: data.lines.map((line) => ({
                         itemId: line.itemId,
                         locationId: line.locationId,
                         qty: Number(line.qty),
                         conditionOut: line.conditionOut,
-                        status: 'PENDING'
-                    }))
-                }
+                        status: 'PENDING',
+                    })),
+                },
             },
-            include: { lines: true }
+            include: { lines: true },
         });
+
+        if (isInternalTransfer && targetTenantId) {
+            const sourceTenant = await tx.tenant.findUnique({
+                where: { id: tenantId },
+                select: { name: true },
+            });
+            await notifyIncomingInternalGetPass(tx, {
+                targetTenantId,
+                getPassId: getPass.id,
+                passNo: getPass.passNo,
+                sourceTenantName: sourceTenant?.name || 'Hotel',
+            });
+        }
 
         await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: getPass.id, action: 'CREATE', changedBy: userId });
         return getPass;
@@ -117,6 +219,7 @@ const getGetPasses = async (tenantId, params = {}) => {
             where,
             include: {
                 department: true,
+                targetTenant: { select: { id: true, name: true, slug: true } },
                 createdByUser: { select: { firstName: true, lastName: true } }
             },
             orderBy: { createdAt: 'desc' },
@@ -134,6 +237,7 @@ const getGetPassById = async (id, tenantId) => {
         where: { id, tenantId },
         include: {
             department: true,
+            targetTenant: { select: { id: true, name: true, slug: true, email: true } },
             createdByUser: true,
             deptApprover: true,
             costControlApprover: true,
@@ -162,14 +266,35 @@ const updateGetPass = async (id, tenantId, data, userId) => {
     }
 
     return prisma.$transaction(async (tx) => {
+        const isInternalTransfer =
+            data.isInternalTransfer !== undefined ? Boolean(data.isInternalTransfer) : existing.isInternalTransfer;
+        let targetTenantId = existing.targetTenantId;
+        if (isInternalTransfer) {
+            const tid = data.targetTenantId !== undefined ? data.targetTenantId : existing.targetTenantId;
+            if (!tid) {
+                throw Object.assign(new Error('targetTenantId is required for internal transfers.'), {
+                    statusCode: 400,
+                });
+            }
+            await assertInternalTransferAllowed(tx, tenantId, tid);
+            targetTenantId = tid;
+        } else {
+            targetTenantId = null;
+        }
+
+        const { returnDate, expectedReturnDate } = resolveTemporaryDatesForUpdate(data, existing);
+
         // Update header
-        const updated = await tx.getPass.update({
+        await tx.getPass.update({
             where: { id },
             data: {
                 transferType: data.transferType,
+                isInternalTransfer,
+                targetTenantId,
+                returnDate,
                 departmentId: data.departmentId || null,
                 borrowingEntity: data.borrowingEntity,
-                expectedReturnDate: data.expectedReturnDate ? new Date(data.expectedReturnDate) : null,
+                expectedReturnDate,
                 reason: data.reason,
                 notes: data.notes
             }

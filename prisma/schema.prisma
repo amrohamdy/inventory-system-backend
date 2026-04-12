@@ -62,6 +62,8 @@ model Tenant {
   units             Unit[]
   uomMappings       UomMapping[]
   vendorMappings    VendorMapping[]
+  incomingGetPasses GetPass[]         @relation("GetPassTargetTenant")
+  systemNotifications SystemNotification[]
 
   @@index([parentId])
   @@index([hasBranches])
@@ -116,6 +118,7 @@ model User {
   trfRequested       StoreTransfer[]     @relation("TrfRequestedBy")
   adminLogs          SuperAdminLog[]     @relation("AdminLogUser")
   memberships        TenantMember[]
+  systemNotifications SystemNotification[]
 
   @@map("users")
 }
@@ -1079,6 +1082,12 @@ model GetPass {
   tenantId           String        @db.Uuid
   passNo             String
   transferType       GetPassType
+  /// When true, items are sent to another hotel under the same organization (see targetTenantId).
+  isInternalTransfer Boolean       @default(false)
+  /// Receiving hotel (tenant) for internal transfers; must share the same organization root as tenantId.
+  targetTenantId     String?       @db.Uuid
+  /// Expected return date for temporary transfers (may mirror expectedReturnDate for TEMPORARY).
+  returnDate         DateTime?
   departmentId       String?       @db.Uuid
   borrowingEntity    String
   expectedReturnDate DateTime?
@@ -1114,12 +1123,33 @@ model GetPass {
   gmApprover         User?         @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
   securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
   tenant             Tenant        @relation(fields: [tenantId], references: [id])
+  targetTenant       Tenant?       @relation("GetPassTargetTenant", fields: [targetTenantId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, passNo])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([departmentId])
+  @@index([targetTenantId])
   @@map("get_passes")
+}
+
+/// In-app notifications (e.g. incoming internal Get Pass at a sister hotel).
+model SystemNotification {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @db.Uuid
+  userId    String    @db.Uuid
+  type      String
+  title     String
+  body      String?
+  payload   Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@index([userId, readAt])
+  @@map("system_notifications")
 }
 
 model GetPassLine {

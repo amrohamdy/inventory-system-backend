@@ -9,7 +9,7 @@ router.use(authenticate);
 // GET /api/notifications/summary — bell badge count + top alerts
 router.get('/summary', async (req, res, next) => {
     try {
-        const summary = await notificationService.getNotificationSummary(req.user.tenantId);
+        const summary = await notificationService.getNotificationSummary(req.user.tenantId, req.user.id);
         return success(res, summary);
     } catch (err) { next(err); }
 });
