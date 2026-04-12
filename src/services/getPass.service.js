@@ -12,7 +12,8 @@ const {
 } = require('./systemNotification.service');
 
 /**
- * ORG_MANAGER with JWT scoped to the organization root: list aggregates across all child hotels.
+ * ORG_MANAGER: aggregate lists across all branch hotels under the same organization root.
+ * Uses active tenant (root or switched child) — same as organizationRootId() elsewhere.
  */
 const resolveOrgWideGetPassListContext = async (tenantId, role) => {
     if (normalizeRole(role) !== 'ORG_MANAGER') return null;
@@ -20,8 +21,8 @@ const resolveOrgWideGetPassListContext = async (tenantId, role) => {
         where: { id: tenantId },
         select: { id: true, parentId: true },
     });
-    if (!tenant || tenant.parentId !== null) return null;
-    return { organizationRootId: tenant.id };
+    if (!tenant) return null;
+    return { organizationRootId: organizationRootId(tenant) };
 };
 
 /** Prisma include graph for Get Pass detail (issuer + reader). */
@@ -75,14 +76,16 @@ const PENDING_APPROVAL_STATUSES = [
     'PENDING_DEPT',
     'PENDING_COST_CONTROL',
     'PENDING_FINANCE',
-    'PENDING_GM'
+    'PENDING_GM',
+    'PENDING_SECURITY',
 ];
 
 const STEP_ROLE = {
     PENDING_DEPT: 'DEPT_MANAGER',
     PENDING_COST_CONTROL: 'COST_CONTROL',
     PENDING_FINANCE: 'FINANCE_MANAGER',
-    PENDING_GM: 'GENERAL_MANAGER'
+    PENDING_GM: 'GENERAL_MANAGER',
+    PENDING_SECURITY: 'SECURITY',
 };
 
 const isAdminBypass = (role) => {
@@ -100,7 +103,7 @@ const getSubmitInitialWorkflow = (role, userId) => {
     const now = new Date();
     if (r === 'ADMIN' || r === 'SUPER_ADMIN') {
         return {
-            status: 'APPROVED',
+            status: 'PENDING_SECURITY',
             deptApprovedBy: userId,
             deptApprovedAt: now,
             costControlApprovedBy: userId,
@@ -521,9 +524,8 @@ const submitGetPass = async (id, tenantId, user) => {
 };
 
 /**
- * Strict 4-step chain (each approve advances one step):
- * PENDING_DEPT → PENDING_COST_CONTROL → PENDING_FINANCE → PENDING_GM → APPROVED.
- * DEPT_MANAGER acting on PENDING_DEPT moves to PENDING_COST_CONTROL; same pattern for CC / Finance / GM.
+ * Approval chain:
+ * PENDING_DEPT → … → PENDING_GM → PENDING_SECURITY → APPROVED.
  */
 const approveGetPass = async (id, tenantId, user) => {
     const getPass = await prisma.getPass.findFirst({ where: { id, tenantId } });
@@ -561,9 +563,16 @@ const approveGetPass = async (id, tenantId, user) => {
             break;
         case 'PENDING_GM':
             updateData = {
-                status: 'APPROVED',
+                status: 'PENDING_SECURITY',
                 gmApprovedBy: user.id,
                 gmApprovedAt: now
+            };
+            break;
+        case 'PENDING_SECURITY':
+            updateData = {
+                status: 'APPROVED',
+                securityApprovedBy: user.id,
+                securityApprovedAt: now
             };
             break;
         default:
