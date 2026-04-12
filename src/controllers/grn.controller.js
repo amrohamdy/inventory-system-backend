@@ -118,7 +118,7 @@ const createGrn = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid lines format — expected JSON array.' });
         }
 
-        const grn = await grnService.createGrn({
+        const created = await grnService.createGrn({
             supplierId,
             locationId,
             grnNumber,
@@ -131,7 +131,17 @@ const createGrn = async (req, res) => {
             creatorRole: normalizeRole(req.user.role),
         });
 
-        sendSuccess(res, grn, 201);
+        if (created.autoPosted) {
+            const { autoPosted: _omit, ...data } = created;
+            return res.status(201).json({
+                success: true,
+                message: 'GRN Created and Posted Successfully',
+                data,
+                autoPosted: true,
+            });
+        }
+
+        sendSuccess(res, created, 201);
     } catch (err) {
         sendError(res, err);
     }

@@ -35,7 +35,7 @@ const assertStatus = async (grnId, tenantId, expected) => {
  * @param {Array}  opts.lines           — [{ itemId, uomId, orderedQty, receivedQty, unitPrice, notes? }]
  * @param {string} opts.tenantId
  * @param {string} opts.userId
- * @param {string} opts.creatorRole — JWT role code (normalized): STOREKEEPER → VALIDATED; COST_CONTROL / ADMIN / SUPER_ADMIN / ORG_MANAGER → APPROVED
+ * @param {string} opts.creatorRole — JWT role code (normalized): STOREKEEPER → VALIDATED; COST_CONTROL / ADMIN / SUPER_ADMIN / ORG_MANAGER → APPROVED. ADMIN only: immediately POSTED + ledger/stock (via postGrn).
  */
 const createGrn = async ({
     supplierId, locationId, grnNumber, receivingDate,
@@ -97,6 +97,8 @@ const createGrn = async ({
         approvedBy = userId;
     }
 
+    const adminAutoPost = role === 'ADMIN';
+
     // ── Create GRN atomically ──
     const grn = await prisma.grnImport.create({
         data: {
@@ -142,6 +144,11 @@ const createGrn = async ({
             location: { select: { name: true } },
         },
     });
+
+    if (adminAutoPost) {
+        const posted = await postGrn(grn.id, tenantId, userId);
+        return { ...posted, autoPosted: true };
+    }
 
     return grn;
 };
