@@ -130,6 +130,19 @@ const createMovementDraft = async (data, tenantId, userId, db = prisma) => {
     // Determine the default location for lines from the header
     const defaultLocationId = data.destLocationId || data.sourceLocationId || null;
 
+    /** OPENING_BALANCE drafts: line `unitCost` / `totalValue` follow catalog `unitPrice` (single source). */
+    let obCatalogPrices = null;
+    if (data.movementType === 'OPENING_BALANCE' && data.lines?.length > 0) {
+        const itemIds = [...new Set(data.lines.map((l) => l.itemId).filter(Boolean))];
+        if (itemIds.length > 0) {
+            const items = await db.item.findMany({
+                where: { id: { in: itemIds }, tenantId },
+                select: { id: true, unitPrice: true },
+            });
+            obCatalogPrices = new Map(items.map((it) => [it.id, Number(it.unitPrice ?? 0)]));
+        }
+    }
+
     // Build line items for nested create
     const linesCreate = (data.lines && data.lines.length > 0)
         ? {
@@ -145,13 +158,24 @@ const createMovementDraft = async (data, tenantId, userId, db = prisma) => {
                     );
                 }
 
+                const qtyReq = parseFloat(line.qtyRequested) || 0;
+                let unitCost = parseFloat(line.unitCost) || 0;
+                let totalValue = parseFloat(line.totalValue) || 0;
+                if (data.movementType === 'OPENING_BALANCE' && obCatalogPrices) {
+                    const cat = obCatalogPrices.get(line.itemId);
+                    if (cat !== undefined && cat > 0) {
+                        unitCost = cat;
+                        totalValue = qtyReq * unitCost;
+                    }
+                }
+
                 return {
                     item: { connect: { id: line.itemId } },
                     location: { connect: { id: lineLocationId } },
-                    qtyRequested: parseFloat(line.qtyRequested) || 0,
-                    qtyInBaseUnit: parseFloat(line.qtyRequested) || 0,
-                    unitCost: parseFloat(line.unitCost) || 0,
-                    totalValue: parseFloat(line.totalValue) || 0,
+                    qtyRequested: qtyReq,
+                    qtyInBaseUnit: qtyReq,
+                    unitCost,
+                    totalValue,
                     notes: line.notes || null
                 };
             })
@@ -284,6 +308,18 @@ const updateMovementDraft = async (id, data, tenantId) => {
 
             // Create new lines
             if (data.lines.length > 0) {
+                let obCatalogPrices = null;
+                if (document.movementType === 'OPENING_BALANCE') {
+                    const itemIds = [...new Set(data.lines.map((l) => l.itemId).filter(Boolean))];
+                    if (itemIds.length > 0) {
+                        const items = await tx.item.findMany({
+                            where: { id: { in: itemIds }, tenantId },
+                            select: { id: true, unitPrice: true },
+                        });
+                        obCatalogPrices = new Map(items.map((it) => [it.id, Number(it.unitPrice ?? 0)]));
+                    }
+                }
+
                 const linesToInsert = data.lines.map(line => {
                     const lineLocationId = (line.locationId && line.locationId.trim() !== '')
                         ? line.locationId
@@ -296,14 +332,25 @@ const updateMovementDraft = async (id, data, tenantId) => {
                         );
                     }
 
+                    const qtyReq = parseFloat(line.qtyRequested) || 0;
+                    let unitCost = parseFloat(line.unitCost) || 0;
+                    let totalValue = parseFloat(line.totalValue) || 0;
+                    if (obCatalogPrices) {
+                        const cat = obCatalogPrices.get(line.itemId);
+                        if (cat !== undefined && cat > 0) {
+                            unitCost = cat;
+                            totalValue = qtyReq * unitCost;
+                        }
+                    }
+
                     return {
                         documentId: id,
                         itemId: line.itemId,
                         locationId: lineLocationId,
-                        qtyRequested: line.qtyRequested,
-                        qtyInBaseUnit: line.qtyRequested,
-                        unitCost: line.unitCost || 0,
-                        totalValue: line.totalValue || 0,
+                        qtyRequested: qtyReq,
+                        qtyInBaseUnit: qtyReq,
+                        unitCost,
+                        totalValue,
                         notes: line.notes
                     };
                 });

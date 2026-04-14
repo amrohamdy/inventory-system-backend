@@ -60,7 +60,11 @@ function loadServiceForListQueries(prismaMock) {
             };
         }
         if (request === './audit.service') return {};
-        if (request === './setting.service') return {};
+        if (request === './setting.service') {
+            return {
+                getObStatus: async () => 'FINALIZED',
+            };
+        }
         if (request === './periodGuard.service') return {};
         return originalLoad(request, parent, isMain);
     };
@@ -95,6 +99,7 @@ test('parseImportFile parses comma-formatted numbers correctly', async () => {
     assert.equal(result.preview[0].status, 'VALID');
     assert.equal(result.preview[0].data.unitPrice, 1200.5);
     assert.equal(result.preview[0].data.storeQuantities['loc-1'], 1200);
+    assert.equal(result.preview[0].data.openingQuantityTotal, 1200);
     assert.equal(result.preview[0].data.categoryName, 'Amenities');
     assert.equal(result.preview[0].data.baseUnitName, 'Bag (bag)');
 });
@@ -139,7 +144,7 @@ test('parseImportFile extracts unit abbreviation from parentheses (Bag/Pcs)', as
     assert.equal(result.preview[1].status, 'VALID');
 });
 
-test('parseImportFile throws 400 for unknown dynamic store headers', async () => {
+test('parseImportFile ignores unknown dynamic store headers (parseWarnings, row stays valid)', async () => {
     const service = loadServiceWithMocks({
         rows: [
             {
@@ -159,13 +164,69 @@ test('parseImportFile throws 400 for unknown dynamic store headers', async () =>
         suppliers: [{ id: 'sup-1', name: 'Best Vendor' }],
     });
 
-    await assert.rejects(
-        service.parseImportFile('/tmp/fake.xlsx', 'tenant-1'),
-        (err) => {
-            assert.equal(err.statusCode, 400);
-            assert.match(err.message, /Unknown store column\(s\): Unknown Store Header/);
-            return true;
-        }
+    const result = await service.parseImportFile('/tmp/fake.xlsx', 'tenant-1');
+    assert.deepEqual(result.unmappedLocationHeaders, ['Unknown Store Header']);
+    assert.ok(Array.isArray(result.parseWarnings));
+    assert.equal(result.preview[0].status, 'VALID');
+    assert.equal(result.preview[0].data.openingQuantityTotal, 0);
+});
+
+test('parseImportFile sums openingQuantityTotal across mapped location columns', async () => {
+    const service = loadServiceWithMocks({
+        rows: [
+            {
+                Name: 'Towel',
+                Department: 'Housekeeping',
+                Category: 'Amenities',
+                Vendor: 'Best Vendor',
+                'Base Unit': 'Bag (bag)',
+                'Unit Price': '5',
+                'Main Store': '10',
+                'Second Store': '20',
+            },
+        ],
+        categories: [{ id: 'cat-1', name: 'Amenities' }],
+        units: [{ id: 'unit-bag', name: 'Bag', abbreviation: 'bag' }],
+        departments: [{ id: 'dep-1', name: 'Housekeeping' }],
+        locations: [
+            { id: 'loc-1', name: 'Main Store', departmentId: 'dep-1' },
+            { id: 'loc-2', name: 'Second Store', departmentId: 'dep-1' },
+        ],
+        suppliers: [{ id: 'sup-1', name: 'Best Vendor' }],
+    });
+
+    const result = await service.parseImportFile('/tmp/fake.xlsx', 'tenant-1');
+    assert.equal(result.preview[0].status, 'VALID');
+    assert.equal(result.preview[0].data.openingQuantityTotal, 30);
+    assert.equal(result.preview[0].data.storeQuantities['loc-1'], 10);
+    assert.equal(result.preview[0].data.storeQuantities['loc-2'], 20);
+});
+
+test('parseImportFile asOpeningBalance requires unit price when location qty > 0', async () => {
+    const service = loadServiceWithMocks({
+        rows: [
+            {
+                Name: 'Towel',
+                Department: 'Housekeeping',
+                Category: 'Amenities',
+                Vendor: 'Best Vendor',
+                'Base Unit': 'Bag (bag)',
+                'Unit Price': '0',
+                'Main Store': '5',
+            },
+        ],
+        categories: [{ id: 'cat-1', name: 'Amenities' }],
+        units: [{ id: 'unit-bag', name: 'Bag', abbreviation: 'bag' }],
+        departments: [{ id: 'dep-1', name: 'Housekeeping' }],
+        locations: [{ id: 'loc-1', name: 'Main Store', departmentId: 'dep-1' }],
+        suppliers: [{ id: 'sup-1', name: 'Best Vendor' }],
+    });
+
+    const result = await service.parseImportFile('/tmp/fake.xlsx', 'tenant-1', { asOpeningBalance: true });
+    assert.equal(result.preview[0].status, 'ERROR');
+    assert.match(
+        result.preview[0].errors.join(' '),
+        /Unit price is required when opening quantities are provided across locations/
     );
 });
 
@@ -261,13 +322,14 @@ test('getItems rejects unknown department for tenant', async () => {
     );
 });
 
-test('getItems adds openingQuantity and openingUnitCost from stockBalances', async () => {
+test('getItems adds openingQuantity from stockBalances (no openingUnitCost; use unitPrice)', async () => {
     const service = loadServiceForListQueries({
         item: {
             findMany: async () => [
                 {
                     id: 'i1',
                     name: 'Item A',
+                    unitPrice: 100,
                     stockBalances: [
                         { qtyOnHand: 10, wacUnitCost: 100, location: { id: 'l1', name: 'Store' } },
                     ],
@@ -280,7 +342,8 @@ test('getItems adds openingQuantity and openingUnitCost from stockBalances', asy
     const result = await service.getItems('tenant-1', { isActive: 'true' });
     assert.equal(result.items.length, 1);
     assert.equal(result.items[0].openingQuantity, 10);
-    assert.equal(result.items[0].openingUnitCost, 100);
+    assert.equal(result.items[0].unitPrice, 100);
+    assert.equal(Object.prototype.hasOwnProperty.call(result.items[0], 'openingUnitCost'), false);
 });
 
 test('getItems slim mode uses select, caps take at 5000, skips count and meta path', async () => {

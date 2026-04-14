@@ -23,10 +23,8 @@ const settingService = require('./setting.service');
 const { checkOpeningBalanceAllowed } = require('./periodGuard.service');
 
 /**
- * Per-item aggregates for DRAFT OPENING_BALANCE lines.
- * `openingUnitCost` uses each line's `unitCost` (set from Excel Unit Price on import / UI):
- * - one distinct positive unit cost across lines → that cost (no WAC rounding drift);
- * - multiple costs → qty-weighted average Σ(q×unitCost)/Σq (same as inventory value / qty).
+ * Per-item opening qty during OB OPEN phase: sum of DRAFT OPENING_BALANCE line quantities.
+ * Valuation for display uses the item catalog `unitPrice` (not a separate opening unit cost).
  */
 const loadOpeningBalanceDraftAgg = async (tenantId, itemIds) => {
     const ids = [...new Set((itemIds || []).filter(Boolean))];
@@ -45,62 +43,21 @@ const loadOpeningBalanceDraftAgg = async (tenantId, itemIds) => {
         select: {
             itemId: true,
             qtyInBaseUnit: true,
-            totalValue: true,
-            unitCost: true,
         },
     });
 
-    const byItem = new Map();
     for (const ln of lines) {
-        const list = byItem.get(ln.itemId) || [];
-        list.push(ln);
-        byItem.set(ln.itemId, list);
+        const q = Number(ln.qtyInBaseUnit ?? 0);
+        if (!Number.isFinite(q)) continue;
+        const prev = map.get(ln.itemId) || 0;
+        map.set(ln.itemId, prev + q);
     }
 
-    const COST_EPS = 1e-6;
-
-    for (const [itemId, itemLines] of byItem) {
-        let qtySum = 0;
-        let valueSum = 0;
-        /** Pairs with qty > 0 and a positive unit cost (Excel / explicit line cost). */
-        const costQtyPairs = [];
-
-        for (const ln of itemLines) {
-            const q = Number(ln.qtyInBaseUnit ?? 0);
-            const uc = Number(ln.unitCost ?? 0);
-            const tv = Number(ln.totalValue ?? 0);
-            if (Number.isFinite(q)) qtySum += q;
-            if (Number.isFinite(tv)) {
-                valueSum += tv;
-            } else if (Number.isFinite(q) && Number.isFinite(uc)) {
-                valueSum += q * uc;
-            }
-            if (q > 0 && Number.isFinite(uc) && uc > 0) {
-                costQtyPairs.push({ q, uc });
-            }
-        }
-
-        let openingUnitCost = 0;
-        if (costQtyPairs.length > 0 && qtySum > 0) {
-            const costs = costQtyPairs.map((p) => p.uc);
-            const minC = Math.min(...costs);
-            const maxC = Math.max(...costs);
-            if (maxC - minC <= COST_EPS) {
-                openingUnitCost = costQtyPairs[0].uc;
-            } else {
-                let numer = 0;
-                let denom = 0;
-                for (const { q, uc } of costQtyPairs) {
-                    numer += q * uc;
-                    denom += q;
-                }
-                openingUnitCost = denom > 0 ? numer / denom : 0;
-            }
-        }
-
-        map.set(itemId, { qtySum, valueSum, openingUnitCost });
+    const out = new Map();
+    for (const [itemId, qtySum] of map) {
+        out.set(itemId, { qtySum });
     }
-    return map;
+    return out;
 };
 
 const buildItemEnrichmentCtx = async (tenantId, itemIds) => {
@@ -154,9 +111,9 @@ const ITEM_INCLUDE = {
 };
 
 /**
- * List/detail enrichment: opening qty & WAC, plus displayTotalQty.
- * - OPEN: totals from DRAFT OPENING_BALANCE movement lines (all locations).
- * - Otherwise: from posted stock_balances.
+ * List/detail enrichment: opening qty plus displayTotalQty (same value in OPEN phase).
+ * - OPEN: both fields = sum of all DRAFT OPENING_BALANCE line qtys across locations (aligns with Excel `openingQuantityTotal`).
+ * - Otherwise: both = on-hand qty from posted stock_balances. Use `unitPrice` for value displays (no `openingUnitCost`).
  */
 const enrichItemWithOpeningFields = (item, ctx = null) => {
     if (!item || typeof item !== 'object') return item;
@@ -165,21 +122,18 @@ const enrichItemWithOpeningFields = (item, ctx = null) => {
 
     if (obStatus === 'OPEN') {
         const openingQuantity = draft ? draft.qtySum : 0;
-        const openingUnitCost = draft && openingQuantity > 0 ? draft.openingUnitCost : 0;
         const displayTotalQty = openingQuantity;
         return {
             ...item,
             openingQuantity: Math.round(openingQuantity * 10000) / 10000,
-            openingUnitCost: Math.round(openingUnitCost * 10000) / 10000,
             displayTotalQty: Math.round(displayTotalQty * 10000) / 10000,
         };
     }
 
-    const { qty, unitCost } = sumStockBalances(item);
+    const { qty } = sumStockBalances(item);
     return {
         ...item,
         openingQuantity: Math.round(qty * 10000) / 10000,
-        openingUnitCost: Math.round(unitCost * 10000) / 10000,
         displayTotalQty: Math.round(qty * 10000) / 10000,
     };
 };
@@ -593,6 +547,16 @@ const updateItem = async (id, data, tenantId, userId = null) => {
         }
     }
 
+    const obStatus = await settingService.getObStatus(tenantId);
+    const openingQtySetup = Number(existing.openingQuantity ?? 0);
+    const effectiveUnitPrice =
+        mainData.unitPrice !== undefined ? Number(mainData.unitPrice) : Number(existing.unitPrice ?? 0);
+    if (obStatus === 'OPEN' && openingQtySetup > 0 && !(effectiveUnitPrice > 0)) {
+        throw badRequest(
+            'Unit price is required while this item has opening balance quantities in setup.'
+        );
+    }
+
     const result = await prisma.$transaction(async (tx) => {
         // Replace units if provided
         if (itemUnits !== undefined) {
@@ -611,15 +575,42 @@ const updateItem = async (id, data, tenantId, userId = null) => {
             }
         }
 
+        let row;
         if (Object.keys(mainData).length > 0) {
-            return tx.item.update({
+            row = await tx.item.update({
                 where: { id },
                 data: mainData,
                 include: ITEM_INCLUDE,
             });
+        } else {
+            row = await tx.item.findFirst({ where: { id, tenantId }, include: ITEM_INCLUDE });
         }
 
-        return tx.item.findFirst({ where: { id, tenantId }, include: ITEM_INCLUDE });
+        // During OPEN, draft OB lines value the item at catalog `unitPrice` (single source of truth).
+        if (obStatus === 'OPEN' && Object.prototype.hasOwnProperty.call(mainData, 'unitPrice')) {
+            const newPrice = Number(mainData.unitPrice);
+            if (Number.isFinite(newPrice) && newPrice > 0) {
+                const lines = await tx.movementLine.findMany({
+                    where: {
+                        itemId: id,
+                        document: { tenantId, movementType: 'OPENING_BALANCE', status: 'DRAFT' },
+                    },
+                    select: { id: true, qtyInBaseUnit: true },
+                });
+                for (const ln of lines) {
+                    const q = Number(ln.qtyInBaseUnit ?? 0);
+                    await tx.movementLine.update({
+                        where: { id: ln.id },
+                        data: {
+                            unitCost: newPrice,
+                            totalValue: (Number.isFinite(q) ? q : 0) * newPrice,
+                        },
+                    });
+                }
+            }
+        }
+
+        return row;
     });
 
     return enrichSingleItemForResponse(result, tenantId);
@@ -708,6 +699,11 @@ const updateItemUnits = async (id, tenantId, itemUnits) => {
 };
 
 // ── EXCEL IMPORT: PARSE & PREVIEW ─────────────────────────────────────────────
+/**
+ * Excel "Unit Price" → `item.unitPrice` on confirm and `unitCost` on each DRAFT OPENING_BALANCE line.
+ * `openingQuantityTotal` per row = sum of quantities in all columns that resolve to active locations
+ * (matches API `openingQuantity` / `displayTotalQty` after import during OPEN phase).
+ */
 const parseImportFile = async (filePath, tenantId, options = {}) => {
     const asOpeningBalance = Boolean(options.asOpeningBalance);
     const wb = XLSX.readFile(filePath);
@@ -905,6 +901,22 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
             }
         }
 
+        let openingQuantityTotal = 0;
+        for (const q of Object.values(storeQuantities)) {
+            const n = Number(q);
+            if (Number.isFinite(n) && n > 0) openingQuantityTotal += n;
+        }
+        openingQuantityTotal = Math.round(openingQuantityTotal * 10000) / 10000;
+
+        if (asOpeningBalance && openingQuantityTotal > 0 && !(Number(unitPrice) > 0)) {
+            addIssue(
+                'unitPrice',
+                'Unit price is required when opening quantities are provided across locations.',
+                'error',
+                'OB_REQUIRES_UNIT_PRICE'
+            );
+        }
+
         const defaultStoreId = firstStoreWithQty || null;
         const errors = issues.filter((issue) => issue.severity === 'error').map((issue) => issue.message);
 
@@ -927,6 +939,7 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
                 deptName: deptName || null,
                 vendorName: vendorName || null,
                 storeQuantities,
+                openingQuantityTotal,
                 isUpdate,
             },
         };
@@ -956,6 +969,8 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
                 required: asOpeningBalance,
                 message: asOpeningBalance ? 'Global reason is required for Opening Balance confirm step.' : null,
             },
+            /** Row `data.openingQuantityTotal` sums mapped location columns; aligns with list `openingQuantity` in OPEN. */
+            openingQtyIsSumOfMappedLocationColumns: true,
         },
     };
 };
@@ -982,7 +997,7 @@ const upsertOpeningBalanceForItemLocation = async (
 ) => {
     const qty = Number(targetQty);
     if (!(qty > 0) || !(Number(unitCost) > 0)) {
-        throw new Error(`Invalid Opening Balance qty/cost for "${itemName}" at location.`);
+        throw new Error(`Invalid Opening Balance qty/unit price for "${itemName}" at location.`);
     }
 
     const txDate = new Date();
@@ -1162,7 +1177,7 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                 // ── Opening Balance: idempotent per (itemId + locationId) ──
                 if (asOpeningBalance && storeQuantities && Object.keys(storeQuantities).length > 0) {
                     if (!(Number(unitPrice) > 0)) {
-                        throw new Error(`Opening Balance requires a valid unit cost. Item "${name}" has unitPrice = ${unitPrice || 0}. Please add a price before importing as Opening Balance.`);
+                        throw new Error(`Opening Balance requires a valid unit price. Item "${name}" has unitPrice = ${unitPrice || 0}. Please add a unit price before importing as Opening Balance.`);
                     }
 
                     for (const [locationId, qty] of Object.entries(storeQuantities)) {
