@@ -1,6 +1,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const ExcelJS = require('exceljs');
+const settingService = require('./setting.service');
 
 // ─── Shared WHERE builder ──────────────────────────────────────────────────────
 const buildWhere = (tenantId, query = {}, includeZero = false) => {
@@ -29,6 +30,11 @@ const buildWhere = (tenantId, query = {}, includeZero = false) => {
 
 // ─── GET STOCK BALANCES (paginated) ───────────────────────────────────────────
 const getStockBalances = async (tenantId, query = {}) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        return { balances: [], total: 0 };
+    }
+
     const { skip = 0, take = 50 } = query;
     const where = buildWhere(tenantId, query);
 
@@ -58,6 +64,17 @@ const getStockBalances = async (tenantId, query = {}) => {
 
 // ─── GET SUMMARY STATS ────────────────────────────────────────────────────────
 const getStockSummary = async (tenantId, query = {}) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        return {
+            totalItems: 0,
+            totalQty: 0,
+            totalValue: 0,
+            lowStockCount: 0,
+            zeroStockCount: 0,
+        };
+    }
+
     const where = buildWhere(tenantId, query, true); // include zero-qty for totals
 
     const rows = await prisma.stockBalance.findMany({
@@ -95,22 +112,28 @@ const getStockSummary = async (tenantId, query = {}) => {
 
 // ─── EXPORT TO EXCEL ──────────────────────────────────────────────────────────
 const exportStockBalances = async (tenantId, query = {}) => {
+    const obStatus = await settingService.getObStatus(tenantId);
     const where = buildWhere(tenantId, query);
 
-    const balances = await prisma.stockBalance.findMany({
-        where,
-        include: {
-            item: {
-                select: {
-                    name: true, barcode: true, reorderPoint: true,
-                    category: { select: { name: true } },
-                    department: { select: { name: true } },
-                },
-            },
-            location: { select: { name: true } },
-        },
-        orderBy: [{ location: { name: 'asc' } }, { item: { name: 'asc' } }],
-    });
+    const balances =
+        obStatus === 'FINALIZED'
+            ? await prisma.stockBalance.findMany({
+                  where,
+                  include: {
+                      item: {
+                          select: {
+                              name: true,
+                              barcode: true,
+                              reorderPoint: true,
+                              category: { select: { name: true } },
+                              department: { select: { name: true } },
+                          },
+                      },
+                      location: { select: { name: true } },
+                  },
+                  orderBy: [{ location: { name: 'asc' } }, { item: { name: 'asc' } }],
+              })
+            : [];
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'OSE Inventory';
@@ -197,6 +220,15 @@ const getItemStockProfile = async (itemId, tenantId) => {
         select: { id: true, name: true, barcode: true, category: { select: { name: true } } },
     });
     if (!item) { const e = new Error('Item not found'); e.statusCode = 404; throw e; }
+
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        return {
+            item,
+            summary: { totalQtyOnHand: 0, averageUnitCost: 0, totalValue: 0 },
+            locations: [],
+        };
+    }
 
     const balances = await prisma.stockBalance.findMany({
         where: { itemId, tenantId, qtyOnHand: { gt: 0 } },
