@@ -20,7 +20,7 @@ const XLSX = require('xlsx');
 const path = require('path');
 const auditService = require('./audit.service');
 const settingService = require('./setting.service');
-const { checkPeriodLock, checkOpeningBalanceAllowed } = require('./periodGuard.service');
+const { checkOpeningBalanceAllowed } = require('./periodGuard.service');
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -809,8 +809,7 @@ const upsertOpeningBalanceForItemLocation = async (
         userId,
         itemName,
     },
-    movementService,
-    postingService
+    movementService
 ) => {
     const qty = Number(targetQty);
     if (!(qty > 0) || !(Number(unitCost) > 0)) {
@@ -820,68 +819,47 @@ const upsertOpeningBalanceForItemLocation = async (
     const txDate = new Date();
     const totalValue = qty * Number(unitCost);
 
-    const existingObRows = await tx.inventoryLedger.findMany({
+    await checkOpeningBalanceAllowed(tenantId, txDate);
+
+    const existingDraftLine = await tx.movementLine.findFirst({
         where: {
-            tenantId,
             itemId,
             locationId,
-            movementType: 'OPENING_BALANCE',
+            document: {
+                tenantId,
+                movementType: 'OPENING_BALANCE',
+                status: 'DRAFT',
+            },
         },
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        include: {
+            document: {
+                select: { id: true, documentNo: true },
+            },
+        },
+        orderBy: [{ document: { createdAt: 'desc' } }, { id: 'desc' }],
     });
 
-    if (existingObRows.length > 0) {
-        // Correction path: do not require OB window (may be LOCKED after other postings).
-        await checkPeriodLock(tenantId, txDate);
-
-        const primary = existingObRows[0];
-        const duplicateIds = existingObRows.slice(1).map((r) => r.id);
-        if (duplicateIds.length > 0) {
-            await tx.inventoryLedger.deleteMany({ where: { id: { in: duplicateIds } } });
-        }
-
-        await tx.inventoryLedger.update({
-            where: { id: primary.id },
+    if (existingDraftLine) {
+        await tx.movementLine.update({
+            where: { id: existingDraftLine.id },
             data: {
-                qtyIn: qty,
-                qtyOut: 0,
+                qtyRequested: qty,
+                qtyInBaseUnit: qty,
                 unitCost,
-                totalValue: totalValue,
-                balanceAfter: qty,
+                totalValue,
             },
         });
 
-        await tx.stockBalance.upsert({
-            where: { tenantId_itemId_locationId: { tenantId, itemId, locationId } },
+        await tx.movementDocument.update({
+            where: { id: existingDraftLine.documentId },
             update: {
-                qtyOnHand: qty,
-                wacUnitCost: unitCost,
-            },
-            create: {
-                tenantId,
-                itemId,
-                locationId,
-                qtyOnHand: qty,
-                wacUnitCost: unitCost,
+                documentDate: txDate,
+                notes: `Opening Balance import for ${itemName}`,
             },
         });
 
-        if (primary.referenceId) {
-            await tx.movementLine.updateMany({
-                where: { documentId: primary.referenceId, itemId, locationId },
-                data: {
-                    qtyRequested: qty,
-                    qtyInBaseUnit: qty,
-                    unitCost,
-                    totalValue: totalValue,
-                },
-            });
-        }
-
-        return { kind: 'updated' };
+        return { kind: 'draft_updated', documentNo: existingDraftLine.document.documentNo };
     }
-
-    await checkOpeningBalanceAllowed(tenantId, txDate);
 
     const obDoc = await movementService.createMovementDraft(
         {
@@ -904,18 +882,16 @@ const upsertOpeningBalanceForItemLocation = async (
         tx
     );
 
-    const posted = await postingService.postDocument(obDoc.id, tenantId, userId, tx);
-    return { kind: 'posted', documentNo: posted.documentNo || obDoc.documentNo };
+    return { kind: 'draft_created', documentNo: obDoc.documentNo };
 };
 
 // ── EXCEL IMPORT: CONFIRM ─────────────────────────────────────────────────────
 const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false) => {
     const movementService = require('./movement.service');
-    const postingService = require('./posting.service');
 
     let inserted = 0, updated = 0, failed = 0;
     const failures = [];
-    const obDocuments = []; // Newly posted OB document numbers (one per new item+location)
+    const obDocuments = []; // OB draft document numbers (official posting happens on finalize)
     let obLocationUpdates = 0;
 
     for (const row of rows) {
@@ -998,13 +974,12 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                                 userId: createdBy,
                                 itemName: name,
                             },
-                            movementService,
-                            postingService
+                            movementService
                         );
-                        if (result.kind === 'posted' && result.documentNo) {
+                        if ((result.kind === 'draft_created' || result.kind === 'draft_updated') && result.documentNo) {
                             obDocNosThisRow.push(result.documentNo);
                         }
-                        if (result.kind === 'updated') {
+                        if (result.kind === 'draft_updated') {
                             obLocationsUpdatedThisRow += 1;
                         }
                     }

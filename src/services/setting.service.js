@@ -217,6 +217,7 @@ const getInventoryStatus = async (tenantId) => {
 
 // ── FINALIZE OPENING BALANCE (strict validation + lock) ───────────────────────
 const finalizeOpeningBalance = async (tenantId, userId) => {
+    const postingService = require('./posting.service');
     const totalItemsCount = await prisma.item.count({
         where: { tenantId },
     });
@@ -229,9 +230,22 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
         throw error;
     }
 
-    const itemCount = await prisma.stockBalance.count({
-        where: { tenantId, qtyOnHand: { gt: 0 } },
+    const obDraftLines = await prisma.movementLine.findMany({
+        where: {
+            document: {
+                tenantId,
+                movementType: 'OPENING_BALANCE',
+                status: 'DRAFT',
+            },
+        },
+        include: {
+            document: { select: { id: true, documentNo: true } },
+            item: { select: { id: true, name: true, code: true } },
+            location: { select: { id: true, name: true } },
+        },
     });
+
+    const itemCount = obDraftLines.filter((line) => Number(line.qtyInBaseUnit) > 0).length;
     if (itemCount === 0) {
         const error = new Error('Cannot finalize an empty warehouse. Add opening stock quantities first.');
         error.statusCode = 400;
@@ -240,35 +254,7 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
         throw error;
     }
 
-    const [invalidCostRows, draftOBLineRows, itemsMissingBaseUnit] = await Promise.all([
-        prisma.stockBalance.findMany({
-            where: {
-                tenantId,
-                qtyOnHand: { gt: 0 },
-                wacUnitCost: { lte: 0 },
-            },
-            select: {
-                itemId: true,
-                qtyOnHand: true,
-                item: { select: { id: true, name: true, code: true } },
-                location: { select: { id: true, name: true } },
-            },
-            orderBy: [{ item: { name: 'asc' } }, { location: { name: 'asc' } }],
-        }),
-        prisma.movementLine.findMany({
-            where: {
-                document: {
-                    tenantId,
-                    movementType: 'OPENING_BALANCE',
-                    status: 'DRAFT',
-                },
-            },
-            select: {
-                itemId: true,
-                document: { select: { documentNo: true } },
-            },
-            orderBy: [{ document: { documentNo: 'asc' } }, { itemId: 'asc' }],
-        }),
+    const [itemsMissingBaseUnit] = await Promise.all([
         prisma.item.findMany({
             where: {
                 tenantId,
@@ -286,17 +272,16 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
         }),
     ]);
 
-    const invalidCostBalances = invalidCostRows.map((row) => ({
-        itemId: row.itemId,
-        itemName: row.item?.name || row.item?.code || row.itemId,
-        storeName: row.location?.name || '',
-        currentQty: Number(row.qtyOnHand),
-    }));
-
-    const draftOBMovements = draftOBLineRows.map((row) => ({
-        docNo: row.document.documentNo,
-        itemId: row.itemId,
-    }));
+    const invalidDraftBalances = obDraftLines
+        .filter((line) => !(Number(line.qtyInBaseUnit) > 0) || !(Number(line.unitCost) > 0))
+        .map((line) => ({
+            docNo: line.document?.documentNo || null,
+            itemId: line.itemId,
+            itemName: line.item?.name || line.item?.code || line.itemId,
+            storeName: line.location?.name || '',
+            qty: Number(line.qtyInBaseUnit),
+            unitCost: Number(line.unitCost),
+        }));
 
     const itemsMissingBaseUnitPayload = itemsMissingBaseUnit.map((item) => ({
         itemId: item.id,
@@ -304,17 +289,15 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
     }));
 
     if (
-        invalidCostBalances.length > 0
-        || draftOBMovements.length > 0
+        invalidDraftBalances.length > 0
         || itemsMissingBaseUnitPayload.length > 0
     ) {
         const error = new Error('Opening balance finalization failed validation checks.');
         error.statusCode = 400;
         error.code = 'OB_FINALIZE_VALIDATION_FAILED';
         error.details = {
-            invalidCostBalances,
+            invalidDraftBalances,
             itemsMissingBaseUnit: itemsMissingBaseUnitPayload,
-            draftOBMovements,
         };
         throw error;
     }
@@ -327,6 +310,19 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
 
     const result = await prisma.$transaction(async (tx) => {
         const now = new Date();
+        const obDraftDocuments = await tx.movementDocument.findMany({
+            where: {
+                tenantId,
+                movementType: 'OPENING_BALANCE',
+                status: 'DRAFT',
+            },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+        });
+
+        for (const draftDoc of obDraftDocuments) {
+            await postingService.postDocument(draftDoc.id, tenantId, userId, tx);
+        }
 
         const allowSetting = await tx.tenantSetting.upsert({
             where: { tenantId_key: { tenantId, key: 'allowOpeningBalance' } },
@@ -379,6 +375,7 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
         const snapshotSummary = {
             totalItemsCount: distinctItems.size,
             totalOpeningValue,
+            postedObDocuments: obDraftDocuments.length,
             finalizedAt: now.toISOString(),
             finalizedBy: finalizedByName,
             currencyCode: 'SAR',
