@@ -22,6 +22,119 @@ const auditService = require('./audit.service');
 const settingService = require('./setting.service');
 const { checkOpeningBalanceAllowed } = require('./periodGuard.service');
 
+/**
+ * Per-item aggregates for DRAFT OPENING_BALANCE lines.
+ * `openingUnitCost` uses each line's `unitCost` (set from Excel Unit Price on import / UI):
+ * - one distinct positive unit cost across lines → that cost (no WAC rounding drift);
+ * - multiple costs → qty-weighted average Σ(q×unitCost)/Σq (same as inventory value / qty).
+ */
+const loadOpeningBalanceDraftAgg = async (tenantId, itemIds) => {
+    const ids = [...new Set((itemIds || []).filter(Boolean))];
+    const map = new Map();
+    if (ids.length === 0) return map;
+
+    const lines = await prisma.movementLine.findMany({
+        where: {
+            itemId: { in: ids },
+            document: {
+                tenantId,
+                movementType: 'OPENING_BALANCE',
+                status: 'DRAFT',
+            },
+        },
+        select: {
+            itemId: true,
+            qtyInBaseUnit: true,
+            totalValue: true,
+            unitCost: true,
+        },
+    });
+
+    const byItem = new Map();
+    for (const ln of lines) {
+        const list = byItem.get(ln.itemId) || [];
+        list.push(ln);
+        byItem.set(ln.itemId, list);
+    }
+
+    const COST_EPS = 1e-6;
+
+    for (const [itemId, itemLines] of byItem) {
+        let qtySum = 0;
+        let valueSum = 0;
+        /** Pairs with qty > 0 and a positive unit cost (Excel / explicit line cost). */
+        const costQtyPairs = [];
+
+        for (const ln of itemLines) {
+            const q = Number(ln.qtyInBaseUnit ?? 0);
+            const uc = Number(ln.unitCost ?? 0);
+            const tv = Number(ln.totalValue ?? 0);
+            if (Number.isFinite(q)) qtySum += q;
+            if (Number.isFinite(tv)) {
+                valueSum += tv;
+            } else if (Number.isFinite(q) && Number.isFinite(uc)) {
+                valueSum += q * uc;
+            }
+            if (q > 0 && Number.isFinite(uc) && uc > 0) {
+                costQtyPairs.push({ q, uc });
+            }
+        }
+
+        let openingUnitCost = 0;
+        if (costQtyPairs.length > 0 && qtySum > 0) {
+            const costs = costQtyPairs.map((p) => p.uc);
+            const minC = Math.min(...costs);
+            const maxC = Math.max(...costs);
+            if (maxC - minC <= COST_EPS) {
+                openingUnitCost = costQtyPairs[0].uc;
+            } else {
+                let numer = 0;
+                let denom = 0;
+                for (const { q, uc } of costQtyPairs) {
+                    numer += q * uc;
+                    denom += q;
+                }
+                openingUnitCost = denom > 0 ? numer / denom : 0;
+            }
+        }
+
+        map.set(itemId, { qtySum, valueSum, openingUnitCost });
+    }
+    return map;
+};
+
+const buildItemEnrichmentCtx = async (tenantId, itemIds) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    const ids = [...new Set(([]).concat(itemIds || []).filter(Boolean))];
+    const draftAgg =
+        obStatus === 'OPEN' && ids.length > 0
+            ? await loadOpeningBalanceDraftAgg(tenantId, ids)
+            : new Map();
+    return { obStatus, draftAgg };
+};
+
+const sumStockBalances = (item) => {
+    const balances = item?.stockBalances;
+    let qty = 0;
+    let valueSum = 0;
+    if (Array.isArray(balances)) {
+        for (const b of balances) {
+            const q = Number(b.qtyOnHand ?? 0);
+            const wac = Number(b.wacUnitCost ?? 0);
+            if (Number.isFinite(q)) qty += q;
+            if (Number.isFinite(q) && Number.isFinite(wac)) valueSum += q * wac;
+        }
+    }
+    const unitCost = qty > 0 ? valueSum / qty : 0;
+    return { qty, valueSum, unitCost };
+};
+
+const enrichSingleItemForResponse = async (item, tenantId) => {
+    if (!item || typeof item !== 'object') return item;
+    const ctx = await buildItemEnrichmentCtx(tenantId, [item.id]);
+    return enrichItemWithOpeningFields(item, ctx);
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 const ITEM_INCLUDE = {
@@ -40,25 +153,34 @@ const ITEM_INCLUDE = {
     },
 };
 
-/** Sum qty across locations + WAC from stock_balances (for list/detail APIs). */
-const enrichItemWithOpeningFields = (item) => {
+/**
+ * List/detail enrichment: opening qty & WAC, plus displayTotalQty.
+ * - OPEN: totals from DRAFT OPENING_BALANCE movement lines (all locations).
+ * - Otherwise: from posted stock_balances.
+ */
+const enrichItemWithOpeningFields = (item, ctx = null) => {
     if (!item || typeof item !== 'object') return item;
-    const balances = item.stockBalances;
-    let openingQuantity = 0;
-    let valueSum = 0;
-    if (Array.isArray(balances)) {
-        for (const b of balances) {
-            const q = Number(b.qtyOnHand ?? 0);
-            const wac = Number(b.wacUnitCost ?? 0);
-            if (Number.isFinite(q)) openingQuantity += q;
-            if (Number.isFinite(q) && Number.isFinite(wac)) valueSum += q * wac;
-        }
+    const obStatus = ctx?.obStatus ?? null;
+    const draft = ctx?.draftAgg?.get(item.id);
+
+    if (obStatus === 'OPEN') {
+        const openingQuantity = draft ? draft.qtySum : 0;
+        const openingUnitCost = draft && openingQuantity > 0 ? draft.openingUnitCost : 0;
+        const displayTotalQty = openingQuantity;
+        return {
+            ...item,
+            openingQuantity: Math.round(openingQuantity * 10000) / 10000,
+            openingUnitCost: Math.round(openingUnitCost * 10000) / 10000,
+            displayTotalQty: Math.round(displayTotalQty * 10000) / 10000,
+        };
     }
-    const openingUnitCost = openingQuantity > 0 ? valueSum / openingQuantity : 0;
+
+    const { qty, unitCost } = sumStockBalances(item);
     return {
         ...item,
-        openingQuantity: Math.round(openingQuantity * 10000) / 10000,
-        openingUnitCost: Math.round(openingUnitCost * 10000) / 10000,
+        openingQuantity: Math.round(qty * 10000) / 10000,
+        openingUnitCost: Math.round(unitCost * 10000) / 10000,
+        displayTotalQty: Math.round(qty * 10000) / 10000,
     };
 };
 
@@ -240,7 +362,7 @@ const createItem = async (data, tenantId) => {
         },
         include: ITEM_INCLUDE,
     });
-    return enrichItemWithOpeningFields(created);
+    return enrichSingleItemForResponse(created, tenantId);
 };
 
 // ── LIST ───────────────────────────────────────────────────────────────────────
@@ -299,8 +421,15 @@ const getItems = async (tenantId, query = {}) => {
         prisma.item.count({ where }),
     ]);
 
+    const obStatus = await settingService.getObStatus(tenantId);
+    const draftAgg =
+        obStatus === 'OPEN' && items.length > 0
+            ? await loadOpeningBalanceDraftAgg(tenantId, items.map((i) => i.id))
+            : new Map();
+    const enrichCtx = { obStatus, draftAgg };
+
     return {
-        items: items.map(enrichItemWithOpeningFields),
+        items: items.map((it) => enrichItemWithOpeningFields(it, enrichCtx)),
         total,
         skip,
         take,
@@ -386,7 +515,8 @@ const getItemById = async (id, tenantId) => {
         },
     });
     if (!item) throw notFound();
-    return enrichItemWithOpeningFields(item);
+    const ctx = await buildItemEnrichmentCtx(tenantId, [id]);
+    return enrichItemWithOpeningFields(item, ctx);
 };
 
 // ── Whitelist of scalar fields allowed in Item update ──────────────────────────
@@ -492,7 +622,7 @@ const updateItem = async (id, data, tenantId, userId = null) => {
         return tx.item.findFirst({ where: { id, tenantId }, include: ITEM_INCLUDE });
     });
 
-    return enrichItemWithOpeningFields(result);
+    return enrichSingleItemForResponse(result, tenantId);
 };
 
 // ── Helper: Check if item units actually changed ──────────────────────────────
@@ -515,7 +645,7 @@ const updateItemImage = async (id, tenantId, imageUrl, oldImagePath) => {
         data: { imageUrl },
         include: ITEM_INCLUDE,
     });
-    return enrichItemWithOpeningFields(updated);
+    return enrichSingleItemForResponse(updated, tenantId);
 };
 
 // ── SOFT DELETE ────────────────────────────────────────────────────────────────
@@ -538,7 +668,7 @@ const toggleActive = async (id, tenantId) => {
         data: { isActive: !item.isActive },
         include: ITEM_INCLUDE,
     });
-    return enrichItemWithOpeningFields(toggled);
+    return enrichSingleItemForResponse(toggled, tenantId);
 };
 
 // ── GET ITEM UNITS ─────────────────────────────────────────────────────────────
@@ -606,10 +736,12 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
     const deptMap = new Map(departments.map(d => [d.name.toLowerCase(), d.id]));
     const supplierMap = new Map(suppliers.map(s => [s.name.toLowerCase(), s.id]));
 
-    // Detect fixed vs dynamic (store) columns
+    // Detect fixed vs dynamic (store) columns — headers not in this set are treated as
+    // location columns only if they resolve to an active location; otherwise ignored.
     const FIXED_COLUMNS = new Set([
-        'name', 'barcode', 'department', 'category', 'base unit', 'unit price',
+        'name', 'barcode', 'code', 'item code', 'sku', 'department', 'category', 'base unit', 'unit price',
         'default store', 'defaultstore', 'vendor', 'supplier', 'description', 'image url', 'imageurl',
+        'reorder point', 'reorder qty', 'reorderpoint', 'reorderqty', 'is active', 'active',
     ]);
 
     const allHeaders = rows.length > 0 ? Object.keys(rows[0]) : [];
@@ -660,21 +792,16 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
     };
 
     const storeColumnNames = [];
-    const unknownStoreColumns = [];
+    /** Headers that are not fixed fields and do not match any active location (ignored). */
+    const unmappedLocationHeaders = [];
 
     for (const header of storeHeaders) {
         const locInfo = resolveLocation(header);
         if (locInfo) {
             storeColumnNames.push({ header, locationId: locInfo.id });
         } else {
-            unknownStoreColumns.push(header);
+            unmappedLocationHeaders.push(header);
         }
-    }
-    if (unknownStoreColumns.length > 0) {
-        throw badRequest(
-            `Unknown store column(s): ${unknownStoreColumns.join(', ')}. `
-            + 'Please use valid store names from the template.'
-        );
     }
 
     // Preload existing DB items for fast "exists in DB" checks
@@ -814,7 +941,14 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
         valid: validCount,
         invalid: invalidCount,
         storeColumns: storeColumnNames.map(s => s.header),
-        unknownColumns: unknownStoreColumns,
+        unmappedLocationHeaders,
+        /** @deprecated use unmappedLocationHeaders — kept for import UI compatibility */
+        unknownColumns: unmappedLocationHeaders,
+        ...(unmappedLocationHeaders.length > 0 && {
+            parseWarnings: [
+                `Columns not mapped to active locations (ignored): ${unmappedLocationHeaders.join(', ')}`,
+            ],
+        }),
         contractVersion: 'V2',
         summary: {
             asOpeningBalance,
@@ -828,10 +962,9 @@ const parseImportFile = async (filePath, tenantId, options = {}) => {
 
 /**
  * Opening Balance Excel import: idempotent per (itemId + locationId).
- * - If OPENING_BALANCE ledger row(s) already exist for that pair: set StockBalance.qtyOnHand
- *   to the Excel value (not increment), keep one ledger row in sync (qtyIn, value, balanceAfter),
- *   remove duplicate OB ledger rows, and update MovementLine when referenceId exists.
- * - Otherwise: create a single-line OB draft and post (existing engine path).
+ * - Updates an existing DRAFT OPENING_BALANCE line for that item+location if present.
+ * - Otherwise appends a line to the tenant's oldest DRAFT OPENING_BALANCE document so
+ *   multi-location import accumulates on one document; creates that document if none exist.
  * Caller must run inside prisma.$transaction and pass tx.
  */
 const upsertOpeningBalanceForItemLocation = async (
@@ -888,13 +1021,47 @@ const upsertOpeningBalanceForItemLocation = async (
 
         await tx.movementDocument.update({
             where: { id: existingDraftLine.documentId },
-            update: {
+            data: {
                 documentDate: txDate,
-                notes: `Opening Balance import for ${itemName}`,
+                notes: `Opening Balance import (multi-location) — includes ${itemName}`,
             },
         });
 
         return { kind: 'draft_updated', documentNo: existingDraftLine.document.documentNo };
+    }
+
+    const tenantDraftDoc = await tx.movementDocument.findFirst({
+        where: {
+            tenantId,
+            movementType: 'OPENING_BALANCE',
+            status: 'DRAFT',
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, documentNo: true },
+    });
+
+    if (tenantDraftDoc) {
+        await tx.movementLine.create({
+            data: {
+                documentId: tenantDraftDoc.id,
+                itemId,
+                locationId,
+                qtyRequested: qty,
+                qtyInBaseUnit: qty,
+                unitCost,
+                totalValue,
+            },
+        });
+
+        await tx.movementDocument.update({
+            where: { id: tenantDraftDoc.id },
+            data: {
+                documentDate: txDate,
+                notes: `Opening Balance import (multi-location) — includes ${itemName}`,
+            },
+        });
+
+        return { kind: 'draft_line_added', documentNo: tenantDraftDoc.documentNo };
     }
 
     const obDoc = await movementService.createMovementDraft(
@@ -902,7 +1069,7 @@ const upsertOpeningBalanceForItemLocation = async (
             movementType: 'OPENING_BALANCE',
             documentDate: txDate.toISOString(),
             destLocationId: locationId,
-            notes: `Opening Balance import for ${itemName}`,
+            notes: `Opening Balance import (multi-location) — includes ${itemName}`,
             lines: [
                 {
                     itemId,
@@ -1012,7 +1179,12 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
                             },
                             movementService
                         );
-                        if ((result.kind === 'draft_created' || result.kind === 'draft_updated') && result.documentNo) {
+                        if (
+                            (result.kind === 'draft_created'
+                                || result.kind === 'draft_updated'
+                                || result.kind === 'draft_line_added')
+                            && result.documentNo
+                        ) {
                             obDocNosThisRow.push(result.documentNo);
                         }
                         if (result.kind === 'draft_updated') {
