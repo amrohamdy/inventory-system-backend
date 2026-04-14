@@ -21,7 +21,6 @@ const path = require('path');
 const auditService = require('./audit.service');
 const settingService = require('./setting.service');
 const { checkPeriodLock, checkOpeningBalanceAllowed } = require('./periodGuard.service');
-const OB_SNAPSHOT_SETTING_KEY = 'obFinalizeSnapshot';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -107,18 +106,7 @@ const checkItemCreationRequirements = async (tenantId) => {
 
     const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
     const isOpeningBalanceAllowed = obCheck.allowed === true;
-    const allowOpeningBalance = await settingService.getSetting(tenantId, 'allowOpeningBalance');
-    const obSnapshot = await prisma.tenantSetting.findUnique({
-        where: { tenantId_key: { tenantId, key: OB_SNAPSHOT_SETTING_KEY } },
-        select: { key: true },
-    });
-    const hasObSnapshot = Boolean(obSnapshot);
-    let obStatus = 'INITIAL_LOCK';
-    if (allowOpeningBalance === 'OPEN') {
-        obStatus = 'OPEN';
-    } else if (allowOpeningBalance === 'LOCKED' && hasObSnapshot) {
-        obStatus = 'FINALIZED';
-    }
+    const obStatus = await settingService.getObStatus(tenantId);
 
     const hasPrerequisites =
         departments > 0 &&

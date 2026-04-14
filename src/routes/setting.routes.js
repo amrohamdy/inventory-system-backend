@@ -15,7 +15,7 @@ router.get('/inventory-status', settingController.getInventoryStatus);
 
 // OB lock / enable — tenant-level admins can toggle for their own tenant
 router.post('/ob-lock', authorize('SUPER_ADMIN', 'ADMIN'), settingController.lockOB);
-router.post('/ob-enable', authorize('SUPER_ADMIN', 'ADMIN'), settingController.enableOB);
+router.post('/ob-enable', authorize('SUPER_ADMIN', 'ADMIN', 'ORG_MANAGER'), settingController.enableOB);
 router.post('/ob-finalize', authorize('SUPER_ADMIN', 'ADMIN'), settingController.finalizeOpeningBalance);
 
 // Generic setting CRUD

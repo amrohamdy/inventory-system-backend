@@ -3,6 +3,33 @@ const auditService = require('./audit.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 
 const OB_SNAPSHOT_SETTING_KEY = 'obFinalizeSnapshot';
+const getObStatus = async (tenantId) => {
+    const [allowRow, snapRow] = await Promise.all([
+        prisma.tenantSetting.findUnique({
+            where: { tenantId_key: { tenantId, key: 'allowOpeningBalance' } },
+            select: { value: true },
+        }),
+        prisma.tenantSetting.findUnique({
+            where: { tenantId_key: { tenantId, key: OB_SNAPSHOT_SETTING_KEY } },
+            select: { value: true },
+        }),
+    ]);
+
+    let snapshot = null;
+    if (snapRow?.value) {
+        try {
+            snapshot = JSON.parse(snapRow.value);
+        } catch {
+            snapshot = null;
+        }
+    }
+
+    const hasFinalizedSnapshot = Boolean(snapshot?.finalizedAt);
+    if (allowRow?.value === 'OPEN') return 'OPEN';
+    if (allowRow?.value === 'LOCKED' && hasFinalizedSnapshot) return 'FINALIZED';
+    return 'INITIAL_LOCK';
+};
+
 
 const formatUserDisplayName = (user) => {
     if (!user) return 'Unknown';
@@ -65,28 +92,29 @@ const setSetting = async (tenantId, key, value, userId, reason = null) => {
  * Returns: { allowed: boolean, reason: string }
  */
 const isOpeningBalanceAllowed = async (tenantId) => {
-    const lockSetting = await prisma.tenantSetting.findUnique({
-        where: { tenantId_key: { tenantId, key: 'allowOpeningBalance' } },
-    });
+    const [obStatus, lockSetting] = await Promise.all([
+        getObStatus(tenantId),
+        prisma.tenantSetting.findUnique({
+            where: { tenantId_key: { tenantId, key: 'allowOpeningBalance' } },
+        }),
+    ]);
 
-    // Explicitly locked by admin
-    if (lockSetting && lockSetting.value === 'LOCKED') {
-        return {
-            allowed: false,
-            reason: lockSetting.reason || 'Opening Balance has been locked by administrator.',
-            lockedAt: lockSetting.updatedAt,
-        };
-    }
-
-    // Explicitly opened by admin — bypass movement check
-    if (lockSetting && lockSetting.value === 'OPEN') {
+    if (obStatus === 'OPEN') {
         return { allowed: true, reason: 'Opening Balance enabled by administrator.' };
     }
 
-    // Security default: if setting is missing, OB remains locked until explicitly enabled.
+    if (obStatus === 'FINALIZED') {
+        return {
+            allowed: false,
+            reason: lockSetting?.reason || 'Opening Balance has been finalized and locked.',
+            lockedAt: lockSetting?.updatedAt,
+        };
+    }
+
     return {
         allowed: false,
-        reason: 'Opening Balance is locked by default. Must be enabled by an administrator.',
+        reason: lockSetting?.reason || 'Opening Balance is locked by default. Must be enabled by an administrator.',
+        lockedAt: lockSetting?.updatedAt,
     };
 };
 
@@ -101,6 +129,26 @@ const clearObFinalizeSnapshot = async (tenantId) => {
  * Enable OB setup phase: OPEN allowOpeningBalance, align isOpeningBalanceAllowed tenant flag, clear snapshot.
  */
 const enableOpeningBalanceStage = async (tenantId, userId, reason = 'Initial Setup') => {
+    const snapRow = await prisma.tenantSetting.findUnique({
+        where: { tenantId_key: { tenantId, key: OB_SNAPSHOT_SETTING_KEY } },
+        select: { value: true },
+    });
+    let snapshot = null;
+    if (snapRow?.value) {
+        try {
+            snapshot = JSON.parse(snapRow.value);
+        } catch {
+            snapshot = null;
+        }
+    }
+
+    if (snapshot?.finalizedAt) {
+        const error = new Error('Opening Balance cannot be reopened after finalization snapshot.');
+        error.statusCode = 400;
+        error.code = 'OB_ALREADY_FINALIZED';
+        throw error;
+    }
+
     await setSetting(tenantId, 'allowOpeningBalance', 'OPEN', userId, reason);
     await setSetting(tenantId, 'isOpeningBalanceAllowed', 'true', userId, reason);
     await clearObFinalizeSnapshot(tenantId);
@@ -108,13 +156,16 @@ const enableOpeningBalanceStage = async (tenantId, userId, reason = 'Initial Set
 
 // ── Inventory / OB status for settings UI and clients ─────────────────────────
 const getInventoryStatus = async (tenantId) => {
-    const ob = await isOpeningBalanceAllowed(tenantId);
-    const allowRow = await prisma.tenantSetting.findUnique({
-        where: { tenantId_key: { tenantId, key: 'allowOpeningBalance' } },
-    });
-    const snapRow = await prisma.tenantSetting.findUnique({
-        where: { tenantId_key: { tenantId, key: OB_SNAPSHOT_SETTING_KEY } },
-    });
+    const [ob, obStatus, allowRow, snapRow] = await Promise.all([
+        isOpeningBalanceAllowed(tenantId),
+        getObStatus(tenantId),
+        prisma.tenantSetting.findUnique({
+            where: { tenantId_key: { tenantId, key: 'allowOpeningBalance' } },
+        }),
+        prisma.tenantSetting.findUnique({
+            where: { tenantId_key: { tenantId, key: OB_SNAPSHOT_SETTING_KEY } },
+        }),
+    ]);
 
     let snapshotSummary = null;
     if (snapRow?.value) {
@@ -152,6 +203,7 @@ const getInventoryStatus = async (tenantId) => {
 
     return {
         isOpeningBalanceAllowed: ob.allowed,
+        obStatus,
         reason: ob.reason,
         lockedAt: ob.lockedAt ? ob.lockedAt.toISOString() : null,
         allowOpeningBalance: {
@@ -165,6 +217,29 @@ const getInventoryStatus = async (tenantId) => {
 
 // ── FINALIZE OPENING BALANCE (strict validation + lock) ───────────────────────
 const finalizeOpeningBalance = async (tenantId, userId) => {
+    const totalItemsCount = await prisma.item.count({
+        where: { tenantId },
+    });
+
+    if (totalItemsCount === 0) {
+        const error = new Error('Cannot finalize opening balance with no items. Please add your stock first.');
+        error.statusCode = 400;
+        error.code = 'OB_FINALIZE_NO_ITEMS';
+        error.details = { totalItemsCount };
+        throw error;
+    }
+
+    const itemCount = await prisma.stockBalance.count({
+        where: { tenantId, qtyOnHand: { gt: 0 } },
+    });
+    if (itemCount === 0) {
+        const error = new Error('Cannot finalize an empty warehouse. Add opening stock quantities first.');
+        error.statusCode = 400;
+        error.code = 'OB_FINALIZE_EMPTY_WAREHOUSE';
+        error.details = { itemCount };
+        throw error;
+    }
+
     const [invalidCostRows, draftOBLineRows, itemsMissingBaseUnit] = await Promise.all([
         prisma.stockBalance.findMany({
             where: {
@@ -356,6 +431,7 @@ const finalizeOpeningBalance = async (tenantId, userId) => {
 };
 
 module.exports = {
+    getObStatus,
     getSetting,
     setSetting,
     isOpeningBalanceAllowed,

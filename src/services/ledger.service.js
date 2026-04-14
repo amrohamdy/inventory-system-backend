@@ -1,11 +1,22 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const settingService = require('./setting.service');
 
 /**
  * Get ledger entries with full filtering and pagination.
  * Supports: itemId, locationId, dateFrom, dateTo, movementDocumentId, movementType
  */
 const getLedgerEntries = async (tenantId, query = {}) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        return {
+            entries: [],
+            total: 0,
+            status: 'SETUP_IN_PROGRESS',
+            obStatus,
+        };
+    }
+
     const {
         skip = 0,
         take = 50,
@@ -53,6 +64,11 @@ const getLedgerEntries = async (tenantId, query = {}) => {
  * Get ledger entries for a specific movement document (by referenceId).
  */
 const getLedgerByDocument = async (documentId, tenantId) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        return [];
+    }
+
     const entries = await prisma.inventoryLedger.findMany({
         where: {
             tenantId,

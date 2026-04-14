@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const settingService = require('./setting.service');
 
 /**
  * Generate a unique Document Number
@@ -183,6 +184,16 @@ const createMovementDraft = async (data, tenantId, userId, db = prisma) => {
  * Get movement documents (List)
  */
 const getMovements = async (tenantId, query) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        return {
+            documents: [],
+            total: 0,
+            status: 'SETUP_IN_PROGRESS',
+            obStatus,
+        };
+    }
+
     const { skip = 0, take = 10, status, movementType, search } = query;
 
     const where = {
@@ -219,6 +230,15 @@ const getMovements = async (tenantId, query) => {
  * Get specific movement document details
  */
 const getMovementById = async (id, tenantId) => {
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (obStatus !== 'FINALIZED') {
+        const error = new Error('Stock movements are unavailable while opening balance setup is in progress.');
+        error.statusCode = 409;
+        error.code = 'SETUP_IN_PROGRESS';
+        error.details = { obStatus };
+        throw error;
+    }
+
     const document = await prisma.movementDocument.findFirst({
         where: { id, tenantId },
         include: {

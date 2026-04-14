@@ -15,7 +15,7 @@ router.get(
 router.patch(
     '/status',
     authenticate,
-    authorize('SUPER_ADMIN', 'ADMIN'),
+    authorize('SUPER_ADMIN', 'ADMIN', 'ORG_MANAGER'),
     inventoryController.patchInventoryStatus,
 );
 
