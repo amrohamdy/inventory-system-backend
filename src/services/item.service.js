@@ -21,6 +21,7 @@ const path = require('path');
 const auditService = require('./audit.service');
 const settingService = require('./setting.service');
 const { checkPeriodLock, checkOpeningBalanceAllowed } = require('./periodGuard.service');
+const OB_SNAPSHOT_SETTING_KEY = 'obFinalizeSnapshot';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -106,24 +107,40 @@ const checkItemCreationRequirements = async (tenantId) => {
 
     const obCheck = await settingService.isOpeningBalanceAllowed(tenantId);
     const isOpeningBalanceAllowed = obCheck.allowed === true;
+    const allowOpeningBalance = await settingService.getSetting(tenantId, 'allowOpeningBalance');
+    const obSnapshot = await prisma.tenantSetting.findUnique({
+        where: { tenantId_key: { tenantId, key: OB_SNAPSHOT_SETTING_KEY } },
+        select: { key: true },
+    });
+    const hasObSnapshot = Boolean(obSnapshot);
+    let obStatus = 'INITIAL_LOCK';
+    if (allowOpeningBalance === 'OPEN') {
+        obStatus = 'OPEN';
+    } else if (allowOpeningBalance === 'LOCKED' && hasObSnapshot) {
+        obStatus = 'FINALIZED';
+    }
 
-    const canCreateItem =
+    const hasPrerequisites =
         departments > 0 &&
         units > 0 &&
         categories > 0 &&
         vendors > 0 &&
         locations > 0;
+    const isItemCreationPhaseAllowed = obStatus === 'OPEN' || obStatus === 'FINALIZED';
+    const canCreateItem = hasPrerequisites && isItemCreationPhaseAllowed;
 
     if (!canCreateItem) {
+        const blockReason = !hasPrerequisites ? 'MISSING_PREREQUISITES' : 'INITIAL_LOCK';
         return {
             canCreateItem: false,
             requirements,
-            blockReason: 'MISSING_PREREQUISITES',
+            blockReason,
             isOpeningBalanceAllowed,
+            obStatus,
         };
     }
 
-    return { canCreateItem: true, requirements, isOpeningBalanceAllowed };
+    return { canCreateItem: true, requirements, isOpeningBalanceAllowed, obStatus };
 };
 
 // ── Validate itemUnits array ───────────────────────────────────────────────────
