@@ -261,6 +261,28 @@ test('getItems rejects unknown department for tenant', async () => {
     );
 });
 
+test('getItems adds openingQuantity and openingUnitCost from stockBalances', async () => {
+    const service = loadServiceForListQueries({
+        item: {
+            findMany: async () => [
+                {
+                    id: 'i1',
+                    name: 'Item A',
+                    stockBalances: [
+                        { qtyOnHand: 10, wacUnitCost: 100, location: { id: 'l1', name: 'Store' } },
+                    ],
+                },
+            ],
+            count: async () => 1,
+        },
+    });
+
+    const result = await service.getItems('tenant-1', { isActive: 'true' });
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].openingQuantity, 10);
+    assert.equal(result.items[0].openingUnitCost, 100);
+});
+
 test('getItems slim mode uses select, caps take at 5000, skips count and meta path', async () => {
     let findManyArgs;
     let countCalled = false;

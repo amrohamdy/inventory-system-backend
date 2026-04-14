@@ -31,7 +31,35 @@ const ITEM_INCLUDE = {
     supplier: { select: { id: true, name: true } },
     defaultStore: { select: { id: true, name: true, departmentId: true } },
     itemUnits: { include: { unit: { select: { id: true, name: true, abbreviation: true } } } },
-    stockBalances: { select: { qtyOnHand: true, location: { select: { id: true, name: true } } } },
+    stockBalances: {
+        select: {
+            qtyOnHand: true,
+            wacUnitCost: true,
+            location: { select: { id: true, name: true } },
+        },
+    },
+};
+
+/** Sum qty across locations + WAC from stock_balances (for list/detail APIs). */
+const enrichItemWithOpeningFields = (item) => {
+    if (!item || typeof item !== 'object') return item;
+    const balances = item.stockBalances;
+    let openingQuantity = 0;
+    let valueSum = 0;
+    if (Array.isArray(balances)) {
+        for (const b of balances) {
+            const q = Number(b.qtyOnHand ?? 0);
+            const wac = Number(b.wacUnitCost ?? 0);
+            if (Number.isFinite(q)) openingQuantity += q;
+            if (Number.isFinite(q) && Number.isFinite(wac)) valueSum += q * wac;
+        }
+    }
+    const openingUnitCost = openingQuantity > 0 ? valueSum / openingQuantity : 0;
+    return {
+        ...item,
+        openingQuantity: Math.round(openingQuantity * 10000) / 10000,
+        openingUnitCost: Math.round(openingUnitCost * 10000) / 10000,
+    };
 };
 
 /** Master catalog / Get Pass — no stock rows, smaller payload for large take */
@@ -193,7 +221,7 @@ const createItem = async (data, tenantId) => {
     if (dupBarcode) throw badRequest(`Barcode '${finalBarcode}' already exists in this tenant.`);
     if (dupName) throw badRequest(`Item name '${mainData.name}' already exists.`);
 
-    return prisma.item.create({
+    const created = await prisma.item.create({
         data: {
             ...mainData,
             barcode: finalBarcode,
@@ -212,6 +240,7 @@ const createItem = async (data, tenantId) => {
         },
         include: ITEM_INCLUDE,
     });
+    return enrichItemWithOpeningFields(created);
 };
 
 // ── LIST ───────────────────────────────────────────────────────────────────────
@@ -270,7 +299,12 @@ const getItems = async (tenantId, query = {}) => {
         prisma.item.count({ where }),
     ]);
 
-    return { items, total, skip, take };
+    return {
+        items: items.map(enrichItemWithOpeningFields),
+        total,
+        skip,
+        take,
+    };
 };
 
 /**
@@ -352,7 +386,7 @@ const getItemById = async (id, tenantId) => {
         },
     });
     if (!item) throw notFound();
-    return item;
+    return enrichItemWithOpeningFields(item);
 };
 
 // ── Whitelist of scalar fields allowed in Item update ──────────────────────────
@@ -458,7 +492,7 @@ const updateItem = async (id, data, tenantId, userId = null) => {
         return tx.item.findFirst({ where: { id, tenantId }, include: ITEM_INCLUDE });
     });
 
-    return result;
+    return enrichItemWithOpeningFields(result);
 };
 
 // ── Helper: Check if item units actually changed ──────────────────────────────
@@ -476,11 +510,12 @@ const updateItemImage = async (id, tenantId, imageUrl, oldImagePath) => {
     // Delete old image if it exists locally
     if (oldImagePath) deleteFile(oldImagePath);
 
-    return prisma.item.update({
+    const updated = await prisma.item.update({
         where: { id },
         data: { imageUrl },
         include: ITEM_INCLUDE,
     });
+    return enrichItemWithOpeningFields(updated);
 };
 
 // ── SOFT DELETE ────────────────────────────────────────────────────────────────
@@ -498,11 +533,12 @@ const deleteItem = async (id, tenantId) => {
 // ── TOGGLE ACTIVE ──────────────────────────────────────────────────────────────
 const toggleActive = async (id, tenantId) => {
     const item = await getItemById(id, tenantId);
-    return prisma.item.update({
+    const toggled = await prisma.item.update({
         where: { id },
         data: { isActive: !item.isActive },
         include: ITEM_INCLUDE,
     });
+    return enrichItemWithOpeningFields(toggled);
 };
 
 // ── GET ITEM UNITS ─────────────────────────────────────────────────────────────
