@@ -23,15 +23,17 @@ const settingService = require('./setting.service');
 const { checkOpeningBalanceAllowed } = require('./periodGuard.service');
 
 /**
- * Per-item opening qty during OB OPEN phase: sum of DRAFT OPENING_BALANCE line quantities.
- * Valuation for display uses the item catalog `unitPrice` (not a separate opening unit cost).
+ * Per-item opening qty from live data: sum of `qtyInBaseUnit` on all MovementLine rows whose
+ * parent MovementDocument is OPENING_BALANCE + DRAFT for this tenant (not a column on Item).
+ * Used for GET /items and GET /items/:id when the tenant is in the OB OPEN phase.
  */
 const loadOpeningBalanceDraftAgg = async (tenantId, itemIds) => {
     const ids = [...new Set((itemIds || []).filter(Boolean))];
     const map = new Map();
     if (ids.length === 0) return map;
 
-    const lines = await prisma.movementLine.findMany({
+    const grouped = await prisma.movementLine.groupBy({
+        by: ['itemId'],
         where: {
             itemId: { in: ids },
             document: {
@@ -40,33 +42,25 @@ const loadOpeningBalanceDraftAgg = async (tenantId, itemIds) => {
                 status: 'DRAFT',
             },
         },
-        select: {
-            itemId: true,
+        _sum: {
             qtyInBaseUnit: true,
         },
     });
 
-    for (const ln of lines) {
-        const q = Number(ln.qtyInBaseUnit ?? 0);
+    for (const row of grouped) {
+        const q = Number(row._sum.qtyInBaseUnit ?? 0);
         if (!Number.isFinite(q)) continue;
-        const prev = map.get(ln.itemId) || 0;
-        map.set(ln.itemId, prev + q);
+        map.set(row.itemId, { qtySum: q });
     }
 
-    const out = new Map();
-    for (const [itemId, qtySum] of map) {
-        out.set(itemId, { qtySum });
-    }
-    return out;
+    return map;
 };
 
 const buildItemEnrichmentCtx = async (tenantId, itemIds) => {
     const obStatus = await settingService.getObStatus(tenantId);
     const ids = [...new Set(([]).concat(itemIds || []).filter(Boolean))];
     const draftAgg =
-        obStatus === 'OPEN' && ids.length > 0
-            ? await loadOpeningBalanceDraftAgg(tenantId, ids)
-            : new Map();
+        obStatus === 'OPEN' && ids.length > 0 ? await loadOpeningBalanceDraftAgg(tenantId, ids) : new Map();
     return { obStatus, draftAgg };
 };
 
@@ -110,31 +104,40 @@ const ITEM_INCLUDE = {
     },
 };
 
+const roundQtyDisplay = (n) => Math.round(n * 10000) / 10000;
+
+/** Virtual opening qty: sum of DRAFT OPENING_BALANCE movement lines (see `loadOpeningBalanceDraftAgg`). */
+const openingQuantityFromDraftAgg = (draftAgg, itemId) => {
+    const entry = draftAgg?.get(itemId);
+    if (!entry) return 0;
+    const q = Number(entry.qtySum);
+    return Number.isFinite(q) ? q : 0;
+};
+
 /**
  * List/detail enrichment: opening qty plus displayTotalQty (same value in OPEN phase).
- * - OPEN: both fields = sum of all DRAFT OPENING_BALANCE line qtys across locations (aligns with Excel `openingQuantityTotal`).
- * - Otherwise: both = on-hand qty from posted stock_balances. Use `unitPrice` for value displays (no `openingUnitCost`).
+ * - OPEN: both fields = sum of all related MovementLine rows on DRAFT OPENING_BALANCE documents
+ *   (`qtyInBaseUnit`), across locations — aligns with Excel `openingQuantityTotal`.
+ * - Otherwise: both = on-hand qty from posted stock_balances (OB finalized / locked).
  */
 const enrichItemWithOpeningFields = (item, ctx = null) => {
     if (!item || typeof item !== 'object') return item;
     const obStatus = ctx?.obStatus ?? null;
-    const draft = ctx?.draftAgg?.get(item.id);
+    const draftOpeningQty = openingQuantityFromDraftAgg(ctx?.draftAgg, item.id);
 
     if (obStatus === 'OPEN') {
-        const openingQuantity = draft ? draft.qtySum : 0;
-        const displayTotalQty = openingQuantity;
         return {
             ...item,
-            openingQuantity: Math.round(openingQuantity * 10000) / 10000,
-            displayTotalQty: Math.round(displayTotalQty * 10000) / 10000,
+            openingQuantity: roundQtyDisplay(draftOpeningQty),
+            displayTotalQty: roundQtyDisplay(draftOpeningQty),
         };
     }
 
     const { qty } = sumStockBalances(item);
     return {
         ...item,
-        openingQuantity: Math.round(qty * 10000) / 10000,
-        displayTotalQty: Math.round(qty * 10000) / 10000,
+        openingQuantity: roundQtyDisplay(qty),
+        displayTotalQty: roundQtyDisplay(qty),
     };
 };
 

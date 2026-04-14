@@ -47,11 +47,19 @@ function loadServiceWithMocks({
 
 const SAMPLE_DEPT_UUID = '123e4567-e89b-12d3-a456-426614174000';
 
-function loadServiceForListQueries(prismaMock) {
+function loadServiceForListQueries(prismaMock, settingServiceOverrides = {}) {
+    const prismaMerged = {
+        movementLine: { groupBy: async () => [] },
+        ...prismaMock,
+    };
+    const settingService = {
+        getObStatus: async () => 'FINALIZED',
+        ...settingServiceOverrides,
+    };
     const originalLoad = Module._load;
     Module._load = function patchedLoader(request, parent, isMain) {
         if (request === '@prisma/client') {
-            return { PrismaClient: function PrismaClient() { return prismaMock; } };
+            return { PrismaClient: function PrismaClient() { return prismaMerged; } };
         }
         if (request === 'xlsx') {
             return {
@@ -61,9 +69,7 @@ function loadServiceForListQueries(prismaMock) {
         }
         if (request === './audit.service') return {};
         if (request === './setting.service') {
-            return {
-                getObStatus: async () => 'FINALIZED',
-            };
+            return settingService;
         }
         if (request === './periodGuard.service') return {};
         return originalLoad(request, parent, isMain);
@@ -344,6 +350,41 @@ test('getItems adds openingQuantity from stockBalances (no openingUnitCost; use 
     assert.equal(result.items[0].openingQuantity, 10);
     assert.equal(result.items[0].unitPrice, 100);
     assert.equal(Object.prototype.hasOwnProperty.call(result.items[0], 'openingUnitCost'), false);
+});
+
+test('getItems OB OPEN sets openingQuantity from DRAFT OPENING_BALANCE line sum (not stockBalances)', async () => {
+    let groupByWhere;
+    const service = loadServiceForListQueries(
+        {
+            item: {
+                findMany: async () => [
+                    {
+                        id: 'i1',
+                        name: 'Item A',
+                        unitPrice: 100,
+                        stockBalances: [
+                            { qtyOnHand: 99, wacUnitCost: 100, location: { id: 'l1', name: 'Store' } },
+                        ],
+                    },
+                ],
+                count: async () => 1,
+            },
+            movementLine: {
+                groupBy: async (args) => {
+                    groupByWhere = args.where;
+                    return [{ itemId: 'i1', _sum: { qtyInBaseUnit: 7 } }];
+                },
+            },
+        },
+        { getObStatus: async () => 'OPEN' }
+    );
+
+    const result = await service.getItems('tenant-1', { isActive: 'true' });
+    assert.equal(result.items[0].openingQuantity, 7);
+    assert.equal(result.items[0].displayTotalQty, 7);
+    assert.equal(groupByWhere.document.movementType, 'OPENING_BALANCE');
+    assert.equal(groupByWhere.document.status, 'DRAFT');
+    assert.equal(groupByWhere.document.tenantId, 'tenant-1');
 });
 
 test('getItems slim mode uses select, caps take at 5000, skips count and meta path', async () => {
