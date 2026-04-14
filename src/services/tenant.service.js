@@ -3,6 +3,7 @@ const { hashPassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const { membershipRoleCode, connectRole } = require('./rbac.service');
+const { seedDefaultUnitsForTenant } = require('./unitSeed.service');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -189,6 +190,9 @@ const createTenant = async (data) => {
                 isActive: true
             }
         });
+
+        // Seed default units for every newly created tenant.
+        await seedDefaultUnitsForTenant(tx, tenant.id);
 
         await tx.tenantSetting.upsert({
             where: { tenantId_key: { tenantId: tenant.id, key: 'allowOpeningBalance' } },

@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 const { getPermissionsForMembership, membershipRoleCode, connectRole } = require('./rbac.service');
+const { seedDefaultUnitsForTenant } = require('./unitSeed.service');
 const {
     resolveHotelSubStatusForCreate,
     effectiveSubStatusForTenantList,
@@ -551,6 +552,9 @@ const createTenant = async (data, adminUserId, ipAddress) => {
             },
         });
 
+        // Seed default units for every newly created tenant.
+        await seedDefaultUnitsForTenant(tx, t.id);
+
         await tx.tenantSetting.upsert({
             where: { tenantId_key: { tenantId: t.id, key: 'allowOpeningBalance' } },
             update: {
@@ -773,6 +777,9 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
             },
         });
 
+        // Seed root organization defaults.
+        await seedDefaultUnitsForTenant(tx, orgTenant.id);
+
         await tx.tenantSetting.upsert({
             where: { tenantId_key: { tenantId: orgTenant.id, key: 'allowOpeningBalance' } },
             update: {
@@ -831,6 +838,9 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
                 isActive: true,
             },
         });
+
+        // Seed first hotel defaults.
+        await seedDefaultUnitsForTenant(tx, hotelTenant.id);
 
         await tx.tenantSetting.upsert({
             where: { tenantId_key: { tenantId: hotelTenant.id, key: 'allowOpeningBalance' } },
