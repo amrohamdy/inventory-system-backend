@@ -261,9 +261,35 @@ const validateItemUnits = (itemUnits) => {
     }
 };
 
+/** Allowed Item scalar fields from API create/update (excludes id, tenantId, timestamps, relations, virtuals). */
+const ITEM_INPUT_WHITELIST = new Set([
+    'name', 'description', 'unitPrice', 'barcode', 'categoryId', 'subcategoryId',
+    'departmentId', 'supplierId', 'defaultStoreId', 'reorderPoint', 'reorderQty',
+    'isActive', 'code', 'imageUrl',
+]);
+
+const pickWhitelistedItemPayload = (source) => {
+    const out = {};
+    if (!source || typeof source !== 'object') return out;
+    for (const key of Object.keys(source)) {
+        if (ITEM_INPUT_WHITELIST.has(key)) {
+            out[key] = source[key];
+        }
+    }
+    return out;
+};
+
 // ── CREATE ─────────────────────────────────────────────────────────────────────
-const createItem = async (data, tenantId) => {
-    const { itemUnits, ...mainData } = data;
+const createItem = async (data, tenantId, userId = null) => {
+    const {
+        itemUnits,
+        openingQuantity,
+        displayTotalQty: _displayTotalQty,
+        ...bodyRest
+    } = data;
+
+    const mainData = pickWhitelistedItemPayload(bodyRest);
+    const defaultStoreId = mainData.defaultStoreId;
 
     validateItemUnits(itemUnits);
 
@@ -300,23 +326,64 @@ const createItem = async (data, tenantId) => {
     if (dupBarcode) throw badRequest(`Barcode '${finalBarcode}' already exists in this tenant.`);
     if (dupName) throw badRequest(`Item name '${mainData.name}' already exists.`);
 
-    const created = await prisma.item.create({
-        data: {
-            ...mainData,
-            barcode: finalBarcode,
-            tenantId,
-            ...(itemUnits?.length > 0 && {
-                itemUnits: {
-                    create: itemUnits.map(u => ({
-                        unitId: u.unitId,
-                        unitType: u.unitType,
-                        conversionRate: u.conversionRate,
-                        isDefault: u.unitType === 'BASE',
-                        tenantId,
-                    })),
+    const obQty = parseFloat(openingQuantity);
+    const wantsOpeningLine = Number.isFinite(obQty) && obQty > 0;
+    if (wantsOpeningLine && !userId) {
+        throw badRequest('User context is required to record opening balance quantity.');
+    }
+
+    const movementService = require('./movement.service');
+
+    const createdId = await prisma.$transaction(async (tx) => {
+        const created = await tx.item.create({
+            data: {
+                ...mainData,
+                barcode: finalBarcode,
+                tenantId,
+                ...(itemUnits?.length > 0 && {
+                    itemUnits: {
+                        create: itemUnits.map(u => ({
+                            unitId: u.unitId,
+                            unitType: u.unitType,
+                            conversionRate: u.conversionRate,
+                            isDefault: u.unitType === 'BASE',
+                            tenantId,
+                        })),
+                    },
+                }),
+            },
+            select: { id: true, name: true, unitPrice: true, defaultStoreId: true },
+        });
+
+        if (wantsOpeningLine) {
+            const locationId = defaultStoreId ?? created.defaultStoreId;
+            if (!locationId) {
+                throw badRequest('A default store (location) is required when providing opening quantity.');
+            }
+            const unitCost = Number(created.unitPrice ?? 0);
+            if (!(unitCost > 0)) {
+                throw badRequest('Unit price is required when providing opening quantity.');
+            }
+            await upsertOpeningBalanceForItemLocation(
+                tx,
+                {
+                    tenantId,
+                    itemId: created.id,
+                    locationId,
+                    targetQty: obQty,
+                    unitCost,
+                    userId,
+                    itemName: created.name,
                 },
-            }),
-        },
+                movementService
+            );
+        }
+
+        return created.id;
+    });
+
+    const created = await prisma.item.findFirst({
+        where: { id: createdId, tenantId },
         include: ITEM_INCLUDE,
     });
     return enrichSingleItemForResponse(created, tenantId);
@@ -476,26 +543,18 @@ const getItemById = async (id, tenantId) => {
     return enrichItemWithOpeningFields(item, ctx);
 };
 
-// ── Whitelist of scalar fields allowed in Item update ──────────────────────────
-const ITEM_SCALAR_FIELDS = new Set([
-    'name', 'description', 'departmentId', 'categoryId', 'subcategoryId',
-    'supplierId', 'defaultStoreId', 'barcode', 'unitPrice', 'imageUrl',
-    'reorderPoint', 'reorderQty', 'isActive',
-]);
-
 // ── UPDATE ─────────────────────────────────────────────────────────────────────
 const updateItem = async (id, data, tenantId, userId = null) => {
     const existing = await getItemById(id, tenantId);
 
-    const { itemUnits, ...rawData } = data;
+    const {
+        itemUnits,
+        openingQuantity: _openingQuantity,
+        displayTotalQty: _displayTotalQty,
+        ...bodyRest
+    } = data;
 
-    // Strip out relation objects and non-scalar fields to avoid Prisma errors
-    const mainData = {};
-    for (const key of Object.keys(rawData)) {
-        if (ITEM_SCALAR_FIELDS.has(key)) {
-            mainData[key] = rawData[key];
-        }
-    }
+    const mainData = pickWhitelistedItemPayload(bodyRest);
 
     if (mainData.categoryId) {
         const cat = await prisma.category.findFirst({ where: { id: mainData.categoryId, tenantId } });

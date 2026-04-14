@@ -17,7 +17,7 @@ const checkItemCreationRequirements = async (req, res, next) => {
 // ── Create Item ───────────────────────────────────────────────────────────────
 const createItem = async (req, res, next) => {
     try {
-        const item = await itemService.createItem(req.body, req.user.tenantId);
+        const item = await itemService.createItem(req.body, req.user.tenantId, req.user.id);
         return success(res, item, 'Item created successfully', 201);
     } catch (err) { next(err); }
 };
