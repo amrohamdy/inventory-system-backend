@@ -67,14 +67,6 @@ const rejectGetPass = async (req, res) => {
     res.json({ success: true, data: result });
 };
 
-const checkoutGetPass = async (req, res) => {
-    const { user } = req;
-    const { id } = req.params;
-    const { lines } = req.body; 
-    const result = await getPassService.checkoutGetPass(id, user.tenantId, user, lines);
-    res.json({ success: true, data: result });
-};
-
 const confirmDestinationReceipt = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
@@ -126,7 +118,6 @@ module.exports = {
     submitGetPass,
     approveGetPass,
     rejectGetPass,
-    checkoutGetPass,
     confirmDestinationReceipt,
     acceptDestinationDepartment,
     returnGetPass,

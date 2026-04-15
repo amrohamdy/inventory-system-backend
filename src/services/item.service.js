@@ -546,6 +546,7 @@ const getItemById = async (id, tenantId) => {
 // ── UPDATE ─────────────────────────────────────────────────────────────────────
 const updateItem = async (id, data, tenantId, userId = null) => {
     const existing = await getItemById(id, tenantId);
+    const obStatus = await settingService.getObStatus(tenantId);
 
     const {
         itemUnits,
@@ -555,6 +556,18 @@ const updateItem = async (id, data, tenantId, userId = null) => {
     } = data;
 
     const mainData = pickWhitelistedItemPayload(bodyRest);
+
+    if (obStatus === 'FINALIZED') {
+        const hasUnitPriceInPayload = Object.prototype.hasOwnProperty.call(data, 'unitPrice');
+        const hasItemUnitsInPayload = Object.prototype.hasOwnProperty.call(data, 'itemUnits');
+        const hasOpeningQtyInPayload = Object.prototype.hasOwnProperty.call(data, 'openingQuantity');
+        if (hasUnitPriceInPayload || hasItemUnitsInPayload || hasOpeningQtyInPayload) {
+            throw badRequest(
+                'Cannot modify unit price, base unit, or opening quantity after Opening Balance finalization. '
+                + 'You can still update descriptive fields.'
+            );
+        }
+    }
 
     if (mainData.categoryId) {
         const cat = await prisma.category.findFirst({ where: { id: mainData.categoryId, tenantId } });
@@ -609,7 +622,6 @@ const updateItem = async (id, data, tenantId, userId = null) => {
         }
     }
 
-    const obStatus = await settingService.getObStatus(tenantId);
     const openingQtySetup = Number(existing.openingQuantity ?? 0);
     const effectiveUnitPrice =
         mainData.unitPrice !== undefined ? Number(mainData.unitPrice) : Number(existing.unitPrice ?? 0);
@@ -704,11 +716,17 @@ const updateItemImage = async (id, tenantId, imageUrl, oldImagePath) => {
 // ── SOFT DELETE ────────────────────────────────────────────────────────────────
 const deleteItem = async (id, tenantId) => {
     await getItemById(id, tenantId);
+    const obStatus = await settingService.getObStatus(tenantId);
 
     const stockCount = await prisma.stockBalance.count({
         where: { itemId: id, qtyOnHand: { gt: 0 } },
     });
-    if (stockCount > 0) throw badRequest('Cannot delete item: active stock exists. Deactivate instead.');
+    if (stockCount > 0 || obStatus === 'FINALIZED') {
+        throw badRequest(
+            'Cannot delete item while stock exists or after Opening Balance finalization. '
+            + 'Use isActive: false instead.'
+        );
+    }
 
     return prisma.item.delete({ where: { id } });
 };

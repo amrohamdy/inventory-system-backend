@@ -3,7 +3,6 @@ const prisma = new PrismaClient();
 const { generateDocNumber, DocPrefix } = require('./docNumbering.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
-const { hasPermission } = require('../middleware/authorize');
 const { normalizeRole } = require('./rbac.service');
 const { organizationRootId } = require('./organization.service');
 const {
@@ -852,9 +851,78 @@ const submitGetPass = async (id, tenantId, user) => {
     return getGetPassById(id, tenantId);
 };
 
+const checkoutAndStampExitInTx = async (tx, getPass, tenantId, user, linesOut = [], exitAt = new Date()) => {
+    for (const line of getPass.lines) {
+        const stock = await tx.stockBalance.findUnique({
+            where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+        });
+
+        const qtyReq = Number(line.qty);
+        const availableQty = stock ? Number(stock.qtyOnHand) - Number(stock.qtyBlocked || 0) : 0;
+        if (!stock || availableQty < qtyReq) {
+            throw new Error(`Insufficient stock for ${line.item?.name || 'item'}. Available: ${availableQty}`);
+        }
+
+        const wac = Number(stock.wacUnitCost);
+        if (isBlockingTransferType(getPass.transferType)) {
+            await tx.stockBalance.update({
+                where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                data: { qtyBlocked: { increment: qtyReq } },
+            });
+        } else {
+            await tx.stockBalance.update({
+                where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                data: { qtyOnHand: { decrement: qtyReq } },
+            });
+        }
+
+        const movementType = getPass.transferType === 'PERMANENT' ? 'ISSUE' : 'GET_PASS_OUT';
+        await tx.inventoryLedger.create({
+            data: {
+                tenantId,
+                itemId: line.itemId,
+                locationId: line.locationId,
+                movementType,
+                qtyIn: 0,
+                qtyOut: qtyReq,
+                unitCost: wac,
+                totalValue: qtyReq * wac,
+                referenceType: 'GET_PASS',
+                referenceId: getPass.id,
+                referenceNo: getPass.passNo,
+                createdBy: user.id,
+            },
+        });
+
+        const linePayload = linesOut?.find((l) => l.lineId === line.id);
+        const conditionOut = linePayload?.conditionOut || line.conditionOut;
+        await tx.getPassLine.update({
+            where: { id: line.id },
+            data: { status: 'OUT', unitCost: wac, conditionOut },
+        });
+    }
+
+    const internalToDestination = Boolean(getPass.isInternalTransfer && getPass.targetTenantId);
+    const permanentCloseAtSource = getPass.transferType === 'PERMANENT' && !internalToDestination;
+    const newStatus = permanentCloseAtSource ? 'CLOSED' : 'OUT';
+    await tx.getPass.update({
+        where: { id: getPass.id },
+        data: {
+            status: newStatus,
+            checkedOutBy: user.id,
+            checkedOutAt: exitAt,
+            securityApprovedBy: user.id,
+            securityApprovedAt: exitAt,
+            closedBy: permanentCloseAtSource ? user.id : null,
+            closedAt: permanentCloseAtSource ? exitAt : null,
+        },
+    });
+};
+
 /**
  * Approval chain:
- * PENDING_DEPT → … → PENDING_GM → PENDING_SECURITY → APPROVED.
+ * PENDING_DEPT → … → PENDING_GM → PENDING_SECURITY.
+ * Security approval now executes exit/stock movement immediately (status OUT or CLOSED).
  */
 const approveGetPass = async (id, tenantId, user) => {
     const getPass = await prisma.getPass.findFirst({ where: { id, tenantId } });
@@ -862,54 +930,74 @@ const approveGetPass = async (id, tenantId, user) => {
     if (!PENDING_APPROVAL_STATUSES.includes(getPass.status)) {
         throw new Error('Get Pass is not pending any approval');
     }
-
     assertCanActOnStatus(getPass.status, user.role);
+
+    if (getPass.status === 'PENDING_SECURITY') {
+        await checkPeriodLock(tenantId, new Date());
+        await prisma.$transaction(async (tx) => {
+            const passWithLines = await tx.getPass.findFirst({
+                where: { id, tenantId, status: 'PENDING_SECURITY' },
+                include: { lines: { include: { item: true } } },
+            });
+            if (!passWithLines) {
+                throw new Error('Get Pass is not pending security approval');
+            }
+            await checkoutAndStampExitInTx(tx, passWithLines, tenantId, user, [], new Date());
+        });
+        await logAction({
+            tenantId,
+            entityType: EntityType.GET_PASS,
+            entityId: id,
+            action: 'APPROVE_PENDING_SECURITY',
+            changedBy: user.id,
+        });
+        return getGetPassById(id, tenantId);
+    }
 
     const now = new Date();
     let updateData;
-
     switch (getPass.status) {
         case 'PENDING_DEPT':
             updateData = {
                 status: 'PENDING_COST_CONTROL',
                 deptApprovedBy: user.id,
-                deptApprovedAt: now
+                deptApprovedAt: now,
             };
             break;
         case 'PENDING_COST_CONTROL':
             updateData = {
                 status: 'PENDING_FINANCE',
                 costControlApprovedBy: user.id,
-                costControlApprovedAt: now
+                costControlApprovedAt: now,
             };
             break;
         case 'PENDING_FINANCE':
             updateData = {
                 status: 'PENDING_GM',
                 financeApprovedBy: user.id,
-                financeApprovedAt: now
+                financeApprovedAt: now,
             };
             break;
         case 'PENDING_GM':
             updateData = {
                 status: 'PENDING_SECURITY',
                 gmApprovedBy: user.id,
-                gmApprovedAt: now
-            };
-            break;
-        case 'PENDING_SECURITY':
-            // securityApprovedAt/By are set at checkout (exit gate), not here.
-            updateData = {
-                status: 'APPROVED',
+                gmApprovedAt: now,
             };
             break;
         default:
             throw new Error('Get Pass is not pending any approval');
     }
 
-    const updated = await prisma.getPass.update({ where: { id }, data: updateData });
-    await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: `APPROVE_${getPass.status}`, changedBy: user.id });
-    return updated;
+    await prisma.getPass.update({ where: { id }, data: updateData });
+    await logAction({
+        tenantId,
+        entityType: EntityType.GET_PASS,
+        entityId: id,
+        action: `APPROVE_${getPass.status}`,
+        changedBy: user.id,
+    });
+    return getGetPassById(id, tenantId);
 };
 
 const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
@@ -947,97 +1035,6 @@ const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
     return updated;
 };
 
-/**
- * Marks Get Pass as OUT. Deducts from StockBalance. Writes to InventoryLedger.
- */
-const checkoutGetPass = async (id, tenantId, user, linesOut) => {
-    if (!hasPermission(user, 'GET_PASS_APPROVE_EXIT')) throw new Error('Only Security can checkout items');
-
-    const getPass = await getIssuerGetPassById(id, tenantId);
-    if (getPass.status !== 'APPROVED') throw new Error('Get Pass must be APPROVED before checkout');
-
-    await checkPeriodLock(tenantId, new Date());
-
-    await prisma.$transaction(async (tx) => {
-        const exitAt = new Date();
-        for (const line of getPass.lines) {
-            // Find current stock to get WAC and check availability
-            const stock = await tx.stockBalance.findUnique({
-                where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } }
-            });
-
-            const qtyReq = Number(line.qty);
-            const availableQty = stock ? Number(stock.qtyOnHand) - Number(stock.qtyBlocked || 0) : 0;
-            if (!stock || availableQty < qtyReq) {
-                throw new Error(`Insufficient stock for ${line.item.name}. Available: ${availableQty}`);
-            }
-
-            const wac = Number(stock.wacUnitCost);
-
-            const blockingTransfer = isBlockingTransferType(getPass.transferType);
-            if (blockingTransfer) {
-                await tx.stockBalance.update({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                    data: { qtyBlocked: { increment: qtyReq } }
-                });
-            } else {
-                await tx.stockBalance.update({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                    data: { qtyOnHand: { decrement: qtyReq } }
-                });
-            }
-
-            // Post Ledger
-            const movementType = getPass.transferType === 'PERMANENT' ? 'ISSUE' : 'GET_PASS_OUT';
-            await tx.inventoryLedger.create({
-                data: {
-                    tenantId,
-                    itemId: line.itemId,
-                    locationId: line.locationId,
-                    movementType,
-                    qtyIn: 0,
-                    qtyOut: qtyReq,
-                    unitCost: wac,
-                    totalValue: qtyReq * wac,
-                    referenceType: 'GET_PASS',
-                    referenceId: getPass.id,
-                    referenceNo: getPass.passNo,
-                    createdBy: user.id
-                }
-            });
-
-            // Update line
-            const linePayload = linesOut?.find(l => l.lineId === line.id);
-            const conditionOut = linePayload?.conditionOut || line.conditionOut;
-            const lineStatus = getPass.transferType === 'PERMANENT' ? 'OUT' : 'OUT'; 
-            // Permanent never returns, so we could theoretically set it to CLOSED, but keeping it OUT for consistency.
-
-            await tx.getPassLine.update({
-                where: { id: line.id },
-                data: { status: lineStatus, unitCost: wac, conditionOut }
-            });
-        }
-
-        const internalToDestination = Boolean(getPass.isInternalTransfer && getPass.targetTenantId);
-        const permanentCloseAtSource = getPass.transferType === 'PERMANENT' && !internalToDestination;
-        const newStatus = permanentCloseAtSource ? 'CLOSED' : 'OUT';
-        await tx.getPass.update({
-            where: { id },
-            data: {
-                status: newStatus,
-                checkedOutBy: user.id,
-                checkedOutAt: exitAt,
-                securityApprovedBy: user.id,
-                securityApprovedAt: exitAt,
-                closedBy: permanentCloseAtSource ? user.id : null,
-                closedAt: permanentCloseAtSource ? exitAt : null,
-            }
-        });
-    });
-
-    await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'CHECKOUT', changedBy: user.id });
-    return getGetPassById(id, tenantId);
-};
 
 /**
  * Parse return line payload: supports qtyGood + lostQty | damagedQty, or legacy qtyReturned + isLost/isDamaged.
@@ -1328,7 +1325,6 @@ module.exports = {
     submitGetPass,
     approveGetPass,
     rejectGetPass,
-    checkoutGetPass,
     processReturns,
     closeGetPass,
 };
