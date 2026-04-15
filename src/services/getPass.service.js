@@ -1027,8 +1027,8 @@ const confirmReturnExit = async (id, destinationTenantId, user) => {
 };
 
 /**
- * Source hotel security confirms returned shipment arrival.
- * Releases blocked quantities and restores on-hand availability.
+ * Source hotel security confirms returned shipment arrival (gate inspection).
+ * Updates pass/lines only — no stock or inventory ledger here (posting happens at department acceptance).
  */
 const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
     const getPass = await findIssuerPass(prisma, id, sourceTenantId);
@@ -1098,47 +1098,6 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
                 });
             }
             if (receivedQty > 0) hasReceivedQty = true;
-            const discrepancyQty = Math.max(0, outstanding - receivedQty);
-            const unitCost = Number(line.unitCost || 0);
-
-            if (receivedQty > 0) {
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId: sourceTenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'GET_PASS_RETURN',
-                        qtyIn: receivedQty,
-                        qtyOut: 0,
-                        unitCost,
-                        totalValue: receivedQty * unitCost,
-                        referenceType: 'GET_PASS',
-                        referenceId: id,
-                        referenceNo: getPass.passNo,
-                        createdBy: user.id,
-                        notes: 'Return received at source security gate',
-                    },
-                });
-            }
-            if (discrepancyQty > 0) {
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId: sourceTenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'ADJUSTMENT',
-                        qtyIn: 0,
-                        qtyOut: discrepancyQty,
-                        unitCost,
-                        totalValue: discrepancyQty * unitCost,
-                        referenceType: 'GET_PASS',
-                        referenceId: id,
-                        referenceNo: getPass.passNo,
-                        createdBy: user.id,
-                        notes: 'Lost during return transfer',
-                    },
-                });
-            }
 
             await tx.getPassLine.update({
                 where: { id: line.id },
@@ -1178,7 +1137,8 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
 };
 
 /**
- * Source hotel department accepts inspected return and posts stock movement.
+ * Source hotel department accepts inspected return.
+ * Sole posting point for reverse logistics: release blocked qty, restore on-hand, inventory ledger (one set per pass).
  */
 const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
     const getPass = await findIssuerPass(prisma, id, sourceTenantId);
@@ -1210,9 +1170,14 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
     const now = new Date();
     await prisma.$transaction(async (tx) => {
         for (const line of getPass.lines ?? []) {
-            const qtyToReceive = Number(line.qtyReturned || 0);
-            if (!Number.isFinite(qtyToReceive) || qtyToReceive <= 0) continue;
-            await tx.stockBalance.update({
+            const lineQty = Number(line.qty || 0);
+            const qtyReceivedAtGate = Number(line.qtyReturned || 0);
+            if (!Number.isFinite(lineQty) || lineQty <= 0) continue;
+
+            const lostInTransit = Math.max(0, lineQty - qtyReceivedAtGate);
+            const wac = Number(line.unitCost || 0);
+
+            const stock = await tx.stockBalance.findUnique({
                 where: {
                     tenantId_itemId_locationId: {
                         tenantId: sourceTenantId,
@@ -1220,29 +1185,77 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
                         locationId: line.locationId,
                     },
                 },
-                data: {
-                    qtyBlocked: { decrement: qtyToReceive },
-                    qtyOnHand: { increment: qtyToReceive },
-                },
             });
-            const wac = Number(line.unitCost || 0);
-            await tx.inventoryLedger.create({
-                data: {
-                    tenantId: sourceTenantId,
-                    itemId: line.itemId,
-                    locationId: line.locationId,
-                    movementType: 'GET_PASS_RETURN',
-                    qtyIn: qtyToReceive,
-                    qtyOut: 0,
-                    unitCost: wac,
-                    totalValue: qtyToReceive * wac,
-                    referenceType: 'GET_PASS',
-                    referenceId: id,
-                    referenceNo: getPass.passNo,
-                    createdBy: user.id,
-                    notes: 'Final department acceptance after source gate inspection',
-                },
-            });
+            const blocked = stock ? Number(stock.qtyBlocked || 0) : 0;
+            const targetBlockRelease = qtyReceivedAtGate + lostInTransit;
+            const releaseFromBlocked = Math.min(blocked, targetBlockRelease);
+
+            if (releaseFromBlocked > 0) {
+                await tx.stockBalance.update({
+                    where: {
+                        tenantId_itemId_locationId: {
+                            tenantId: sourceTenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                        },
+                    },
+                    data: {
+                        qtyBlocked: { decrement: releaseFromBlocked },
+                    },
+                });
+            }
+
+            if (qtyReceivedAtGate > 0) {
+                await tx.stockBalance.update({
+                    where: {
+                        tenantId_itemId_locationId: {
+                            tenantId: sourceTenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                        },
+                    },
+                    data: {
+                        qtyOnHand: { increment: qtyReceivedAtGate },
+                    },
+                });
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'GET_PASS_RETURN',
+                        qtyIn: qtyReceivedAtGate,
+                        qtyOut: 0,
+                        unitCost: wac,
+                        totalValue: qtyReceivedAtGate * wac,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                        notes: 'Return posted at department acceptance (after gate inspection)',
+                    },
+                });
+            }
+
+            if (lostInTransit > 0) {
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'ADJUSTMENT',
+                        qtyIn: 0,
+                        qtyOut: lostInTransit,
+                        unitCost: wac,
+                        totalValue: lostInTransit * wac,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                        notes: 'Lost during return transfer',
+                    },
+                });
+            }
         }
 
         await tx.getPass.update({
