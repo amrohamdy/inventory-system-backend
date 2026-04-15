@@ -78,11 +78,13 @@ const getGetPassReverseAuditTrail = async (getPass) => {
     if (!getPass?.id) return null;
 
     const tenantScope = [getPass.tenantId, getPass.targetTenantId].filter(Boolean);
+    const reverseNotes = ['GET_PASS_SHIP_BACK', 'GET_PASS_CONFIRM_RETURN_ARRIVAL'];
     const logs = await prisma.auditLog.findMany({
         where: {
             entityType: 'GET_PASS',
             entityId: String(getPass.id),
-            action: { in: ['SHIP_BACK', 'CONFIRM_RETURN_ARRIVAL'] },
+            action: 'UPDATE',
+            note: { in: reverseNotes },
             tenantId: { in: tenantScope },
         },
         orderBy: { changedAt: 'desc' },
@@ -93,8 +95,8 @@ const getGetPassReverseAuditTrail = async (getPass) => {
         },
     });
 
-    const shipBack = logs.find((log) => log.action === 'SHIP_BACK') || null;
-    const confirmArrival = logs.find((log) => log.action === 'CONFIRM_RETURN_ARRIVAL') || null;
+    const shipBack = logs.find((log) => log.note === 'GET_PASS_SHIP_BACK') || null;
+    const confirmArrival = logs.find((log) => log.note === 'GET_PASS_CONFIRM_RETURN_ARRIVAL') || null;
 
     return {
         shipBackAt: shipBack?.changedAt ?? null,
@@ -943,8 +945,9 @@ const shipBackGetPass = async (id, viewerTenantId, user) => {
         tenantId: viewerTenantId,
         entityType: EntityType.GET_PASS,
         entityId: id,
-        action: 'SHIP_BACK',
+        action: 'UPDATE',
         changedBy: user.id,
+        note: 'GET_PASS_SHIP_BACK',
     });
 
     return getGetPassById(id, viewerTenantId);
@@ -1027,8 +1030,9 @@ const confirmReturnArrival = async (id, sourceTenantId, user) => {
         tenantId: sourceTenantId,
         entityType: EntityType.GET_PASS,
         entityId: id,
-        action: 'CONFIRM_RETURN_ARRIVAL',
+        action: 'UPDATE',
         changedBy: user.id,
+        note: 'GET_PASS_CONFIRM_RETURN_ARRIVAL',
     });
 
     return getGetPassById(id, sourceTenantId);
