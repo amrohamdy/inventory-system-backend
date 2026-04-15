@@ -74,6 +74,38 @@ const getIssuerGetPassById = async (id, issuerTenantId) => {
     return getPass;
 };
 
+const getGetPassReverseAuditTrail = async (getPass) => {
+    if (!getPass?.id) return null;
+
+    const tenantScope = [getPass.tenantId, getPass.targetTenantId].filter(Boolean);
+    const logs = await prisma.auditLog.findMany({
+        where: {
+            entityType: 'GET_PASS',
+            entityId: String(getPass.id),
+            action: { in: ['SHIP_BACK', 'CONFIRM_RETURN_ARRIVAL'] },
+            tenantId: { in: tenantScope },
+        },
+        orderBy: { changedAt: 'desc' },
+        include: {
+            changedByUser: {
+                select: { id: true, firstName: true, lastName: true, email: true },
+            },
+        },
+    });
+
+    const shipBack = logs.find((log) => log.action === 'SHIP_BACK') || null;
+    const confirmArrival = logs.find((log) => log.action === 'CONFIRM_RETURN_ARRIVAL') || null;
+
+    return {
+        shipBackAt: shipBack?.changedAt ?? null,
+        shipBackBy: shipBack?.changedBy ?? null,
+        shipBackByUser: shipBack?.changedByUser ?? null,
+        confirmReturnArrivalAt: confirmArrival?.changedAt ?? null,
+        confirmReturnArrivalBy: confirmArrival?.changedBy ?? null,
+        confirmReturnArrivalByUser: confirmArrival?.changedByUser ?? null,
+    };
+};
+
 const PENDING_APPROVAL_STATUSES = [
     'PENDING_DEPT',
     'PENDING_COST_CONTROL',
@@ -1008,7 +1040,8 @@ const confirmReturnArrival = async (id, sourceTenantId, user) => {
 const getGetPassById = async (id, tenantId) => {
     const getPass = await findReadablePass(prisma, id, tenantId);
     if (!getPass) throw new Error('Get Pass not found');
-    return getPass;
+    const reverseAuditTrail = await getGetPassReverseAuditTrail(getPass);
+    return { ...getPass, reverseAuditTrail };
 };
 
 const updateGetPass = async (id, tenantId, data, userId) => {
