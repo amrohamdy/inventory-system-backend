@@ -39,6 +39,7 @@ router.post('/:id/accept-into-department', getPassController.acceptDestinationDe
 router.post('/:id/ship-back', getPassController.shipBackGetPass);
 router.post('/:id/confirm-return-exit', getPassController.confirmReturnExit);
 router.post('/:id/confirm-return-arrival', getPassController.confirmReturnArrival);
+router.post('/:id/accept-return-into-department', getPassController.acceptReturnIntoDepartment);
 router.post('/:id/return', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.returnGetPass);
 router.post('/:id/close', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.closeGetPass);
 

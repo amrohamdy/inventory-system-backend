@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "GetPassStatus" ADD VALUE 'RETURN_RECEIVED_AT_GATE';

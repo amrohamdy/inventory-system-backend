@@ -79,7 +79,12 @@ const getGetPassReverseAuditTrail = async (getPass) => {
     if (!getPass?.id) return null;
 
     const tenantScope = [getPass.tenantId, getPass.targetTenantId].filter(Boolean);
-    const reverseNotes = ['GET_PASS_SHIP_BACK', 'GET_PASS_CONFIRM_RETURN_EXIT', 'GET_PASS_CONFIRM_RETURN_ARRIVAL'];
+    const reverseNotes = [
+        'GET_PASS_SHIP_BACK',
+        'GET_PASS_CONFIRM_RETURN_EXIT',
+        'GET_PASS_CONFIRM_RETURN_ARRIVAL',
+        'GET_PASS_ACCEPT_RETURN_DEPARTMENT',
+    ];
     const logs = await prisma.auditLog.findMany({
         where: {
             entityType: 'GET_PASS',
@@ -99,6 +104,7 @@ const getGetPassReverseAuditTrail = async (getPass) => {
     const shipBack = logs.find((log) => log.note === 'GET_PASS_SHIP_BACK') || null;
     const confirmExit = logs.find((log) => log.note === 'GET_PASS_CONFIRM_RETURN_EXIT') || null;
     const confirmArrival = logs.find((log) => log.note === 'GET_PASS_CONFIRM_RETURN_ARRIVAL') || null;
+    const acceptReturnDepartment = logs.find((log) => log.note === 'GET_PASS_ACCEPT_RETURN_DEPARTMENT') || null;
 
     return {
         shipBackAt: shipBack?.changedAt ?? null,
@@ -110,6 +116,9 @@ const getGetPassReverseAuditTrail = async (getPass) => {
         confirmReturnArrivalAt: confirmArrival?.changedAt ?? null,
         confirmReturnArrivalBy: confirmArrival?.changedBy ?? null,
         confirmReturnArrivalByUser: confirmArrival?.changedByUser ?? null,
+        acceptReturnDeptAt: acceptReturnDepartment?.changedAt ?? null,
+        acceptReturnDeptBy: acceptReturnDepartment?.changedBy ?? null,
+        acceptReturnDeptByUser: acceptReturnDepartment?.changedByUser ?? null,
     };
 };
 
@@ -401,6 +410,7 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
         'OUT',
         'RECEIVED_AT_DESTINATION',
         'RETURNING',
+        'RETURN_RECEIVED_AT_GATE',
         'PARTIALLY_RETURNED',
         'RETURNED',
         'CLOSED',
@@ -465,14 +475,14 @@ const getReturningGetPasses = async (sourceTenantId, params = {}, user) => {
     if (listContext?.organizationRootId) {
         where = {
             isInternalTransfer: true,
-            status: 'RETURNING',
+            status: { in: ['RETURNING', 'RETURN_RECEIVED_AT_GATE'] },
             tenant: { parentId: listContext.organizationRootId },
         };
     } else {
         where = {
             tenantId: sourceTenantId,
             isInternalTransfer: true,
-            status: 'RETURNING',
+            status: { in: ['RETURNING', 'RETURN_RECEIVED_AT_GATE'] },
         };
     }
 
@@ -1020,7 +1030,7 @@ const confirmReturnExit = async (id, destinationTenantId, user) => {
  * Source hotel security confirms returned shipment arrival.
  * Releases blocked quantities and restores on-hand availability.
  */
-const confirmReturnArrival = async (id, sourceTenantId, user) => {
+const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
     const getPass = await findIssuerPass(prisma, id, sourceTenantId);
     if (!getPass) {
         throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
@@ -1052,16 +1062,156 @@ const confirmReturnArrival = async (id, sourceTenantId, user) => {
         });
     }
 
+    const linesPayload = Array.isArray(payload.lines) ? payload.lines : [];
+    if (linesPayload.length === 0) {
+        throw Object.assign(new Error('lines are required to confirm return arrival.'), { statusCode: 400 });
+    }
+    const linePayloadMap = new Map(linesPayload.map((row) => [row?.lineId, row]));
+    if (linePayloadMap.size !== (getPass.lines ?? []).length) {
+        throw Object.assign(new Error('Inspection must include every line item.'), { statusCode: 400 });
+    }
+
     const now = new Date();
     await prisma.$transaction(async (tx) => {
+        let hasReceivedQty = false;
         for (const line of getPass.lines ?? []) {
             const totalQty = Number(line.qty || 0);
             const alreadyReturned = Number(line.qtyReturned || 0);
             const outstanding = Math.max(0, totalQty - alreadyReturned);
-            if (outstanding <= 0) {
-                continue;
+            const linePayload = linePayloadMap.get(line.id);
+            if (!linePayload) {
+                throw Object.assign(new Error(`Missing inspection row for line ${line.id}.`), { statusCode: 400 });
+            }
+            const conditionIn = typeof linePayload.condition === 'string' ? linePayload.condition.trim() : '';
+            if (!conditionIn) {
+                throw Object.assign(new Error('condition is required for each inspected line.'), { statusCode: 400 });
+            }
+            const receivedQty = Number(linePayload.receivedQty);
+            if (!Number.isFinite(receivedQty) || receivedQty < 0) {
+                throw Object.assign(new Error('receivedQty must be a valid number for each inspected line.'), {
+                    statusCode: 400,
+                });
+            }
+            if (receivedQty > outstanding) {
+                throw Object.assign(new Error(`receivedQty exceeds outstanding quantity for line ${line.id}.`), {
+                    statusCode: 400,
+                });
+            }
+            if (receivedQty > 0) hasReceivedQty = true;
+            const discrepancyQty = Math.max(0, outstanding - receivedQty);
+            const unitCost = Number(line.unitCost || 0);
+
+            if (receivedQty > 0) {
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'GET_PASS_RETURN',
+                        qtyIn: receivedQty,
+                        qtyOut: 0,
+                        unitCost,
+                        totalValue: receivedQty * unitCost,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                        notes: 'Return received at source security gate',
+                    },
+                });
+            }
+            if (discrepancyQty > 0) {
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'ADJUSTMENT',
+                        qtyIn: 0,
+                        qtyOut: discrepancyQty,
+                        unitCost,
+                        totalValue: discrepancyQty * unitCost,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                        notes: 'Lost during return transfer',
+                    },
+                });
             }
 
+            await tx.getPassLine.update({
+                where: { id: line.id },
+                data: {
+                    qtyReturned: alreadyReturned + receivedQty,
+                    receivedCondition: conditionIn,
+                    status: alreadyReturned + receivedQty >= totalQty - 1e-9 ? 'RETURNED' : 'PARTIALLY_RETURNED',
+                },
+            });
+        }
+        if (!hasReceivedQty) {
+            throw Object.assign(new Error('At least one line must have receivedQty greater than 0.'), { statusCode: 400 });
+        }
+
+        await tx.getPass.update({
+            where: { id },
+            data: {
+                status: 'RETURN_RECEIVED_AT_GATE',
+                receivedById: user.id,
+                receivedAt: now,
+                closedBy: null,
+                closedAt: null,
+            },
+        });
+    });
+
+    await logAction({
+        tenantId: sourceTenantId,
+        entityType: EntityType.GET_PASS,
+        entityId: id,
+        action: 'UPDATE',
+        changedBy: user.id,
+        note: 'GET_PASS_CONFIRM_RETURN_ARRIVAL',
+    });
+
+    return getGetPassById(id, sourceTenantId);
+};
+
+/**
+ * Source hotel department accepts inspected return and posts stock movement.
+ */
+const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
+    const getPass = await findIssuerPass(prisma, id, sourceTenantId);
+    if (!getPass) {
+        throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
+    }
+    if (!getPass.isInternalTransfer) {
+        throw Object.assign(new Error('Return department acceptance is only valid for internal transfers.'), {
+            statusCode: 400,
+        });
+    }
+    if (!['TEMPORARY', 'CATERING'].includes(getPass.transferType)) {
+        throw Object.assign(new Error('Return department acceptance is only valid for temporary/catering transfers.'), {
+            statusCode: 400,
+        });
+    }
+    if (getPass.status !== 'RETURN_RECEIVED_AT_GATE') {
+        throw Object.assign(new Error('Pass must be received at source gate before department acceptance.'), {
+            statusCode: 400,
+        });
+    }
+    const role = normalizeRole(user.role);
+    if (role !== 'DEPT_MANAGER' && !isAdminBypass(role)) {
+        throw Object.assign(new Error('Only source department manager can accept return into department.'), {
+            statusCode: 403,
+        });
+    }
+
+    const now = new Date();
+    await prisma.$transaction(async (tx) => {
+        for (const line of getPass.lines ?? []) {
+            const qtyToReceive = Number(line.qtyReturned || 0);
+            if (!Number.isFinite(qtyToReceive) || qtyToReceive <= 0) continue;
             await tx.stockBalance.update({
                 where: {
                     tenantId_itemId_locationId: {
@@ -1071,16 +1221,26 @@ const confirmReturnArrival = async (id, sourceTenantId, user) => {
                     },
                 },
                 data: {
-                    qtyBlocked: { decrement: outstanding },
-                    qtyOnHand: { increment: outstanding },
+                    qtyBlocked: { decrement: qtyToReceive },
+                    qtyOnHand: { increment: qtyToReceive },
                 },
             });
-
-            await tx.getPassLine.update({
-                where: { id: line.id },
+            const wac = Number(line.unitCost || 0);
+            await tx.inventoryLedger.create({
                 data: {
-                    qtyReturned: totalQty,
-                    status: 'RETURNED',
+                    tenantId: sourceTenantId,
+                    itemId: line.itemId,
+                    locationId: line.locationId,
+                    movementType: 'GET_PASS_RETURN',
+                    qtyIn: qtyToReceive,
+                    qtyOut: 0,
+                    unitCost: wac,
+                    totalValue: qtyToReceive * wac,
+                    referenceType: 'GET_PASS',
+                    referenceId: id,
+                    referenceNo: getPass.passNo,
+                    createdBy: user.id,
+                    notes: 'Final department acceptance after source gate inspection',
                 },
             });
         }
@@ -1101,7 +1261,7 @@ const confirmReturnArrival = async (id, sourceTenantId, user) => {
         entityId: id,
         action: 'UPDATE',
         changedBy: user.id,
-        note: 'GET_PASS_CONFIRM_RETURN_ARRIVAL',
+        note: 'GET_PASS_ACCEPT_RETURN_DEPARTMENT',
     });
 
     return getGetPassById(id, sourceTenantId);
@@ -1681,6 +1841,7 @@ module.exports = {
     shipBackGetPass,
     confirmReturnExit,
     confirmReturnArrival,
+    acceptReturnIntoDepartment,
     updateGetPass,
     deleteGetPass,
     submitGetPass,

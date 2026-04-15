@@ -103,7 +103,14 @@ const confirmReturnExit = async (req, res) => {
 const confirmReturnArrival = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
-    const result = await getPassService.confirmReturnArrival(id, user.tenantId, user);
+    const result = await getPassService.confirmReturnArrival(id, user.tenantId, user, req.body);
+    res.json({ success: true, data: result });
+};
+
+const acceptReturnIntoDepartment = async (req, res) => {
+    const { user } = req;
+    const { id } = req.params;
+    const result = await getPassService.acceptReturnIntoDepartment(id, user.tenantId, user);
     res.json({ success: true, data: result });
 };
 
@@ -150,6 +157,7 @@ module.exports = {
     shipBackGetPass,
     confirmReturnExit,
     confirmReturnArrival,
+    acceptReturnIntoDepartment,
     returnGetPass,
     closeGetPass,
     exportPdf
