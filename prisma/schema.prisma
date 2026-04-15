@@ -1120,6 +1120,10 @@ model GetPass {
   /// Destination hotel: department manager final acceptance (internal transfers).
   destinationDeptAcceptedAt DateTime?
   destinationDeptAcceptedBy String?       @db.Uuid
+  /// Destination hotel: selected receiving department at final acceptance.
+  destinationDepartmentId   String?       @db.Uuid
+  /// Destination hotel: selected receiving location/store at final acceptance.
+  destinationLocationId     String?       @db.Uuid
   reason             String?
   notes              String?
   rejectionReason    String?
@@ -1147,6 +1151,8 @@ model GetPass {
   @@index([tenantId, status])
   @@index([departmentId])
   @@index([targetTenantId])
+  @@index([destinationDepartmentId])
+  @@index([destinationLocationId])
   @@map("get_passes")
 }
 

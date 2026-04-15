@@ -568,45 +568,6 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
                 });
                 const sourceWac = Number(sourceStock?.wacUnitCost || 0);
 
-                if (row.receivedQty > 0) {
-                    await tx.inventoryLedger.create({
-                        data: {
-                            tenantId: targetTenantId,
-                            itemId: row.itemId,
-                            locationId: row.locationId,
-                            movementType: 'RECEIVE',
-                            qtyIn: row.receivedQty,
-                            qtyOut: 0,
-                            unitCost: sourceWac,
-                            totalValue: row.receivedQty * sourceWac,
-                            referenceType: 'GET_PASS',
-                            referenceId: id,
-                            referenceNo: existing.passNo,
-                            createdBy: userId,
-                        },
-                    });
-                    await tx.stockBalance.upsert({
-                        where: {
-                            tenantId_itemId_locationId: {
-                                tenantId: targetTenantId,
-                                itemId: row.itemId,
-                                locationId: row.locationId,
-                            },
-                        },
-                        update: {
-                            qtyOnHand: { increment: row.receivedQty },
-                        },
-                        create: {
-                            tenantId: targetTenantId,
-                            itemId: row.itemId,
-                            locationId: row.locationId,
-                            qtyOnHand: row.receivedQty,
-                            qtyBlocked: 0,
-                            wacUnitCost: sourceWac,
-                        },
-                    });
-                }
-
                 if (row.discrepancyQty > 0) {
                     await tx.inventoryLedger.create({
                         data: {
@@ -676,7 +637,7 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
 /**
  * Destination hotel: department manager (or org manager) records final acceptance after gate receipt.
  */
-const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
+const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {}) => {
     const getPass = await findReadablePass(prisma, id, viewerTenantId);
     if (!getPass) {
         throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
@@ -696,6 +657,15 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
     }
     if (!['RECEIVED_AT_DESTINATION', 'PARTIALLY_RETURNED', 'RETURNED'].includes(getPass.status)) {
         throw Object.assign(new Error('Invalid status for department acceptance.'), { statusCode: 400 });
+    }
+    const targetDepartmentId =
+        typeof payload.targetDepartmentId === 'string' ? payload.targetDepartmentId.trim() : '';
+    const targetLocationId =
+        typeof payload.targetLocationId === 'string' ? payload.targetLocationId.trim() : '';
+    if (!targetDepartmentId || !targetLocationId) {
+        throw Object.assign(new Error('targetDepartmentId and targetLocationId are required.'), {
+            statusCode: 400,
+        });
     }
 
     const role = normalizeRole(user.role);
@@ -718,28 +688,110 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
         throw Object.assign(new Error('Unauthorized for department acceptance.'), { statusCode: 403 });
     }
 
-    const now = new Date();
-    // Archive as CLOSED when the internal transfer lifecycle is finished at destination.
-    // PERMANENT: no returns — safe to close here for reporting "completed" passes.
-    // TEMPORARY: returns are processed at the issuing hotel while status stays OUT / PARTIALLY_RETURNED;
-    // closing here would block processReturns, so we only record destinationDeptAccepted* until source closes.
-    const closeAsArchived =
-        getPass.transferType === 'PERMANENT' ||
-        (isBlockingTransferType(getPass.transferType) && getPass.status === 'RETURNED');
+    await prisma.$transaction(async (tx) => {
+        const targetDepartment = await tx.department.findFirst({
+            where: { id: targetDepartmentId, tenantId: viewerTenantId, isActive: true },
+            select: { id: true },
+        });
+        if (!targetDepartment) {
+            throw Object.assign(new Error('Invalid targetDepartmentId for destination tenant.'), {
+                statusCode: 400,
+            });
+        }
+        const targetLocation = await tx.location.findFirst({
+            where: {
+                id: targetLocationId,
+                tenantId: viewerTenantId,
+                isActive: true,
+                departmentId: targetDepartmentId,
+            },
+            select: { id: true },
+        });
+        if (!targetLocation) {
+            throw Object.assign(
+                new Error('Invalid targetLocationId. It must belong to the selected department.'),
+                { statusCode: 400 },
+            );
+        }
 
-    await prisma.getPass.update({
-        where: { id },
-        data: {
-            destinationDeptAcceptedAt: now,
-            destinationDeptAcceptedBy: user.id,
-            ...(closeAsArchived
-                ? {
-                      status: 'CLOSED',
-                      closedBy: user.id,
-                      closedAt: now,
-                  }
-                : {}),
-        },
+        const now = new Date();
+        // Archive as CLOSED when the internal transfer lifecycle is finished at destination.
+        // PERMANENT: no returns — safe to close here for reporting "completed" passes.
+        // TEMPORARY: returns are processed at the issuing hotel while status stays OUT / PARTIALLY_RETURNED;
+        // closing here would block processReturns, so we only record destinationDeptAccepted* until source closes.
+        const closeAsArchived =
+            getPass.transferType === 'PERMANENT' ||
+            (isBlockingTransferType(getPass.transferType) && getPass.status === 'RETURNED');
+
+        if (getPass.transferType === 'PERMANENT') {
+            for (const line of getPass.lines ?? []) {
+                const receivedQty = Number(line.qtyReceivedAtDestination ?? line.qty ?? 0);
+                if (!Number.isFinite(receivedQty) || receivedQty <= 0) continue;
+                const sourceStock = await tx.stockBalance.findUnique({
+                    where: {
+                        tenantId_itemId_locationId: {
+                            tenantId: getPass.tenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                        },
+                    },
+                });
+                const sourceWac = Number(sourceStock?.wacUnitCost || 0);
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: viewerTenantId,
+                        itemId: line.itemId,
+                        locationId: targetLocationId,
+                        movementType: 'RECEIVE',
+                        qtyIn: receivedQty,
+                        qtyOut: 0,
+                        unitCost: sourceWac,
+                        totalValue: receivedQty * sourceWac,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                    },
+                });
+                await tx.stockBalance.upsert({
+                    where: {
+                        tenantId_itemId_locationId: {
+                            tenantId: viewerTenantId,
+                            itemId: line.itemId,
+                            locationId: targetLocationId,
+                        },
+                    },
+                    update: {
+                        qtyOnHand: { increment: receivedQty },
+                    },
+                    create: {
+                        tenantId: viewerTenantId,
+                        itemId: line.itemId,
+                        locationId: targetLocationId,
+                        qtyOnHand: receivedQty,
+                        qtyBlocked: 0,
+                        wacUnitCost: sourceWac,
+                    },
+                });
+            }
+        }
+
+        await tx.getPass.update({
+            where: { id },
+            data: {
+                destinationDeptAcceptedAt: now,
+                destinationDeptAcceptedBy: user.id,
+                destinationDepartmentId: targetDepartmentId,
+                destinationLocationId: targetLocationId,
+                ...(closeAsArchived
+                    ? {
+                          status: 'CLOSED',
+                          closedBy: user.id,
+                          closedAt: now,
+                      }
+                    : {}),
+            },
+        });
     });
 
     await logAction({

@@ -77,7 +77,7 @@ const confirmDestinationReceipt = async (req, res) => {
 const acceptDestinationDepartment = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
-    const result = await getPassService.acceptDestinationDepartment(id, user.tenantId, user);
+    const result = await getPassService.acceptDestinationDepartment(id, user.tenantId, user, req.body);
     res.json({ success: true, data: result });
 };
 
