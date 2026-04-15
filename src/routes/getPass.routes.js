@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const getPassController = require('../controllers/getPass.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
-const { requirePermission } = require('../middleware/authorize');
+const { requireAnyPermission, requirePermission } = require('../middleware/authorize');
 
 router.use(protect);
 
@@ -10,6 +10,16 @@ router.use(protect);
 router.post('/', requirePermission('GET_PASS_CREATE'), getPassController.createGetPass);
 router.get('/', requirePermission('GET_PASS_VIEW'), getPassController.getGetPasses);
 router.get('/incoming', requirePermission('GET_PASS_VIEW'), getPassController.getIncomingGetPasses);
+router.get(
+    '/discrepancies',
+    requireAnyPermission('GET_PASS_VIEW', 'REPORTS_VIEW'),
+    getPassController.getDiscrepancyClaims
+);
+router.get(
+    '/overdue/check',
+    requireAnyPermission('GET_PASS_VIEW', 'REPORTS_VIEW'),
+    getPassController.checkOverdueGetPasses
+);
 router.get('/:id', requirePermission('GET_PASS_VIEW'), getPassController.getGetPassById);
 router.put('/:id', requirePermission('GET_PASS_CREATE'), getPassController.updateGetPass);
 router.delete('/:id', requirePermission('GET_PASS_CREATE'), getPassController.deleteGetPass);

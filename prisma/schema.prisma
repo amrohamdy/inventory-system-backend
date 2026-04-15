@@ -489,6 +489,7 @@ model StockBalance {
   itemId       String   @db.Uuid
   locationId   String   @db.Uuid
   qtyOnHand    Decimal  @default(0) @db.Decimal(15, 4)
+  qtyBlocked   Decimal  @default(0) @db.Decimal(15, 4)
   wacUnitCost  Decimal  @default(0) @db.Decimal(15, 4)
   lastUpdated  DateTime @default(now()) @updatedAt
   maxQty       Decimal  @default(0) @db.Decimal(15, 4)
@@ -1175,8 +1176,12 @@ model GetPassLine {
   locationId   String            @db.Uuid
   qty          Decimal           @db.Decimal(15, 4)
   qtyReturned  Decimal           @default(0) @db.Decimal(15, 4)
+  qtyReceivedAtDestination Decimal @default(0) @db.Decimal(15, 4)
+  qtyDiscrepancyAtDestination Decimal @default(0) @db.Decimal(15, 4)
   unitCost     Decimal           @default(0) @db.Decimal(15, 4)
   conditionOut String?
+  receivedCondition String?
+  discrepancyReason String?
   status       GetPassLineStatus @default(PENDING)
   notes        String?
   getPass      GetPass           @relation(fields: [getPassId], references: [id], onDelete: Cascade)
@@ -1346,6 +1351,7 @@ enum MovementType {
 enum GetPassType {
   TEMPORARY
   CATERING
+  OUTSIDE_CATERING
   PERMANENT
 }
 

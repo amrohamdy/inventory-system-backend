@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const prisma = require('../config/database');
 const notificationService = require('../services/notification.service');
 const emailService = require('../services/email.service');
+const getPassService = require('../services/getPass.service');
 const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('./logger');
 
@@ -60,3 +61,21 @@ cron.schedule('0 8 * * *', async () => {
 });
 
 logger.info('[CRON] Scheduler initialized.');
+
+// Run every day at 9:00 AM: mark overdue gate passes and notify cost control users.
+cron.schedule('0 9 * * *', async () => {
+    logger.info('[CRON] Starting overdue gate pass scan...');
+    try {
+        const { overdueCount, notifiedCount } = await getPassService.checkAndNotifyOverduePasses({
+            notifyCostControl: true,
+        });
+        logger.info(
+            `[CRON] Overdue gate pass scan completed: overdue=${overdueCount}, notified=${notifiedCount}.`
+        );
+    } catch (error) {
+        logger.error('[CRON] Overdue gate pass scan failed', {
+            message: error.message,
+            stack: error.stack,
+        });
+    }
+});

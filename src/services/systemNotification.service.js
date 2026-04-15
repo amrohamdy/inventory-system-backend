@@ -28,6 +28,34 @@ const notifyTenantAdmins = async (tx, tenantId, { type, title, body, payload }) 
 };
 
 /**
+ * Notify active members of one or more role codes in a tenant.
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+const notifyTenantRoles = async (tx, tenantId, roles, { type, title, body, payload }) => {
+    const normalizedRoles = Array.isArray(roles) ? roles : [roles];
+    const members = await tx.tenantMember.findMany({
+        where: {
+            tenantId,
+            isActive: true,
+            role: { code: { in: normalizedRoles } },
+        },
+        select: { userId: true },
+    });
+    if (members.length === 0) return;
+
+    await tx.systemNotification.createMany({
+        data: members.map((m) => ({
+            tenantId,
+            userId: m.userId,
+            type,
+            title,
+            body: body ?? null,
+            payload: payload ?? null,
+        })),
+    });
+};
+
+/**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
 const notifyIncomingInternalGetPass = async (tx, { targetTenantId, getPassId, passNo, sourceTenantName }) => {
@@ -54,6 +82,7 @@ const notifySourceTenantAdminsOfPermanentReceipt = async (tx, sourceTenantId, { 
 
 module.exports = {
     notifyTenantAdmins,
+    notifyTenantRoles,
     notifyIncomingInternalGetPass,
     notifySourceTenantAdminsOfPermanentReceipt,
 };

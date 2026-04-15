@@ -9,6 +9,7 @@ const { organizationRootId } = require('./organization.service');
 const {
     notifyIncomingInternalGetPass,
     notifySourceTenantAdminsOfPermanentReceipt,
+    notifyTenantRoles,
 } = require('./systemNotification.service');
 
 /**
@@ -81,6 +82,10 @@ const PENDING_APPROVAL_STATUSES = [
     'PENDING_GM',
     'PENDING_SECURITY',
 ];
+const BLOCKING_TRANSFER_TYPES = new Set(['TEMPORARY', 'CATERING', 'OUTSIDE_CATERING']);
+const OVERDUE_TRANSFER_TYPES = new Set(['TEMPORARY', 'CATERING', 'OUTSIDE_CATERING']);
+const OVERDUE_STATUSES = new Set(['OUT', 'PARTIALLY_RETURNED']);
+const RETURN_REQUIRED_TRANSFER_TYPES = new Set(['TEMPORARY', 'CATERING', 'OUTSIDE_CATERING']);
 
 const STEP_ROLE = {
     PENDING_DEPT: 'DEPT_MANAGER',
@@ -143,15 +148,25 @@ const assertCanActOnStatus = (status, role) => {
 const resolveTemporaryDatesForCreate = (data) => {
     let returnDate = data.returnDate ? new Date(data.returnDate) : null;
     let expectedReturnDate = data.expectedReturnDate ? new Date(data.expectedReturnDate) : null;
-    if (data.transferType === 'TEMPORARY') {
+    if (RETURN_REQUIRED_TRANSFER_TYPES.has(data.transferType)) {
         const effective = returnDate || expectedReturnDate;
-        if (!effective) {
-            throw Object.assign(new Error('returnDate or expectedReturnDate is required for TEMPORARY transfers.'), {
-                statusCode: 400,
-            });
+        if (data.transferType === 'TEMPORARY') {
+            if (!effective) {
+                throw Object.assign(new Error('returnDate or expectedReturnDate is required for TEMPORARY transfers.'), {
+                    statusCode: 400,
+                });
+            }
+            returnDate = returnDate || effective;
+            expectedReturnDate = expectedReturnDate || effective;
+        } else {
+            if (!expectedReturnDate) {
+                throw Object.assign(
+                    new Error('expectedReturnDate is required for CATERING and OUTSIDE_CATERING transfers.'),
+                    { statusCode: 400 }
+                );
+            }
+            returnDate = null;
         }
-        returnDate = returnDate || effective;
-        expectedReturnDate = expectedReturnDate || effective;
     } else {
         returnDate = null;
     }
@@ -168,19 +183,37 @@ const resolveTemporaryDatesForUpdate = (data, existing) => {
         data.expectedReturnDate !== undefined
             ? (data.expectedReturnDate ? new Date(data.expectedReturnDate) : null)
             : existing.expectedReturnDate;
-    if (transferType === 'TEMPORARY') {
+    if (RETURN_REQUIRED_TRANSFER_TYPES.has(transferType)) {
         const effective = returnDate || expectedReturnDate;
-        if (!effective) {
-            throw Object.assign(new Error('returnDate or expectedReturnDate is required for TEMPORARY transfers.'), {
-                statusCode: 400,
-            });
+        if (transferType === 'TEMPORARY') {
+            if (!effective) {
+                throw Object.assign(new Error('returnDate or expectedReturnDate is required for TEMPORARY transfers.'), {
+                    statusCode: 400,
+                });
+            }
+            returnDate = returnDate || effective;
+            expectedReturnDate = expectedReturnDate || effective;
+        } else {
+            if (!expectedReturnDate) {
+                throw Object.assign(
+                    new Error('expectedReturnDate is required for CATERING and OUTSIDE_CATERING transfers.'),
+                    { statusCode: 400 }
+                );
+            }
+            returnDate = null;
         }
-        returnDate = returnDate || effective;
-        expectedReturnDate = expectedReturnDate || effective;
     } else {
         returnDate = null;
     }
     return { returnDate, expectedReturnDate };
+};
+
+const isBlockingTransferType = (transferType) => BLOCKING_TRANSFER_TYPES.has(transferType);
+const isGetPassOverdue = (getPass, now = new Date()) => {
+    if (!getPass?.expectedReturnDate) return false;
+    if (!OVERDUE_TRANSFER_TYPES.has(getPass.transferType)) return false;
+    if (!OVERDUE_STATUSES.has(getPass.status)) return false;
+    return new Date(getPass.expectedReturnDate) < now;
 };
 
 const assertInternalTransferAllowed = async (tx, sourceTenantId, targetTenantId) => {
@@ -298,7 +331,7 @@ const getGetPasses = async (tenantId, params = {}, user) => {
         include.tenant = { select: { id: true, name: true, slug: true, email: true } };
     }
 
-    const [data, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
         prisma.getPass.findMany({
             where,
             include,
@@ -308,6 +341,9 @@ const getGetPasses = async (tenantId, params = {}, user) => {
         }),
         prisma.getPass.count({ where }),
     ]);
+
+    const now = new Date();
+    const data = rows.map((row) => ({ ...row, isOverdue: isGetPassOverdue(row, now) }));
 
     return { data, total, page: Number(page), limit: Number(limit) };
 };
@@ -366,12 +402,82 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
         prisma.getPass.count({ where }),
     ]);
 
+    const now = new Date();
     const data = rows.map(({ tenant, ...rest }) => ({
         ...rest,
         sourceTenant: tenant,
+        isOverdue: isGetPassOverdue(rest, now),
     }));
 
     return { data, total, page: Number(page), limit: Number(limit) };
+};
+
+const getDiscrepancyClaims = async (tenantId, user) => {
+    const listContext = user ? await resolveOrgWideGetPassListContext(tenantId, user.role) : null;
+    const where = {
+        qtyDiscrepancyAtDestination: { gt: 0 },
+        getPass: listContext?.organizationRootId
+            ? {
+                  tenant: { parentId: listContext.organizationRootId },
+              }
+            : {
+                  OR: [{ tenantId }, { targetTenantId: tenantId }],
+              },
+    };
+
+    return prisma.getPassLine.findMany({
+        where,
+        include: {
+            item: { select: { id: true, name: true } },
+            getPass: {
+                select: {
+                    id: true,
+                    passNo: true,
+                    tenant: { select: { id: true, name: true } },
+                    targetTenant: { select: { id: true, name: true } },
+                },
+            },
+        },
+        orderBy: [{ getPass: { updatedAt: 'desc' } }, { item: { name: 'asc' } }],
+    });
+};
+
+const checkAndNotifyOverduePasses = async ({ notifyCostControl = false } = {}) => {
+    const now = new Date();
+    const overduePasses = await prisma.getPass.findMany({
+        where: {
+            transferType: { in: Array.from(OVERDUE_TRANSFER_TYPES) },
+            status: { in: Array.from(OVERDUE_STATUSES) },
+            expectedReturnDate: { not: null, lt: now },
+        },
+        select: {
+            id: true,
+            passNo: true,
+            tenantId: true,
+            transferType: true,
+            status: true,
+            expectedReturnDate: true,
+        },
+    });
+
+    if (!notifyCostControl || overduePasses.length === 0) {
+        return { overdueCount: overduePasses.length, notifiedCount: 0 };
+    }
+
+    let notifiedCount = 0;
+    await prisma.$transaction(async (tx) => {
+        for (const pass of overduePasses) {
+            await notifyTenantRoles(tx, pass.tenantId, ['COST_CONTROL'], {
+                type: 'GET_PASS_OVERDUE',
+                title: 'Overdue gate pass return',
+                body: `Gate pass ${pass.passNo} is overdue (expected return ${new Date(pass.expectedReturnDate).toISOString().slice(0, 10)}).`,
+                payload: { getPassId: pass.id, passNo: pass.passNo, expectedReturnDate: pass.expectedReturnDate },
+            });
+            notifiedCount += 1;
+        }
+    });
+
+    return { overdueCount: overduePasses.length, notifiedCount };
 };
 
 /**
@@ -393,6 +499,7 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
         },
         include: {
             targetTenant: { select: { id: true, name: true, slug: true } },
+            lines: true,
         },
     });
 
@@ -405,9 +512,124 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
         );
     }
 
+    const linesPayload = Array.isArray(body.lines) ? body.lines : [];
+    const lineMap = new Map(existing.lines.map((line) => [line.id, line]));
+    const receiptRows = [];
+    for (const input of linesPayload) {
+        const line = lineMap.get(input?.lineId);
+        if (!line) {
+            throw Object.assign(new Error('Invalid lineId in receipt payload.'), { statusCode: 400 });
+        }
+        const shippedQty = Number(line.qty);
+        const receivedQty = Number(input.receivedQty ?? shippedQty);
+        if (!Number.isFinite(receivedQty) || receivedQty < 0 || receivedQty > shippedQty) {
+            throw Object.assign(new Error(`Invalid receivedQty for line ${line.id}.`), { statusCode: 400 });
+        }
+        const discrepancyQty = Math.max(0, shippedQty - receivedQty);
+        receiptRows.push({
+            lineId: line.id,
+            itemId: line.itemId,
+            locationId: line.locationId,
+            shippedQty,
+            receivedQty,
+            discrepancyQty,
+            condition: typeof input.condition === 'string' ? input.condition.trim() : '',
+            discrepancyReason: typeof input.discrepancyReason === 'string' ? input.discrepancyReason.trim() : '',
+        });
+    }
+    if (receiptRows.length === 0) {
+        for (const line of existing.lines) {
+            const shippedQty = Number(line.qty);
+            receiptRows.push({
+                lineId: line.id,
+                itemId: line.itemId,
+                locationId: line.locationId,
+                shippedQty,
+                receivedQty: shippedQty,
+                discrepancyQty: 0,
+                condition: '',
+                discrepancyReason: '',
+            });
+        }
+    }
+
     const receivedAt = new Date();
 
     await prisma.$transaction(async (tx) => {
+        if (existing.transferType === 'PERMANENT') {
+            for (const row of receiptRows) {
+                const sourceStock = await tx.stockBalance.findUnique({
+                    where: {
+                        tenantId_itemId_locationId: {
+                            tenantId: existing.tenantId,
+                            itemId: row.itemId,
+                            locationId: row.locationId,
+                        },
+                    },
+                });
+                const sourceWac = Number(sourceStock?.wacUnitCost || 0);
+
+                if (row.receivedQty > 0) {
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId: targetTenantId,
+                            itemId: row.itemId,
+                            locationId: row.locationId,
+                            movementType: 'RECEIVE',
+                            qtyIn: row.receivedQty,
+                            qtyOut: 0,
+                            unitCost: sourceWac,
+                            totalValue: row.receivedQty * sourceWac,
+                            referenceType: 'GET_PASS',
+                            referenceId: id,
+                            referenceNo: existing.passNo,
+                            createdBy: userId,
+                        },
+                    });
+                    await tx.stockBalance.upsert({
+                        where: {
+                            tenantId_itemId_locationId: {
+                                tenantId: targetTenantId,
+                                itemId: row.itemId,
+                                locationId: row.locationId,
+                            },
+                        },
+                        update: {
+                            qtyOnHand: { increment: row.receivedQty },
+                        },
+                        create: {
+                            tenantId: targetTenantId,
+                            itemId: row.itemId,
+                            locationId: row.locationId,
+                            qtyOnHand: row.receivedQty,
+                            qtyBlocked: 0,
+                            wacUnitCost: sourceWac,
+                        },
+                    });
+                }
+
+                if (row.discrepancyQty > 0) {
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId: targetTenantId,
+                            itemId: row.itemId,
+                            locationId: row.locationId,
+                            movementType: 'LOAN_WRITE_OFF',
+                            qtyIn: 0,
+                            qtyOut: row.discrepancyQty,
+                            unitCost: sourceWac,
+                            totalValue: row.discrepancyQty * sourceWac,
+                            referenceType: 'GET_PASS',
+                            referenceId: id,
+                            referenceNo: existing.passNo,
+                            notes: row.discrepancyReason || 'Incoming discrepancy at destination receipt',
+                            createdBy: userId,
+                        },
+                    });
+                }
+            }
+        }
+
         await tx.getPass.update({
             where: { id },
             data: {
@@ -420,6 +642,17 @@ const confirmDestinationReceipt = async (id, targetTenantId, userId, body) => {
                 destinationSecurityApprovedAt: receivedAt,
             },
         });
+        for (const row of receiptRows) {
+            await tx.getPassLine.update({
+                where: { id: row.lineId },
+                data: {
+                    qtyReceivedAtDestination: row.receivedQty,
+                    qtyDiscrepancyAtDestination: row.discrepancyQty,
+                    receivedCondition: row.condition || null,
+                    discrepancyReason: row.discrepancyReason || null,
+                },
+            });
+        }
 
         if (existing.transferType === 'PERMANENT') {
             await notifySourceTenantAdminsOfPermanentReceipt(tx, existing.tenantId, {
@@ -493,7 +726,7 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user) => {
     // closing here would block processReturns, so we only record destinationDeptAccepted* until source closes.
     const closeAsArchived =
         getPass.transferType === 'PERMANENT' ||
-        (getPass.transferType === 'TEMPORARY' && getPass.status === 'RETURNED');
+        (isBlockingTransferType(getPass.transferType) && getPass.status === 'RETURNED');
 
     await prisma.getPass.update({
         where: { id },
@@ -734,17 +967,25 @@ const checkoutGetPass = async (id, tenantId, user, linesOut) => {
             });
 
             const qtyReq = Number(line.qty);
-            if (!stock || Number(stock.qtyOnHand) < qtyReq) {
-                throw new Error(`Insufficient stock for ${line.item.name}. Available: ${stock ? stock.qtyOnHand : 0}`);
+            const availableQty = stock ? Number(stock.qtyOnHand) - Number(stock.qtyBlocked || 0) : 0;
+            if (!stock || availableQty < qtyReq) {
+                throw new Error(`Insufficient stock for ${line.item.name}. Available: ${availableQty}`);
             }
 
             const wac = Number(stock.wacUnitCost);
 
-            // Deduct from stock
-            await tx.stockBalance.update({
-                where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                data: { qtyOnHand: { decrement: qtyReq } }
-            });
+            const blockingTransfer = isBlockingTransferType(getPass.transferType);
+            if (blockingTransfer) {
+                await tx.stockBalance.update({
+                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                    data: { qtyBlocked: { increment: qtyReq } }
+                });
+            } else {
+                await tx.stockBalance.update({
+                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                    data: { qtyOnHand: { decrement: qtyReq } }
+                });
+            }
 
             // Post Ledger
             const movementType = getPass.transferType === 'PERMANENT' ? 'ISSUE' : 'GET_PASS_OUT';
@@ -916,6 +1157,12 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
             };
 
             await postGoodToStock(qtyGood);
+            if (isBlockingTransferType(getPass.transferType) && total > 0) {
+                await tx.stockBalance.update({
+                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
+                    data: { qtyBlocked: { decrement: total } },
+                });
+            }
 
             if (qtyLost > 0) {
                 await tx.inventoryLedger.create({
@@ -1071,6 +1318,8 @@ module.exports = {
     createGetPass,
     getGetPasses,
     getIncomingGetPasses,
+    getDiscrepancyClaims,
+    checkAndNotifyOverduePasses,
     getGetPassById,
     confirmDestinationReceipt,
     acceptDestinationDepartment,

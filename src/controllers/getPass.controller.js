@@ -19,6 +19,17 @@ const getIncomingGetPasses = async (req, res) => {
     res.json({ success: true, ...result });
 };
 
+const getDiscrepancyClaims = async (req, res) => {
+    const result = await getPassService.getDiscrepancyClaims(req.user.tenantId, req.user);
+    res.json({ success: true, data: result });
+};
+
+const checkOverdueGetPasses = async (req, res) => {
+    const notifyCostControl = String(req.query.notify ?? 'false').toLowerCase() === 'true';
+    const result = await getPassService.checkAndNotifyOverduePasses({ notifyCostControl });
+    res.json({ success: true, data: result });
+};
+
 const getGetPassById = async (req, res) => {
     const result = await getPassService.getGetPassById(req.params.id, req.user.tenantId);
     res.json({ success: true, data: result });
@@ -107,6 +118,8 @@ module.exports = {
     createGetPass,
     getGetPasses,
     getIncomingGetPasses,
+    getDiscrepancyClaims,
+    checkOverdueGetPasses,
     getGetPassById,
     updateGetPass,
     deleteGetPass,
