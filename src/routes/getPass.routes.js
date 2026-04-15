@@ -10,6 +10,7 @@ router.use(protect);
 router.post('/', requirePermission('GET_PASS_CREATE'), getPassController.createGetPass);
 router.get('/', requirePermission('GET_PASS_VIEW'), getPassController.getGetPasses);
 router.get('/incoming', requirePermission('GET_PASS_VIEW'), getPassController.getIncomingGetPasses);
+router.get('/returns', requirePermission('GET_PASS_VIEW'), getPassController.getReturningGetPasses);
 router.get(
     '/discrepancies',
     requireAnyPermission('GET_PASS_VIEW', 'REPORTS_VIEW'),
@@ -35,6 +36,8 @@ router.post(
     getPassController.confirmDestinationReceipt
 );
 router.post('/:id/accept-into-department', getPassController.acceptDestinationDepartment);
+router.post('/:id/ship-back', getPassController.shipBackGetPass);
+router.post('/:id/confirm-return-arrival', getPassController.confirmReturnArrival);
 router.post('/:id/return', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.returnGetPass);
 router.post('/:id/close', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.closeGetPass);
 

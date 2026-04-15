@@ -361,6 +361,7 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
     const incomingStatuses = [
         'OUT',
         'RECEIVED_AT_DESTINATION',
+        'RETURNING',
         'PARTIALLY_RETURNED',
         'RETURNED',
         'CLOSED',
@@ -407,6 +408,55 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
         sourceTenant: tenant,
         isOverdue: isGetPassOverdue(rest, now),
     }));
+
+    return { data, total, page: Number(page), limit: Number(limit) };
+};
+
+/**
+ * Source hotel reverse-logistics queue:
+ * internal temporary/catering passes currently returning back to issuer.
+ */
+const getReturningGetPasses = async (sourceTenantId, params = {}, user) => {
+    const { page = 1, limit = 50 } = params;
+    const skip = (page - 1) * limit;
+
+    const listContext = user ? await resolveOrgWideGetPassListContext(sourceTenantId, user.role) : null;
+
+    let where;
+    if (listContext?.organizationRootId) {
+        where = {
+            isInternalTransfer: true,
+            status: 'RETURNING',
+            tenant: { parentId: listContext.organizationRootId },
+        };
+    } else {
+        where = {
+            tenantId: sourceTenantId,
+            isInternalTransfer: true,
+            status: 'RETURNING',
+        };
+    }
+
+    const include = {
+        tenant: { select: { id: true, name: true, slug: true, email: true } },
+        targetTenant: { select: { id: true, name: true, slug: true, email: true } },
+        department: true,
+        createdByUser: { select: { firstName: true, lastName: true } },
+    };
+
+    const [rows, total] = await Promise.all([
+        prisma.getPass.findMany({
+            where,
+            include,
+            orderBy: { updatedAt: 'desc' },
+            skip,
+            take: Number(limit),
+        }),
+        prisma.getPass.count({ where }),
+    ]);
+
+    const now = new Date();
+    const data = rows.map((row) => ({ ...row, isOverdue: isGetPassOverdue(row, now) }));
 
     return { data, total, page: Number(page), limit: Number(limit) };
 };
@@ -803,6 +853,153 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
     });
 
     return getGetPassById(id, viewerTenantId);
+};
+
+/**
+ * Destination hotel dispatches temporary/catering internal transfer back to source.
+ * This starts reverse logistics and notifies source security.
+ */
+const shipBackGetPass = async (id, viewerTenantId, user) => {
+    const getPass = await findReadablePass(prisma, id, viewerTenantId);
+    if (!getPass) {
+        throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
+    }
+    if (!getPass.isInternalTransfer || getPass.targetTenantId !== viewerTenantId) {
+        throw Object.assign(new Error('Only destination hotel can ship this pass back.'), { statusCode: 403 });
+    }
+    if (!['TEMPORARY', 'CATERING'].includes(getPass.transferType)) {
+        throw Object.assign(new Error('Ship back is only available for temporary or catering transfers.'), {
+            statusCode: 400,
+        });
+    }
+    if (getPass.status !== 'RECEIVED_AT_DESTINATION') {
+        throw Object.assign(new Error('Pass must be received at destination before ship back.'), { statusCode: 400 });
+    }
+    if (!getPass.destinationDeptAcceptedAt) {
+        throw Object.assign(new Error('Destination department acceptance is required before ship back.'), {
+            statusCode: 400,
+        });
+    }
+
+    const role = normalizeRole(user.role);
+    if (!['SECURITY', 'DEPT_MANAGER', 'ORG_MANAGER'].includes(role) && !isAdminBypass(role)) {
+        throw Object.assign(new Error('Only destination security/manager can start return shipping.'), {
+            statusCode: 403,
+        });
+    }
+
+    await prisma.$transaction(async (tx) => {
+        await tx.getPass.update({
+            where: { id },
+            data: { status: 'RETURNING' },
+        });
+
+        await notifyTenantRoles(tx, getPass.tenantId, ['SECURITY'], {
+            type: 'GET_PASS_RETURNING',
+            title: 'Incoming return from destination hotel',
+            body: `Get pass ${getPass.passNo} was shipped back and is returning to source security.`,
+            payload: {
+                getPassId: getPass.id,
+                passNo: getPass.passNo,
+                sourceTenantId: getPass.tenantId,
+                targetTenantId: getPass.targetTenantId,
+            },
+        });
+    });
+
+    await logAction({
+        tenantId: viewerTenantId,
+        entityType: EntityType.GET_PASS,
+        entityId: id,
+        action: 'SHIP_BACK',
+        changedBy: user.id,
+    });
+
+    return getGetPassById(id, viewerTenantId);
+};
+
+/**
+ * Source hotel security confirms returned shipment arrival.
+ * Releases blocked quantities and restores on-hand availability.
+ */
+const confirmReturnArrival = async (id, sourceTenantId, user) => {
+    const getPass = await findIssuerPass(prisma, id, sourceTenantId);
+    if (!getPass) {
+        throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
+    }
+    if (!getPass.isInternalTransfer) {
+        throw Object.assign(new Error('Return arrival confirmation is only valid for internal transfers.'), {
+            statusCode: 400,
+        });
+    }
+    if (!['TEMPORARY', 'CATERING'].includes(getPass.transferType)) {
+        throw Object.assign(new Error('Return arrival confirmation is only valid for temporary/catering transfers.'), {
+            statusCode: 400,
+        });
+    }
+    if (getPass.status !== 'RETURNING') {
+        throw Object.assign(new Error('Pass is not currently returning.'), { statusCode: 400 });
+    }
+
+    const role = normalizeRole(user.role);
+    if (role !== 'SECURITY' && !isAdminBypass(role)) {
+        throw Object.assign(new Error('Only source security can confirm return arrival.'), {
+            statusCode: 403,
+        });
+    }
+
+    const now = new Date();
+    await prisma.$transaction(async (tx) => {
+        for (const line of getPass.lines ?? []) {
+            const totalQty = Number(line.qty || 0);
+            const alreadyReturned = Number(line.qtyReturned || 0);
+            const outstanding = Math.max(0, totalQty - alreadyReturned);
+            if (outstanding <= 0) {
+                continue;
+            }
+
+            await tx.stockBalance.update({
+                where: {
+                    tenantId_itemId_locationId: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                    },
+                },
+                data: {
+                    qtyBlocked: { decrement: outstanding },
+                    qtyOnHand: { increment: outstanding },
+                },
+            });
+
+            await tx.getPassLine.update({
+                where: { id: line.id },
+                data: {
+                    qtyReturned: totalQty,
+                    status: 'RETURNED',
+                },
+            });
+        }
+
+        await tx.getPass.update({
+            where: { id },
+            data: {
+                status: 'CLOSED',
+                closedBy: user.id,
+                closedAt: now,
+            },
+        });
+    });
+
+    await logAction({
+        tenantId: sourceTenantId,
+        entityType: EntityType.GET_PASS,
+        entityId: id,
+        action: 'CONFIRM_RETURN_ARRIVAL',
+        changedBy: user.id,
+    });
+
+    return getGetPassById(id, sourceTenantId);
 };
 
 /**
@@ -1367,11 +1564,14 @@ module.exports = {
     createGetPass,
     getGetPasses,
     getIncomingGetPasses,
+    getReturningGetPasses,
     getDiscrepancyClaims,
     checkAndNotifyOverduePasses,
     getGetPassById,
     confirmDestinationReceipt,
     acceptDestinationDepartment,
+    shipBackGetPass,
+    confirmReturnArrival,
     updateGetPass,
     deleteGetPass,
     submitGetPass,

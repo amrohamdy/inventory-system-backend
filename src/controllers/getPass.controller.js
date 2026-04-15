@@ -19,6 +19,11 @@ const getIncomingGetPasses = async (req, res) => {
     res.json({ success: true, ...result });
 };
 
+const getReturningGetPasses = async (req, res) => {
+    const result = await getPassService.getReturningGetPasses(req.user.tenantId, req.query, req.user);
+    res.json({ success: true, ...result });
+};
+
 const getDiscrepancyClaims = async (req, res) => {
     const result = await getPassService.getDiscrepancyClaims(req.user.tenantId, req.user);
     res.json({ success: true, data: result });
@@ -81,6 +86,20 @@ const acceptDestinationDepartment = async (req, res) => {
     res.json({ success: true, data: result });
 };
 
+const shipBackGetPass = async (req, res) => {
+    const { user } = req;
+    const { id } = req.params;
+    const result = await getPassService.shipBackGetPass(id, user.tenantId, user);
+    res.json({ success: true, data: result });
+};
+
+const confirmReturnArrival = async (req, res) => {
+    const { user } = req;
+    const { id } = req.params;
+    const result = await getPassService.confirmReturnArrival(id, user.tenantId, user);
+    res.json({ success: true, data: result });
+};
+
 const returnGetPass = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
@@ -110,6 +129,7 @@ module.exports = {
     createGetPass,
     getGetPasses,
     getIncomingGetPasses,
+    getReturningGetPasses,
     getDiscrepancyClaims,
     checkOverdueGetPasses,
     getGetPassById,
@@ -120,6 +140,8 @@ module.exports = {
     rejectGetPass,
     confirmDestinationReceipt,
     acceptDestinationDepartment,
+    shipBackGetPass,
+    confirmReturnArrival,
     returnGetPass,
     closeGetPass,
     exportPdf
