@@ -37,6 +37,7 @@ const getPassDetailInclude = {
     gmApprover: true,
     securityApprover: true,
     destinationSecurityApprover: { select: { id: true, firstName: true, lastName: true, email: true } },
+    destinationSecurityExitUser: { select: { id: true, firstName: true, lastName: true, email: true } },
     checkoutUser: true,
     closingUser: true,
     receivedBy: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -78,7 +79,7 @@ const getGetPassReverseAuditTrail = async (getPass) => {
     if (!getPass?.id) return null;
 
     const tenantScope = [getPass.tenantId, getPass.targetTenantId].filter(Boolean);
-    const reverseNotes = ['GET_PASS_SHIP_BACK', 'GET_PASS_CONFIRM_RETURN_ARRIVAL'];
+    const reverseNotes = ['GET_PASS_SHIP_BACK', 'GET_PASS_CONFIRM_RETURN_EXIT', 'GET_PASS_CONFIRM_RETURN_ARRIVAL'];
     const logs = await prisma.auditLog.findMany({
         where: {
             entityType: 'GET_PASS',
@@ -96,12 +97,16 @@ const getGetPassReverseAuditTrail = async (getPass) => {
     });
 
     const shipBack = logs.find((log) => log.note === 'GET_PASS_SHIP_BACK') || null;
+    const confirmExit = logs.find((log) => log.note === 'GET_PASS_CONFIRM_RETURN_EXIT') || null;
     const confirmArrival = logs.find((log) => log.note === 'GET_PASS_CONFIRM_RETURN_ARRIVAL') || null;
 
     return {
         shipBackAt: shipBack?.changedAt ?? null,
         shipBackBy: shipBack?.changedBy ?? null,
         shipBackByUser: shipBack?.changedByUser ?? null,
+        confirmReturnExitAt: confirmExit?.changedAt ?? null,
+        confirmReturnExitBy: confirmExit?.changedBy ?? null,
+        confirmReturnExitByUser: confirmExit?.changedByUser ?? null,
         confirmReturnArrivalAt: confirmArrival?.changedAt ?? null,
         confirmReturnArrivalBy: confirmArrival?.changedBy ?? null,
         confirmReturnArrivalByUser: confirmArrival?.changedByUser ?? null,
@@ -925,7 +930,11 @@ const shipBackGetPass = async (id, viewerTenantId, user) => {
     await prisma.$transaction(async (tx) => {
         await tx.getPass.update({
             where: { id },
-            data: { status: 'RETURNING' },
+            data: {
+                status: 'RETURNING',
+                destinationSecurityExitAt: null,
+                destinationSecurityExitBy: null,
+            },
         });
 
         await notifyTenantRoles(tx, getPass.tenantId, ['SECURITY'], {
@@ -954,6 +963,60 @@ const shipBackGetPass = async (id, viewerTenantId, user) => {
 };
 
 /**
+ * Destination hotel security confirms return shipment physically exited the gate.
+ * Status remains RETURNING; source hotel can only confirm arrival after this stamp.
+ */
+const confirmReturnExit = async (id, destinationTenantId, user) => {
+    const getPass = await findReadablePass(prisma, id, destinationTenantId);
+    if (!getPass) {
+        throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
+    }
+    if (!getPass.isInternalTransfer || getPass.targetTenantId !== destinationTenantId) {
+        throw Object.assign(new Error('Only destination hotel can confirm return exit.'), {
+            statusCode: 403,
+        });
+    }
+    if (!['TEMPORARY', 'CATERING'].includes(getPass.transferType)) {
+        throw Object.assign(new Error('Return exit confirmation is only valid for temporary/catering transfers.'), {
+            statusCode: 400,
+        });
+    }
+    if (getPass.status !== 'RETURNING') {
+        throw Object.assign(new Error('Pass is not currently returning.'), { statusCode: 400 });
+    }
+    if (getPass.destinationSecurityExitAt) {
+        throw Object.assign(new Error('Return exit already confirmed by destination security.'), { statusCode: 400 });
+    }
+
+    const role = normalizeRole(user.role);
+    if (role !== 'SECURITY' && !isAdminBypass(role)) {
+        throw Object.assign(new Error('Only destination security can confirm return exit.'), {
+            statusCode: 403,
+        });
+    }
+
+    const now = new Date();
+    await prisma.getPass.update({
+        where: { id },
+        data: {
+            destinationSecurityExitAt: now,
+            destinationSecurityExitBy: user.id,
+        },
+    });
+
+    await logAction({
+        tenantId: destinationTenantId,
+        entityType: EntityType.GET_PASS,
+        entityId: id,
+        action: 'UPDATE',
+        changedBy: user.id,
+        note: 'GET_PASS_CONFIRM_RETURN_EXIT',
+    });
+
+    return getGetPassById(id, destinationTenantId);
+};
+
+/**
  * Source hotel security confirms returned shipment arrival.
  * Releases blocked quantities and restores on-hand availability.
  */
@@ -974,6 +1037,12 @@ const confirmReturnArrival = async (id, sourceTenantId, user) => {
     }
     if (getPass.status !== 'RETURNING') {
         throw Object.assign(new Error('Pass is not currently returning.'), { statusCode: 400 });
+    }
+    if (!getPass.destinationSecurityExitAt) {
+        throw Object.assign(
+            new Error('Destination security exit confirmation is required before source arrival confirmation.'),
+            { statusCode: 400 },
+        );
     }
 
     const role = normalizeRole(user.role);
@@ -1315,6 +1384,8 @@ const rejectGetPass = async (id, tenantId, user, rejectionReason) => {
             securityApprovedAt: null,
             destinationSecurityApprovedBy: null,
             destinationSecurityApprovedAt: null,
+            destinationSecurityExitBy: null,
+            destinationSecurityExitAt: null,
         }
     });
     await logAction({ tenantId, entityType: EntityType.GET_PASS, entityId: id, action: 'REJECT', changedBy: user.id });
@@ -1608,6 +1679,7 @@ module.exports = {
     confirmDestinationReceipt,
     acceptDestinationDepartment,
     shipBackGetPass,
+    confirmReturnExit,
     confirmReturnArrival,
     updateGetPass,
     deleteGetPass,

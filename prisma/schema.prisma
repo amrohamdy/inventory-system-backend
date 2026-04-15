@@ -97,6 +97,7 @@ model User {
   getPassesGmApp     GetPass[]           @relation("GetPassGmApprover")
   getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
   getPassesDestinationSecApp GetPass[] @relation("GetPassDestinationSecurityApprover")
+  getPassesDestinationSecExit GetPass[] @relation("GetPassDestinationSecurityExitBy")
   getPassesReceived  GetPass[]           @relation("GetPassReceivedAtDestinationBy")
   getPassesDestinationDeptAccepted GetPass[] @relation("GetPassDestinationDeptAccepter")
   grnApproved        GrnImport[]         @relation("GrnApprovedBy")
@@ -1109,6 +1110,9 @@ model GetPass {
   /// Destination hotel: security verification at entry gate (internal transfers; set on receipt confirmation).
   destinationSecurityApprovedBy String?       @db.Uuid
   destinationSecurityApprovedAt DateTime?
+  /// Destination hotel: security confirmation that return shipment physically exited destination gate.
+  destinationSecurityExitBy String?       @db.Uuid
+  destinationSecurityExitAt DateTime?
   checkedOutBy       String?       @db.Uuid
   checkedOutAt       DateTime?
   closedBy           String?       @db.Uuid
@@ -1141,6 +1145,7 @@ model GetPass {
   gmApprover         User?         @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
   securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
   destinationSecurityApprover User? @relation("GetPassDestinationSecurityApprover", fields: [destinationSecurityApprovedBy], references: [id])
+  destinationSecurityExitUser User? @relation("GetPassDestinationSecurityExitBy", fields: [destinationSecurityExitBy], references: [id])
   receivedBy         User?         @relation("GetPassReceivedAtDestinationBy", fields: [receivedById], references: [id])
   destinationDeptAccepter User?    @relation("GetPassDestinationDeptAccepter", fields: [destinationDeptAcceptedBy], references: [id])
   tenant             Tenant        @relation(fields: [tenantId], references: [id])
