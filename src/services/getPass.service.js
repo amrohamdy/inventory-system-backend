@@ -670,22 +670,22 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
 
     const role = normalizeRole(user.role);
     if (isAdminBypass(role) || role === 'ORG_MANAGER') {
-        // ok
+        // Authorized manager at destination hotel level.
     } else if (role === 'DEPT_MANAGER') {
-        const dbUser = await prisma.user.findUnique({
-            where: { id: user.id },
-            select: { department: true },
-        });
-        const passDept = getPass.department?.name?.trim().toLowerCase() ?? '';
-        const uDept = (dbUser?.department ?? '').trim().toLowerCase();
-        if (!passDept || passDept !== uDept) {
+        // Destination acceptance is performed by the receiving hotel manager.
+        // Do not compare with source pass department, because destination department
+        // is selected during this acceptance step.
+        if (user.tenantId !== getPass.targetTenantId) {
             throw Object.assign(
-                new Error('Only the receiving department manager can accept items into the department.'),
+                new Error('You must be an authorized manager at the destination hotel to accept these items.'),
                 { statusCode: 403 },
             );
         }
     } else {
-        throw Object.assign(new Error('Unauthorized for department acceptance.'), { statusCode: 403 });
+        throw Object.assign(
+            new Error('You must be an authorized manager at the destination hotel to accept these items.'),
+            { statusCode: 403 },
+        );
     }
 
     await prisma.$transaction(async (tx) => {
