@@ -1288,8 +1288,19 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
     if (linesPayload.length === 0) {
         throw Object.assign(new Error('lines are required to confirm return arrival.'), { statusCode: 400 });
     }
-    const linePayloadMap = new Map(linesPayload.map((row) => [row?.id, row]));
-    if (linePayloadMap.size !== (getPass.lines ?? []).length) {
+    const expectedLineIds = new Set((getPass.lines ?? []).map((line) => line.id));
+    const linePayloadMap = new Map();
+    for (const row of linesPayload) {
+        const rowLineId = row?.lineId || row?.id;
+        if (!rowLineId) {
+            throw Object.assign(new Error('Each inspection row must include lineId (or id).'), { statusCode: 400 });
+        }
+        if (!expectedLineIds.has(rowLineId)) {
+            throw Object.assign(new Error(`Inspection contains unknown line ${rowLineId}.`), { statusCode: 400 });
+        }
+        linePayloadMap.set(rowLineId, row);
+    }
+    if (linePayloadMap.size !== expectedLineIds.size) {
         throw Object.assign(new Error('Inspection must include every line item.'), { statusCode: 400 });
     }
 
