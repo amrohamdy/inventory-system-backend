@@ -1214,6 +1214,8 @@ model GetPassLine {
 model GetPassReturn {
   id                 String      @id @default(uuid()) @db.Uuid
   getPassLineId      String      @db.Uuid
+  type               GetPassReturnType?
+  accountability     GetPassReturnAccountability?
   qtyReturned        Decimal     @db.Decimal(15, 4)
   /// Quantity received in good condition (restores stock).
   qtyGood            Decimal     @default(0) @db.Decimal(15, 4)
@@ -1397,6 +1399,17 @@ enum GetPassLineStatus {
   PARTIALLY_RETURNED
   RETURNED
   LOST
+}
+
+enum GetPassReturnType {
+  DAMAGED
+  LOST
+}
+
+enum GetPassReturnAccountability {
+  EMPLOYEE_DEDUCTION
+  COMPANY_LOSS
+  TARGET_HOTEL_COMPENSATION
 }
 
 enum MovementStatus {

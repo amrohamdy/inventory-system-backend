@@ -1507,97 +1507,125 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
             }
 
             if (damagedQty > 0) {
-                await tx.getPassReturn.create({
-                    data: {
-                        getPassLineId: line.id,
-                        qtyReturned: damagedQty,
-                        qtyGood: 0,
-                        qtyLost: 0,
-                        qtyDamaged: damagedQty,
-                        isLost: false,
-                        isDamaged: true,
-                        notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
-                        registeredBy: user.id,
-                    },
-                });
-                const documentNo = await generateDocNumber(sourceTenantId, DocPrefix.BREAKAGE, now, tx);
-                const brkDoc = await tx.movementDocument.create({
-                    data: {
-                        tenantId: sourceTenantId,
-                        documentNo,
-                        movementType: 'BREAKAGE',
-                        status: 'POSTED',
-                        postedAt: now,
-                        sourceLocationId: line.locationId,
-                        reason: `Damaged on get pass return ${getPass.passNo}`,
-                        notes: managerNotes || null,
-                        documentDate: now,
-                        createdBy: user.id,
-                        lines: {
-                            create: [
-                                {
-                                    itemId: line.itemId,
-                                    locationId: line.locationId,
-                                    qtyRequested: damagedQty,
-                                    qtyInBaseUnit: damagedQty,
-                                    unitCost: wac,
-                                    totalValue: damagedQty * wac,
-                                    notes: `ACCOUNTABILITY:${accountability}`,
-                                },
-                            ],
+                try {
+                    await tx.getPassReturn.create({
+                        data: {
+                            getPassLineId: line.id,
+                            qtyReturned: damagedQty,
+                            qtyGood: 0,
+                            qtyLost: 0,
+                            qtyDamaged: damagedQty,
+                            isLost: false,
+                            isDamaged: true,
+                            notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
+                            registeredBy: user.id,
                         },
-                    },
-                });
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId: sourceTenantId,
+                    });
+                    const documentNo = await generateDocNumber(sourceTenantId, DocPrefix.BREAKAGE, now, tx);
+                    const brkDoc = await tx.movementDocument.create({
+                        data: {
+                            tenantId: sourceTenantId,
+                            documentNo,
+                            movementType: 'BREAKAGE',
+                            status: 'POSTED',
+                            postedAt: now,
+                            sourceLocationId: line.locationId,
+                            reason: `Damaged on get pass return ${getPass.passNo}`,
+                            notes: managerNotes || null,
+                            documentDate: now,
+                            createdBy: user.id,
+                            lines: {
+                                create: [
+                                    {
+                                        itemId: line.itemId,
+                                        locationId: line.locationId,
+                                        qtyRequested: damagedQty,
+                                        qtyInBaseUnit: damagedQty,
+                                        unitCost: wac,
+                                        totalValue: damagedQty * wac,
+                                        notes: `ACCOUNTABILITY:${accountability}`,
+                                    },
+                                ],
+                            },
+                        },
+                    });
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId: sourceTenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                            movementType: 'BREAKAGE',
+                            qtyIn: 0,
+                            qtyOut: damagedQty,
+                            unitCost: wac,
+                            totalValue: damagedQty * wac,
+                            referenceType: 'BREAKAGE',
+                            referenceId: brkDoc.id,
+                            referenceNo: brkDoc.documentNo,
+                            createdBy: user.id,
+                            notes: `Damaged return accountability: ${accountability}`,
+                        },
+                    });
+                } catch (error) {
+                    console.error('[getPass.service] acceptReturnIntoDepartment damaged posting failed', {
+                        getPassId: id,
+                        lineId: line.id,
                         itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'BREAKAGE',
-                        qtyIn: 0,
-                        qtyOut: damagedQty,
-                        unitCost: wac,
-                        totalValue: damagedQty * wac,
-                        referenceType: 'BREAKAGE',
-                        referenceId: brkDoc.id,
-                        referenceNo: brkDoc.documentNo,
-                        createdBy: user.id,
-                        notes: `Damaged return accountability: ${accountability}`,
-                    },
-                });
+                        sourceTenantId,
+                        errorMessage: error?.message,
+                        errorCode: error?.code,
+                        errorMeta: error?.meta,
+                        error,
+                    });
+                    throw error;
+                }
             }
 
             if (lostQty > 0) {
-                await tx.getPassReturn.create({
-                    data: {
-                        getPassLineId: line.id,
-                        qtyReturned: lostQty,
-                        qtyGood: 0,
-                        qtyLost: lostQty,
-                        qtyDamaged: 0,
-                        isLost: true,
-                        isDamaged: false,
-                        notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
-                        registeredBy: user.id,
-                    },
-                });
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId: sourceTenantId,
+                try {
+                    await tx.getPassReturn.create({
+                        data: {
+                            getPassLineId: line.id,
+                            qtyReturned: lostQty,
+                            qtyGood: 0,
+                            qtyLost: lostQty,
+                            qtyDamaged: 0,
+                            isLost: true,
+                            isDamaged: false,
+                            notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
+                            registeredBy: user.id,
+                        },
+                    });
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId: sourceTenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                            movementType: 'LOAN_WRITE_OFF',
+                            qtyIn: 0,
+                            qtyOut: lostQty,
+                            unitCost: wac,
+                            totalValue: lostQty * wac,
+                            referenceType: 'GET_PASS',
+                            referenceId: id,
+                            referenceNo: getPass.passNo,
+                            createdBy: user.id,
+                            notes: `Lost return accountability: ${accountability}`,
+                        },
+                    });
+                } catch (error) {
+                    console.error('[getPass.service] acceptReturnIntoDepartment lost posting failed', {
+                        getPassId: id,
+                        lineId: line.id,
                         itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'LOAN_WRITE_OFF',
-                        qtyIn: 0,
-                        qtyOut: lostQty,
-                        unitCost: wac,
-                        totalValue: lostQty * wac,
-                        referenceType: 'GET_PASS',
-                        referenceId: id,
-                        referenceNo: getPass.passNo,
-                        createdBy: user.id,
-                        notes: `Lost return accountability: ${accountability}`,
-                    },
-                });
+                        sourceTenantId,
+                        errorMessage: error?.message,
+                        errorCode: error?.code,
+                        errorMeta: error?.meta,
+                        error,
+                    });
+                    throw error;
+                }
             }
         }
 
