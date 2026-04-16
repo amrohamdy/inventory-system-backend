@@ -5,7 +5,7 @@ const { authenticate } = require('../middleware/authenticate');
 const { requireAnyPermission, requirePermission } = require('../middleware/authorize');
 
 router.use(authenticate);
-router.post('/', requirePermission('MANAGE_INVENTORY'), ctrl.createLost);
+router.post('/', requirePermission('BREAKAGE_CREATE'), ctrl.createLost);
 router.get('/', requireAnyPermission('LOST_ITEMS_VIEW', 'VIEW_INVENTORY'), ctrl.listLostItems);
 router.post('/:id/approve-dept', requirePermission('APPROVE_LOST'), ctrl.approveDept);
 router.post('/:id/approve-cost', requirePermission('APPROVE_LOST'), ctrl.approveCost);

@@ -3,7 +3,12 @@ const { success } = require('../utils/response');
 
 const createLost = async (req, res, next) => {
     try {
-        const doc = await lostItemsService.createLost(req.user.tenantId, req.user.id, req.body);
+        const doc = await lostItemsService.createLost(
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            req.body,
+        );
         return success(res, doc, 'Lost document created.', 201);
     } catch (e) {
         next(e);

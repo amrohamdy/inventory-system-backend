@@ -22,6 +22,16 @@ const LOST_FLOW = [
 ];
 
 const err = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
+const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
+const AUTO_APPROVER_ROLES = new Set([
+    'DEPT_MANAGER',
+    'COST_CONTROL',
+    'FINANCE_MANAGER',
+    'GENERAL_MANAGER',
+    'ADMIN',
+    'ORG_MANAGER',
+    'SUPER_ADMIN',
+]);
 
 const ensureCanApprove = (doc, userRole) => {
     const current = LOST_FLOW.find((s) => s.status === doc.status);
@@ -108,7 +118,7 @@ const listLostItems = async (tenantId, query = {}) => {
     return { items, total };
 };
 
-const createLost = async (tenantId, userId, body = {}) => {
+const createLost = async (tenantId, userId, userRole, body = {}) => {
     const { lines = [], reason, notes, sourceLocationId, documentDate } = body;
     if (!reason?.trim()) throw err('Reason is required.');
     if (!sourceLocationId) throw err('Location is required.');
@@ -119,16 +129,20 @@ const createLost = async (tenantId, userId, body = {}) => {
 
     const documentNo = await generateDocNumber(tenantId, 'LST', new Date());
 
+    const isAutoApproved = AUTO_APPROVER_ROLES.has(userRole);
+    const stampText = `[Stamp] ${new Date().toISOString()} | User: ${userId} | Note: ${AUTO_APPROVAL_NOTE}`;
+    const mergedNotes = [notes?.trim() || '', isAutoApproved ? stampText : ''].filter(Boolean).join('\n');
+
     return prisma.movementDocument.create({
         data: {
             tenantId,
             documentNo,
             movementType: 'LOST',
             sourceType: 'INTERNAL',
-            status: 'DRAFT',
+            status: isAutoApproved ? 'DEPT_APPROVED' : 'DRAFT',
             sourceLocationId,
             reason: reason.trim(),
-            notes: notes?.trim() || null,
+            notes: mergedNotes || null,
             documentDate: documentDate ? new Date(documentDate) : new Date(),
             createdBy: userId,
             lines: {

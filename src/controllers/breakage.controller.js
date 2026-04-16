@@ -5,7 +5,12 @@ const { success } = require('../utils/response');
 /** POST /api/breakage */
 const createBreakage = async (req, res, next) => {
     try {
-        const doc = await breakageService.createBreakage(req.body, req.user.tenantId, req.user.id);
+        const doc = await breakageService.createBreakage(
+            req.body,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+        );
         return success(res, doc, 'Breakage document created.', 201);
     } catch (e) { next(e); }
 };

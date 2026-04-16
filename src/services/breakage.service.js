@@ -9,7 +9,25 @@ const APPROVAL_CHAIN = [
     { step: 1, role: 'DEPT_MANAGER', label: 'HOD Approval' },
     { step: 2, role: 'COST_CONTROL', label: 'Cost Control Approval' },
     { step: 3, role: 'FINANCE_MANAGER', label: 'Finance Approval' },
+    { step: 4, role: 'GENERAL_MANAGER', label: 'GM Approval' },
 ];
+
+const STATUS_BY_APPROVED_STEP = {
+    1: 'DEPT_APPROVED',
+    2: 'COST_CONTROL_APPROVED',
+    3: 'FINANCE_APPROVED',
+    4: 'APPROVED',
+};
+const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
+const AUTO_APPROVER_ROLES = new Set([
+    'DEPT_MANAGER',
+    'COST_CONTROL',
+    'FINANCE_MANAGER',
+    'GENERAL_MANAGER',
+    'ADMIN',
+    'ORG_MANAGER',
+    'SUPER_ADMIN',
+]);
 
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
 
@@ -39,7 +57,7 @@ const BREAKAGE_INCLUDE = {
 const getApproval = (doc) => doc.approvalRequests?.[0] || null;
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createBreakage = async (data, tenantId, userId) => {
+const createBreakage = async (data, tenantId, userId, userRole) => {
     const { lines = [], reason, notes, sourceLocationId, documentDate } = data;
 
     if (!reason?.trim()) throw err('Reason is required for breakage documents.');
@@ -67,6 +85,9 @@ const createBreakage = async (data, tenantId, userId) => {
         if (!line.qty || parseFloat(line.qty) <= 0) throw err(`Quantity for item ${item.name} must be positive.`);
     }
 
+    const isAutoApproved = AUTO_APPROVER_ROLES.has(userRole);
+    const now = new Date();
+
     return prisma.$transaction(async (tx) => {
         // Create the movement document
         const doc = await tx.movementDocument.create({
@@ -75,7 +96,7 @@ const createBreakage = async (data, tenantId, userId) => {
                 documentNo,
                 movementType: 'BREAKAGE',
                 sourceType: 'INTERNAL',
-                status: 'DRAFT',
+                status: isAutoApproved ? 'DEPT_APPROVED' : 'DRAFT',
                 sourceLocationId,
                 reason: reason.trim(),
                 notes: notes?.trim() || null,
@@ -95,21 +116,28 @@ const createBreakage = async (data, tenantId, userId) => {
             },
         });
 
-        // Create 3-step approval request
+        // Create role-based approval request (dept -> cost -> finance -> gm)
         await tx.approvalRequest.create({
             data: {
                 tenantId,
                 requestType: 'BREAKAGE',
                 status: 'PENDING',
                 documentId: doc.id,
-                currentStep: 0,
-                totalSteps: 3,
+                currentStep: isAutoApproved ? 2 : 0,
+                totalSteps: APPROVAL_CHAIN.length,
                 createdBy: userId,
                 steps: {
                     create: APPROVAL_CHAIN.map(c => ({
                         stepNumber: c.step,
                         requiredRole: connectRole(c.role),
-                        status: 'PENDING',
+                        status: isAutoApproved && c.step === 1 ? 'APPROVED' : 'PENDING',
+                        ...(isAutoApproved && c.step === 1
+                            ? {
+                                actedBy: userId,
+                                actedAt: now,
+                                comment: AUTO_APPROVAL_NOTE,
+                            }
+                            : {}),
                     })),
                 },
             },
@@ -194,7 +222,8 @@ const submitBreakage = async (id, tenantId, userId) => {
     return prisma.$transaction(async (tx) => {
         await tx.movementDocument.update({
             where: { id },
-            data: { status: 'PENDING_APPROVAL' },
+            // Keep DRAFT until first approval, then move through explicit role-based statuses.
+            data: { status: 'DRAFT' },
         });
         // Mark approval request as active
         const approval = getApproval(doc);
@@ -232,12 +261,12 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
     const doc = await getBreakageById(id, tenantId);
 
     // ── Lock checks ───────────────────────────────────────────────────────────
-    if (doc.status === 'POSTED')
-        throw err('Document is already POSTED and locked. No further actions allowed.');
+    if (doc.status === 'APPROVED')
+        throw err('Document is already APPROVED and locked. No further actions allowed.');
     if (doc.status === 'VOID')
         throw err('Document has been voided.');
-    if (doc.status !== 'PENDING_APPROVAL')
-        throw err(`Document must be in PENDING_APPROVAL status. Current: ${doc.status}`);
+    if (doc.status === 'REJECTED')
+        throw err(`Document is REJECTED. Resubmit from draft to continue workflow.`);
 
     const approval = getApproval(doc);
     if (!approval) throw err('Approval record not found.', 404);
@@ -290,9 +319,10 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
         } else {
             // Approve: advance to next step or trigger final posting
             const isLastStep = currentStepNo === approval.totalSteps;
+            const nextStatus = STATUS_BY_APPROVED_STEP[currentStepNo] || 'DRAFT';
 
             if (isLastStep) {
-                // ── Final Approval: Post the document ─────────────────────────
+                // ── Final Approval (GM): finalize + post ledger ───────────────
                 await tx.approvalRequest.update({
                     where: { id: approval.id },
                     data: { status: 'APPROVED', currentStep: currentStepNo, resolvedAt: now },
@@ -303,13 +333,17 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
 
                 await tx.movementDocument.update({
                     where: { id },
-                    data: { status: 'POSTED', postedAt: now },
+                    data: { status: nextStatus, postedAt: now },
                 });
             } else {
                 // Advance to next step
                 await tx.approvalRequest.update({
                     where: { id: approval.id },
                     data: { currentStep: currentStepNo + 1 },
+                });
+                await tx.movementDocument.update({
+                    where: { id },
+                    data: { status: nextStatus },
                 });
             }
         }
@@ -387,7 +421,7 @@ const addAttachment = async (id, tenantId, attachmentMeta) => {
     const doc = await getBreakageById(id, tenantId);
 
     // Lock check
-    if (doc.status === 'POSTED' || doc.status === 'VOID') {
+    if (doc.status === 'APPROVED' || doc.status === 'VOID') {
         throw err(`Cannot add attachments to a ${doc.status} document.`);
     }
 
@@ -538,8 +572,8 @@ const getEvidence = async (id, tenantId) => {
 const voidBreakage = async (id, tenantId, userId) => {
     const doc = await getBreakageById(id, tenantId);
 
-    if (doc.status === 'POSTED')
-        throw err('Cannot void a POSTED document. POSTED documents are immutable.');
+    if (doc.status === 'APPROVED')
+        throw err('Cannot void an APPROVED document. Approved documents are immutable.');
     if (doc.status === 'VOID')
         throw err('Document is already voided.');
 
