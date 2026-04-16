@@ -1188,6 +1188,10 @@ model GetPassLine {
   locationId   String            @db.Uuid
   qty          Decimal           @db.Decimal(15, 4)
   qtyReturned  Decimal           @default(0) @db.Decimal(15, 4)
+  returnedGoodQty Decimal        @default(0) @db.Decimal(15, 4)
+  returnedDamagedQty Decimal     @default(0) @db.Decimal(15, 4)
+  returnedLostQty Decimal        @default(0) @db.Decimal(15, 4)
+  damagePhotos Json?
   qtyReceivedAtDestination Decimal @default(0) @db.Decimal(15, 4)
   qtyDiscrepancyAtDestination Decimal @default(0) @db.Decimal(15, 4)
   unitCost     Decimal           @default(0) @db.Decimal(15, 4)

@@ -1288,7 +1288,7 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
     if (linesPayload.length === 0) {
         throw Object.assign(new Error('lines are required to confirm return arrival.'), { statusCode: 400 });
     }
-    const linePayloadMap = new Map(linesPayload.map((row) => [row?.lineId, row]));
+    const linePayloadMap = new Map(linesPayload.map((row) => [row?.id, row]));
     if (linePayloadMap.size !== (getPass.lines ?? []).length) {
         throw Object.assign(new Error('Inspection must include every line item.'), { statusCode: 400 });
     }
@@ -1304,34 +1304,39 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
             if (!linePayload) {
                 throw Object.assign(new Error(`Missing inspection row for line ${line.id}.`), { statusCode: 400 });
             }
-            const conditionIn = typeof linePayload.condition === 'string' ? linePayload.condition.trim() : '';
-            if (!conditionIn) {
-                throw Object.assign(new Error('condition is required for each inspected line.'), { statusCode: 400 });
-            }
-            const receivedQty = Number(linePayload.receivedQty);
-            if (!Number.isFinite(receivedQty) || receivedQty < 0) {
-                throw Object.assign(new Error('receivedQty must be a valid number for each inspected line.'), {
+            const goodQty = Math.max(0, Number(linePayload.goodQty ?? 0));
+            const damagedQty = Math.max(0, Number(linePayload.damagedQty ?? 0));
+            const lostQty = Math.max(0, Number(linePayload.lostQty ?? 0));
+            if (!Number.isFinite(goodQty) || !Number.isFinite(damagedQty) || !Number.isFinite(lostQty)) {
+                throw Object.assign(new Error('goodQty, damagedQty, and lostQty must be valid numbers for each line.'), {
                     statusCode: 400,
                 });
             }
-            if (receivedQty > outstanding) {
-                throw Object.assign(new Error(`receivedQty exceeds outstanding quantity for line ${line.id}.`), {
+            const receivedQty = goodQty + damagedQty + lostQty;
+            if (receivedQty > outstanding + 1e-9) {
+                throw Object.assign(new Error(`Total returned quantity exceeds outstanding quantity for line ${line.id}.`), {
                     statusCode: 400,
                 });
             }
             if (receivedQty > 0) hasReceivedQty = true;
+            const damagePhotos = Array.isArray(linePayload.damagePhotos)
+                ? linePayload.damagePhotos.filter((photo) => typeof photo === 'string' && photo.trim() !== '')
+                : [];
 
             await tx.getPassLine.update({
                 where: { id: line.id },
                 data: {
                     qtyReturned: alreadyReturned + receivedQty,
-                    receivedCondition: conditionIn,
+                    returnedGoodQty: Number(line.returnedGoodQty || 0) + goodQty,
+                    returnedDamagedQty: Number(line.returnedDamagedQty || 0) + damagedQty,
+                    returnedLostQty: Number(line.returnedLostQty || 0) + lostQty,
+                    damagePhotos,
                     status: alreadyReturned + receivedQty >= totalQty - 1e-9 ? 'RETURNED' : 'PARTIALLY_RETURNED',
                 },
             });
         }
         if (!hasReceivedQty) {
-            throw Object.assign(new Error('At least one line must have receivedQty greater than 0.'), { statusCode: 400 });
+            throw Object.assign(new Error('At least one line must have a positive returned quantity.'), { statusCode: 400 });
         }
 
         await tx.getPass.update({
@@ -1363,7 +1368,7 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
  * Sole posting point for reverse logistics: release blocked qty and record the return ledger
  * without changing on-hand for reversible transfers.
  */
-const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
+const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}) => {
     const getPass = await findIssuerPass(prisma, id, sourceTenantId);
     if (!getPass) {
         throw Object.assign(new Error('Get Pass not found'), { statusCode: 404 });
@@ -1390,11 +1395,39 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
         });
     }
 
+    const payloadLines = Array.isArray(payload.lines) ? payload.lines : [];
+    const managerNotes = typeof payload.managerNotes === 'string' ? payload.managerNotes.trim() : '';
+    const payloadByLineId = new Map(payloadLines.map((row) => [row?.lineId, row]));
+    const validAccountability = new Set(['EMPLOYEE_DEDUCTION', 'COMPANY_LOSS', 'TARGET_HOTEL_COMPENSATION']);
     const now = new Date();
     await prisma.$transaction(async (tx) => {
         for (const line of getPass.lines ?? []) {
+            const linePayload = payloadByLineId.get(line.id);
+            if (!linePayload) continue;
+            const goodQty = Math.max(0, Number(linePayload.goodQty ?? 0));
+            const damagedQty = Math.max(0, Number(linePayload.damagedQty ?? 0));
+            const lostQty = Math.max(0, Number(linePayload.lostQty ?? 0));
+            if (!Number.isFinite(goodQty) || !Number.isFinite(damagedQty) || !Number.isFinite(lostQty)) {
+                throw Object.assign(new Error('goodQty, damagedQty, and lostQty must be valid numbers.'), {
+                    statusCode: 400,
+                });
+            }
+            const totalAccepted = goodQty + damagedQty + lostQty;
+            if (totalAccepted <= 0) continue;
+
+            const accountability = linePayload.accountability || linePayload.damagedAccountability || linePayload.lostAccountability || null;
+            if ((damagedQty > 0 || lostQty > 0) && !validAccountability.has(accountability)) {
+                throw Object.assign(new Error(`Accountability is required for damaged/lost quantities on line ${line.id}.`), {
+                    statusCode: 400,
+                });
+            }
+
             const qtyReceivedAtGate = Number(line.qtyReturned || 0);
-            if (!Number.isFinite(qtyReceivedAtGate) || qtyReceivedAtGate <= 0) continue;
+            if (totalAccepted > qtyReceivedAtGate + 1e-9) {
+                throw Object.assign(new Error(`Accepted quantity exceeds inspected gate quantity for line ${line.id}.`), {
+                    statusCode: 400,
+                });
+            }
             const wac = Number(line.unitCost || 0);
 
             const stock = await tx.stockBalance.findUnique({
@@ -1407,9 +1440,9 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
                 },
             });
             const blocked = stock ? Number(stock.qtyBlocked || 0) : 0;
-            const releaseFromBlocked = Math.min(blocked, qtyReceivedAtGate);
+            const releaseFromBlocked = Math.min(blocked, totalAccepted);
 
-            if (releaseFromBlocked > 0) {
+            if (stock && (releaseFromBlocked > 0 || goodQty > 0)) {
                 await tx.stockBalance.update({
                     where: {
                         tenantId_itemId_locationId: {
@@ -1419,36 +1452,147 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user) => {
                         },
                     },
                     data: {
+                        qtyOnHand: { increment: goodQty },
                         qtyBlocked: { decrement: releaseFromBlocked },
+                    },
+                });
+            } else if (!stock && goodQty > 0) {
+                await tx.stockBalance.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        qtyOnHand: goodQty,
+                        qtyBlocked: 0,
+                        wacUnitCost: wac,
                     },
                 });
             }
 
-            await tx.inventoryLedger.create({
-                data: {
-                    tenantId: sourceTenantId,
-                    itemId: line.itemId,
-                    locationId: line.locationId,
-                    movementType: 'GET_PASS_RETURN',
-                    qtyIn: qtyReceivedAtGate,
-                    qtyOut: 0,
-                    unitCost: wac,
-                    totalValue: qtyReceivedAtGate * wac,
-                    referenceType: 'GET_PASS',
-                    referenceId: id,
-                    referenceNo: getPass.passNo,
-                    createdBy: user.id,
-                    notes: 'Return posted at department acceptance (blocked stock released only)',
-                },
-            });
+            if (goodQty > 0) {
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'RECEIVE',
+                        qtyIn: goodQty,
+                        qtyOut: 0,
+                        unitCost: wac,
+                        totalValue: goodQty * wac,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                        notes: 'Manager accepted good quantity from return inspection.',
+                    },
+                });
+            }
+
+            if (damagedQty > 0) {
+                await tx.getPassReturn.create({
+                    data: {
+                        getPassLineId: line.id,
+                        qtyReturned: damagedQty,
+                        qtyGood: 0,
+                        qtyLost: 0,
+                        qtyDamaged: damagedQty,
+                        isLost: false,
+                        isDamaged: true,
+                        notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
+                        registeredBy: user.id,
+                    },
+                });
+                const documentNo = await generateDocNumber(sourceTenantId, DocPrefix.BREAKAGE, now, tx);
+                const brkDoc = await tx.movementDocument.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        documentNo,
+                        movementType: 'BREAKAGE',
+                        status: 'POSTED',
+                        postedAt: now,
+                        sourceLocationId: line.locationId,
+                        reason: `Damaged on get pass return ${getPass.passNo}`,
+                        notes: managerNotes || null,
+                        documentDate: now,
+                        createdBy: user.id,
+                        lines: {
+                            create: [
+                                {
+                                    itemId: line.itemId,
+                                    locationId: line.locationId,
+                                    qtyRequested: damagedQty,
+                                    qtyInBaseUnit: damagedQty,
+                                    unitCost: wac,
+                                    totalValue: damagedQty * wac,
+                                    notes: `ACCOUNTABILITY:${accountability}`,
+                                },
+                            ],
+                        },
+                    },
+                });
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'BREAKAGE',
+                        qtyIn: 0,
+                        qtyOut: damagedQty,
+                        unitCost: wac,
+                        totalValue: damagedQty * wac,
+                        referenceType: 'BREAKAGE',
+                        referenceId: brkDoc.id,
+                        referenceNo: brkDoc.documentNo,
+                        createdBy: user.id,
+                        notes: `Damaged return accountability: ${accountability}`,
+                    },
+                });
+            }
+
+            if (lostQty > 0) {
+                await tx.getPassReturn.create({
+                    data: {
+                        getPassLineId: line.id,
+                        qtyReturned: lostQty,
+                        qtyGood: 0,
+                        qtyLost: lostQty,
+                        qtyDamaged: 0,
+                        isLost: true,
+                        isDamaged: false,
+                        notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
+                        registeredBy: user.id,
+                    },
+                });
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId: sourceTenantId,
+                        itemId: line.itemId,
+                        locationId: line.locationId,
+                        movementType: 'LOAN_WRITE_OFF',
+                        qtyIn: 0,
+                        qtyOut: lostQty,
+                        unitCost: wac,
+                        totalValue: lostQty * wac,
+                        referenceType: 'GET_PASS',
+                        referenceId: id,
+                        referenceNo: getPass.passNo,
+                        createdBy: user.id,
+                        notes: `Lost return accountability: ${accountability}`,
+                    },
+                });
+            }
         }
 
         await tx.getPass.update({
             where: { id },
             data: {
-                status: 'CLOSED',
+                status: 'RETURNED',
                 closedBy: user.id,
                 closedAt: now,
+                notes: managerNotes
+                    ? `${getPass.notes || ''}\nManager Acceptance Notes: ${managerNotes}`.trim()
+                    : getPass.notes,
             },
         });
     });

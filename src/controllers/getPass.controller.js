@@ -110,7 +110,7 @@ const confirmReturnArrival = async (req, res) => {
 const acceptReturnIntoDepartment = async (req, res) => {
     const { user } = req;
     const { id } = req.params;
-    const result = await getPassService.acceptReturnIntoDepartment(id, user.tenantId, user);
+    const result = await getPassService.acceptReturnIntoDepartment(id, user.tenantId, user, req.body);
     res.json({ success: true, data: result });
 };
 
