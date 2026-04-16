@@ -1322,6 +1322,12 @@ const confirmReturnArrival = async (id, sourceTenantId, user, payload = {}) => {
             const damagePhotos = Array.isArray(linePayload.damagePhotos)
                 ? linePayload.damagePhotos.filter((photo) => typeof photo === 'string' && photo.trim() !== '')
                 : [];
+            // Temporarily disabled: API no longer requires damage photos when damagedQty > 0.
+            // if (damagedQty > 0 && damagePhotos.length === 0) {
+            //     throw Object.assign(new Error(`Damage photos are required for damaged quantity on line ${line.id}.`), {
+            //         statusCode: 400,
+            //     });
+            // }
 
             await tx.getPassLine.update({
                 where: { id: line.id },
