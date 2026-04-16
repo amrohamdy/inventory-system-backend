@@ -455,6 +455,7 @@ model InventoryLedger {
   itemId           String           @db.Uuid
   locationId       String           @db.Uuid
   movementType     MovementType
+  affectsValuation Boolean          @default(true)
   qtyIn            Decimal          @default(0) @db.Decimal(15, 4)
   qtyOut           Decimal          @default(0) @db.Decimal(15, 4)
   unitCost         Decimal          @default(0) @db.Decimal(15, 4)
@@ -1346,7 +1347,9 @@ enum TenantAdminStatus {
 enum MovementType {
   OPENING_BALANCE
   RECEIVE
+  TEMP_RECEIVE
   ISSUE
+  TEMP_RELEASE
   TRANSFER_OUT
   TRANSFER_IN
   RETURN

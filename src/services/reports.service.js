@@ -2,6 +2,8 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const excelService = require('./excel.service');
 
+const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
+
 /**
  * M13.1 - Stock Valuation Report
  * Shows current quantity on hand, WAC, and total value.
@@ -89,6 +91,7 @@ const getMovementHistory = async (tenantId, filters = {}) => {
 
     const where = {
         tenantId,
+        ...OFFICIAL_LEDGER_WHERE,
         createdAt: {
             gte: fromDate,
             lte: toDate
@@ -178,6 +181,7 @@ const getBreakageReport = async (tenantId, filters = {}) => {
 
     const where = {
         tenantId,
+        ...OFFICIAL_LEDGER_WHERE,
         movementType: 'BREAKAGE',
         createdAt: {
             gte: fromDate,
@@ -393,6 +397,7 @@ const getOmcReport = async (tenantId, { dateFrom, dateTo, locationId, categoryId
         const obEntry = await prisma.inventoryLedger.findFirst({
             where: {
                 tenantId,
+                ...OFFICIAL_LEDGER_WHERE,
                 itemId: item.id,
                 locationId,
                 createdAt: { lt: fromDate }
@@ -410,6 +415,7 @@ const getOmcReport = async (tenantId, { dateFrom, dateTo, locationId, categoryId
         const movements = await prisma.inventoryLedger.findMany({
             where: {
                 tenantId,
+                ...OFFICIAL_LEDGER_WHERE,
                 itemId: item.id,
                 locationId,
                 createdAt: {
@@ -586,7 +592,7 @@ const getBreakagePLReport = async (tenantId, { dateFrom, dateTo, locationId, doc
             : doc.createdAt.toISOString().slice(0, 7);
 
         const ledgerEntries = await prisma.inventoryLedger.findMany({
-            where: { tenantId, referenceId: doc.id },
+            where: { tenantId, ...OFFICIAL_LEDGER_WHERE, referenceId: doc.id },
         });
 
         const docLoss = ledgerEntries.reduce((s, e) => s + Number(e.totalValue), 0);

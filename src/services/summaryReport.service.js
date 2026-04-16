@@ -1,6 +1,8 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
+const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // OSE SUMMARY INVENTORY REPORT
 // Columns: Opening | GRN (Purchases) | Breakage | Theoretical | Physical Count
@@ -123,6 +125,7 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
     // Always compute opening value from ledger (accurate historical cost)
     const openingWhere = {
         tenantId,
+        ...OFFICIAL_LEDGER_WHERE,
         itemId: { in: itemIds },
         locationId: { in: allLocationIds },
         OR: [
@@ -161,6 +164,7 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
     // ── 4. GRN (Purchases) in period ─────────────────────────────────────────
     const periodWhere = {
         tenantId,
+        ...OFFICIAL_LEDGER_WHERE,
         itemId: { in: itemIds },
         locationId: { in: allLocationIds },
         createdAt: { gte: start, lte: end },

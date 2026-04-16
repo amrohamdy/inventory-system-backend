@@ -378,6 +378,29 @@ const resolveTemporaryDatesForUpdate = (data, existing) => {
 
 const isBlockingTransferType = (transferType) => BLOCKING_TRANSFER_TYPES.has(transferType);
 const isReversibleTransferType = (transferType) => REVERSIBLE_TYPES.includes(transferType);
+const createTrackingLedgerEntry = async (
+    tx,
+    { tenantId, itemId, locationId, movementType, qtyIn = 0, qtyOut = 0, referenceId, referenceNo, createdBy, notes }
+) => {
+    await tx.inventoryLedger.create({
+        data: {
+            tenantId,
+            itemId,
+            locationId,
+            movementType,
+            affectsValuation: false,
+            qtyIn,
+            qtyOut,
+            unitCost: 0,
+            totalValue: 0,
+            referenceType: 'GET_PASS',
+            referenceId,
+            referenceNo,
+            createdBy,
+            notes,
+        },
+    });
+};
 const isGetPassOverdue = (getPass, now = new Date()) => {
     if (!getPass?.expectedReturnDate) return false;
     if (!OVERDUE_TRANSFER_TYPES.has(getPass.transferType)) return false;
@@ -1002,6 +1025,24 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
                     },
                 });
             }
+        } else if (isReversibleTransferType(getPass.transferType)) {
+            for (const line of getPass.lines ?? []) {
+                const receivedQty = Number(line.qtyReceivedAtDestination ?? line.qty ?? 0);
+                if (!Number.isFinite(receivedQty) || receivedQty <= 0) continue;
+
+                await createTrackingLedgerEntry(tx, {
+                    tenantId: viewerTenantId,
+                    itemId: line.itemId,
+                    locationId: targetLocationId,
+                    movementType: 'TEMP_RECEIVE',
+                    qtyIn: receivedQty,
+                    qtyOut: 0,
+                    referenceId: id,
+                    referenceNo: getPass.passNo,
+                    createdBy: user.id,
+                    notes: 'Temporary custody received at destination; stock and valuation unchanged.',
+                });
+            }
         }
 
         await tx.getPass.update({
@@ -1135,12 +1176,33 @@ const confirmReturnExit = async (id, destinationTenantId, user) => {
     }
 
     const now = new Date();
-    await prisma.getPass.update({
-        where: { id },
-        data: {
-            destinationSecurityExitAt: now,
-            destinationSecurityExitBy: user.id,
-        },
+    await prisma.$transaction(async (tx) => {
+        await tx.getPass.update({
+            where: { id },
+            data: {
+                destinationSecurityExitAt: now,
+                destinationSecurityExitBy: user.id,
+            },
+        });
+
+        for (const line of getPass.lines ?? []) {
+            const releasedQty = Number(line.qtyReceivedAtDestination ?? line.qty ?? 0);
+            if (!Number.isFinite(releasedQty) || releasedQty <= 0) continue;
+
+            const releaseLocationId = getPass.destinationLocationId || line.locationId;
+            await createTrackingLedgerEntry(tx, {
+                tenantId: destinationTenantId,
+                itemId: line.itemId,
+                locationId: releaseLocationId,
+                movementType: 'TEMP_RELEASE',
+                qtyIn: 0,
+                qtyOut: releasedQty,
+                referenceId: id,
+                referenceNo: getPass.passNo,
+                createdBy: user.id,
+                notes: 'Temporary custody released back to source; stock and valuation unchanged.',
+            });
+        }
     });
 
     await logAction({

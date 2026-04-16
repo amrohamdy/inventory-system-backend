@@ -3,6 +3,8 @@ const prisma = new PrismaClient();
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
+const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
+
 /**
  * Helper to get the starting date and ending date ISO strings.
  * Validates that dates are within a reasonable range.
@@ -147,7 +149,7 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
     // 2. Fetch Period Movements (In / Out / Tfr)
     const periodLedger = await prisma.inventoryLedger.groupBy({
         by: ['itemId', 'locationId', 'movementType'],
-        where: { tenantId, locationId: { in: locationIds }, createdAt: { gte: start, lte: end } },
+        where: { tenantId, ...OFFICIAL_LEDGER_WHERE, locationId: { in: locationIds }, createdAt: { gte: start, lte: end } },
         _sum: { qtyIn: true, qtyOut: true, totalValue: true }
     });
 
@@ -441,13 +443,13 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
     };
     const ledgerBefore = await prisma.inventoryLedger.groupBy({
         by: ['itemId', 'locationId'],
-        where: fallbackWhere,
+        where: { ...fallbackWhere, ...OFFICIAL_LEDGER_WHERE },
         _sum: { qtyIn: true, qtyOut: true, totalValue: true },
     });
 
     // ── Step 3: Period movements (raw, to separate by type) ──────────────────
     const periodEntries = await prisma.inventoryLedger.findMany({
-        where: { tenantId, locationId: locFilter, createdAt: { gte: start, lte: end } },
+        where: { tenantId, ...OFFICIAL_LEDGER_WHERE, locationId: locFilter, createdAt: { gte: start, lte: end } },
         select: { itemId: true, locationId: true, movementType: true, qtyIn: true, qtyOut: true, totalValue: true, unitCost: true },
     });
 
@@ -650,7 +652,7 @@ const generateAgingReport = async (tenantId, locationIds, categoryId) => {
     for (const b of balances) {
         // Last GRN / receive ledger
         const lastReceive = await prisma.inventoryLedger.findFirst({
-            where: { tenantId, itemId: b.itemId, locationId: b.locationId, qtyIn: { gt: 0 } },
+            where: { tenantId, ...OFFICIAL_LEDGER_WHERE, itemId: b.itemId, locationId: b.locationId, qtyIn: { gt: 0 } },
             orderBy: { createdAt: 'desc' }
         });
 
@@ -942,6 +944,7 @@ const generateValuationReport = async (tenantId, asOfDate, filters = {}) => {
     const ledgerEntries = await prisma.inventoryLedger.findMany({
         where: {
             tenantId,
+            ...OFFICIAL_LEDGER_WHERE,
             locationId: { in: resolvedLocIds },
             itemId: { in: resolvedItemIds },
             createdAt: {

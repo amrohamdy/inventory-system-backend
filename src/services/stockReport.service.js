@@ -4,6 +4,8 @@ const XLSX = require('xlsx');
 const emailService = require('./email.service');
 const { connectRole } = require('./rbac.service');
 
+const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
+
 // ── GET STOCK REPORT ──────────────────────────────────────────────────────────
 const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
     if (!departmentId) throw Object.assign(new Error('Department is required'), { status: 400 });
@@ -108,6 +110,7 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
             by: ['itemId'],
             where: {
                 tenantId,
+                ...OFFICIAL_LEDGER_WHERE,
                 itemId: { in: itemIds },
                 locationId: { in: locationIds },
                 OR: [
@@ -131,6 +134,7 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
             by: ['itemId'],
             where: {
                 tenantId,
+                ...OFFICIAL_LEDGER_WHERE,
                 itemId: { in: itemIds },
                 locationId: { in: locationIds },
                 movementType: 'BREAKAGE',
@@ -142,6 +146,7 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
             by: ['itemId'],
             where: {
                 tenantId,
+                ...OFFICIAL_LEDGER_WHERE,
                 itemId: { in: itemIds },
                 locationId: { in: locationIds },
                 movementType: 'RECEIVE',
