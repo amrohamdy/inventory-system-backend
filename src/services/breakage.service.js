@@ -2,6 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
 const { connectRole } = require('./rbac.service');
+const { checkPeriodLock } = require('./periodGuard.service');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -293,6 +294,11 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
     }
 
     const now = new Date();
+    const isFinalApproveAction = action === 'APPROVE' && currentStepNo === approval.totalSteps;
+
+    if (isFinalApproveAction) {
+        await checkPeriodLock(tenantId, doc.documentDate || doc.createdAt || now);
+    }
 
     return prisma.$transaction(async (tx) => {
         // Update the current step

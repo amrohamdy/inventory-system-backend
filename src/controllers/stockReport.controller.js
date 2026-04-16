@@ -5,11 +5,13 @@ const fs = require('fs');
 // GET /api/stock-report
 const getReport = async (req, res, next) => {
     try {
-        const { departmentId, categoryId, year } = req.query;
+        const { departmentId, categoryId, year, isBlind, blindCount } = req.query;
+        const blind = isBlind === 'true' || isBlind === '1' || blindCount === 'true' || blindCount === '1';
         const report = await stockReportService.getStockReport(req.user.tenantId, {
             departmentId,
             categoryId,
             year,
+            isBlind: blind,
         });
         res.json(report);
     } catch (err) {

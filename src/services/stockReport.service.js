@@ -5,9 +5,10 @@ const emailService = require('./email.service');
 const { connectRole } = require('./rbac.service');
 
 const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
+const n = (v) => Number(v || 0);
 
 // ── GET STOCK REPORT ──────────────────────────────────────────────────────────
-const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
+const getStockReport = async (tenantId, { departmentId, categoryId, year, isBlind = false }) => {
     if (!departmentId) throw Object.assign(new Error('Department is required'), { status: 400 });
 
     const periodYear = parseInt(year) || new Date().getFullYear();
@@ -137,7 +138,7 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
                 ...OFFICIAL_LEDGER_WHERE,
                 itemId: { in: itemIds },
                 locationId: { in: locationIds },
-                movementType: 'BREAKAGE',
+                movementType: { in: ['BREAKAGE', 'LOST', 'LOAN_WRITE_OFF'] },
                 createdAt: { gte: periodStart, lt: periodEnd },
             },
             _sum: { qtyOut: true, totalValue: true },
@@ -233,12 +234,14 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
             totalOutOnPass += passQty;
         }
 
-        const breakages = breakageMap[item.id]?.qty || 0;
-        const breakageValue = breakageMap[item.id]?.value || 0;
-        const grnQty = grnMap[item.id]?.qty || 0;
-        const grnValue = grnMap[item.id]?.value || 0;
-        const openStock = openingMap[item.id] || 0;
+        const breakages = n(breakageMap[item.id]?.qty);
+        const breakageValue = n(breakageMap[item.id]?.value);
+        const grnQty = n(grnMap[item.id]?.qty);
+        const grnValue = n(grnMap[item.id]?.value);
+        const openStock = n(openingMap[item.id]);
         const openValue = openStock * unitPrice;
+        // Keep parity with Summary report logic:
+        // Theoretical = Opening + GRN - (Breakage + Lost + LoanWriteOff) - GatePassOutstanding
         const theorQty = openStock + grnQty - breakages - totalOutOnPass;
         const theorValue = theorQty * unitPrice;
         const closeStock = totalQty;
@@ -275,6 +278,22 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
         };
     });
 
+    // Secure blind-count mode: mask sensitive figures server-side before sending JSON.
+    if (isBlind) {
+        for (const row of reportItems) {
+            row.theorQty = 0;
+            row.theorValue = 0;
+            row.openStock = 0;
+            row.breakages = 0;
+        }
+        totals.theorQty = 0;
+        totals.theorValue = 0;
+        totals.openStock = 0;
+        totals.openValue = 0;
+        totals.breakages = 0;
+        totals.breakageValue = 0;
+    }
+
     // 7. Summary totals
     const totals = {
         totalQty: 0, totalValue: 0, openStock: 0, openValue: 0,
@@ -305,7 +324,43 @@ const getStockReport = async (tenantId, { departmentId, categoryId, year }) => {
         }
     }
 
-    return { items: reportItems, locations, totals, year: periodYear };
+    const normalizeItem = (row) => ({
+        ...row,
+        unitPrice: n(row.unitPrice),
+        breakages: n(row.breakages),
+        breakageValue: n(row.breakageValue),
+        totalOutOnPass: n(row.totalOutOnPass),
+        grnQty: n(row.grnQty),
+        grnValue: n(row.grnValue),
+        theorQty: n(row.theorQty),
+        theorValue: n(row.theorValue),
+        totalQty: n(row.totalQty),
+        totalValue: n(row.totalValue),
+        openStock: n(row.openStock),
+        openValue: n(row.openValue),
+        varianceQty: n(row.varianceQty),
+        varianceValue: n(row.varianceValue),
+        closeStock: n(row.closeStock),
+    });
+    const normalizedItems = reportItems.map(normalizeItem);
+    const normalizedTotals = {
+        ...totals,
+        totalQty: n(totals.totalQty),
+        totalValue: n(totals.totalValue),
+        openStock: n(totals.openStock),
+        openValue: n(totals.openValue),
+        breakages: n(totals.breakages),
+        breakageValue: n(totals.breakageValue),
+        grnQty: n(totals.grnQty),
+        grnValue: n(totals.grnValue),
+        theorQty: n(totals.theorQty),
+        theorValue: n(totals.theorValue),
+        varianceQty: n(totals.varianceQty),
+        varianceValue: n(totals.varianceValue),
+        closeStock: n(totals.closeStock),
+    };
+
+    return { items: normalizedItems, locations, totals: normalizedTotals, year: periodYear };
 };
 
 // \u2500\u2500 EXPORT TO EXCEL (ExcelJS \u2014 styled to match the screen) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -548,17 +603,33 @@ const uploadCountedExcel = async (filePath, tenantId, departmentId, categoryId, 
         }
     }
 
-    // Find items by name — filter out summary rows (TOTALS, empty, etc.)
+    // Match priority: Barcode -> Item Code -> Item Name (fallback only when codes are missing)
+    // filter out summary rows (TOTALS, empty, etc.)
     const SKIP_NAMES = new Set(['totals', 'total', '']);
     const itemNames = rows
         .map(r => String(r['Item Description'] || '').trim())
         .filter(name => name && !SKIP_NAMES.has(name.toLowerCase()));
+    const barcodes = rows
+        .map(r => String(r.Barcode || r.barcode || '').trim())
+        .filter(Boolean);
+    const itemCodes = rows
+        .map(r => String(r['Item Code'] || r.itemCode || r.Code || '').trim())
+        .filter(Boolean);
 
     const items = await prisma.item.findMany({
-        where: { tenantId, name: { in: itemNames } },
-        select: { id: true, name: true },
+        where: {
+            tenantId,
+            OR: [
+                ...(barcodes.length ? [{ barcode: { in: barcodes } }] : []),
+                ...(itemCodes.length ? [{ code: { in: itemCodes } }] : []),
+                ...(itemNames.length ? [{ name: { in: itemNames } }] : []),
+            ],
+        },
+        select: { id: true, name: true, barcode: true, code: true },
     });
-    const itemMap = new Map(items.map(i => [i.name.toLowerCase(), i.id]));
+    const itemByBarcode = new Map(items.filter(i => i.barcode).map(i => [String(i.barcode).toLowerCase(), i.id]));
+    const itemByCode = new Map(items.filter(i => i.code).map(i => [String(i.code).toLowerCase(), i.id]));
+    const itemByName = new Map(items.map(i => [i.name.toLowerCase(), i.id]));
 
     let updated = 0;
     let skipped = 0;
@@ -569,11 +640,16 @@ const uploadCountedExcel = async (filePath, tenantId, departmentId, categoryId, 
     for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         const itemName = String(row['Item Description'] || '').trim();
+        const barcode = String(row.Barcode || row.barcode || '').trim().toLowerCase();
+        const itemCode = String(row['Item Code'] || row.itemCode || row.Code || '').trim().toLowerCase();
 
         // Skip summary/empty rows
         if (!itemName || SKIP_NAMES.has(itemName.toLowerCase())) continue;
 
-        const itemId = itemMap.get(itemName.toLowerCase());
+        let itemId = null;
+        if (barcode) itemId = itemByBarcode.get(barcode) || null;
+        if (!itemId && itemCode) itemId = itemByCode.get(itemCode) || null;
+        if (!itemId && !barcode && !itemCode) itemId = itemByName.get(itemName.toLowerCase()) || null;
 
         if (!itemId) {
             skipped++;

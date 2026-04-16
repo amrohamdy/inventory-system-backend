@@ -2,6 +2,7 @@
 
 const prisma = require('../config/database');
 const { generateDocNumber } = require('./docNumbering.service');
+const { checkPeriodLock } = require('./periodGuard.service');
 
 const LOST_INCLUDE = {
     createdByUser: { select: { id: true, firstName: true, lastName: true } },
@@ -219,9 +220,13 @@ const approveLostAtLevel = async (id, tenantId, userId, userRole, expectedStatus
     if (doc.sourceType !== 'INTERNAL') throw err('Only internal lost documents can be approved manually.');
     if (doc.status !== expectedStatus) throw err(`Document must be in ${expectedStatus} status.`);
     const current = ensureCanApprove(doc, userRole);
+    const isFinal = current.nextStatus === 'APPROVED';
+
+    if (isFinal) {
+        await checkPeriodLock(tenantId, doc.documentDate || doc.createdAt || new Date());
+    }
 
     return prisma.$transaction(async (tx) => {
-        const isFinal = current.nextStatus === 'APPROVED';
         if (isFinal) {
             await applyStockImpactOnFinalApproval(tx, doc, userId);
         }

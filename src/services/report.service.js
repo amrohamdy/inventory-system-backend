@@ -5,6 +5,19 @@ const PDFDocument = require('pdfkit');
 
 const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
 
+const optimizeReportPayload = (data, { includeSupplier = false, includeLocationQtys = false } = {}) => {
+    if (!data || !Array.isArray(data.rows)) return data;
+    const optimizedRows = data.rows.map((row) => {
+        if (!row || typeof row !== 'object') return row;
+        const optimized = { ...row };
+        delete optimized.imageUrl;
+        if (!includeSupplier) delete optimized.supplier;
+        if (!includeLocationQtys) delete optimized.locationQtys;
+        return optimized;
+    });
+    return { ...data, rows: optimizedRows };
+};
+
 /**
  * Helper to get the starting date and ending date ISO strings.
  * Validates that dates are within a reasonable range.
@@ -29,7 +42,10 @@ const getDateRange = (startDate, endDate) => {
 /**
  * Generate Report and Save to History
  */
-const generateReport = async (tenantId, { reportType, departmentIds, startDate, endDate, generatedBy, categoryId }) => {
+const generateReport = async (
+    tenantId,
+    { reportType, departmentIds, startDate, endDate, generatedBy, categoryId, includeSupplier = false, includeLocationQtys = false }
+) => {
     if (!['SUMMARY', 'DETAIL', 'BREAKAGE', 'OMC', 'TRANSFERS', 'AGING'].includes(reportType)) {
         throw new Error('Invalid report type');
     }
@@ -87,21 +103,42 @@ const generateReport = async (tenantId, { reportType, departmentIds, startDate, 
     switch (reportType) {
         case 'SUMMARY':
         case 'DETAIL':
-            data = await generateVarianceReport(tenantId, locationIds, start, end, reportType === 'SUMMARY', categoryId);
+            data = await generateVarianceReport(
+                tenantId,
+                locationIds,
+                start,
+                end,
+                reportType === 'SUMMARY',
+                categoryId,
+                { includeSupplier, includeLocationQtys }
+            );
             break;
         case 'BREAKAGE':
-            data = await generateBreakageReport(tenantId, locationIds, start, end, categoryId);
+            data = await generateBreakageReport(tenantId, locationIds, start, end, categoryId, {
+                includeSupplier,
+                includeLocationQtys
+            });
             break;
         case 'OMC':
-            data = await generateOMCReport(tenantId, locationIds, start, end, categoryId);
+            data = await generateOMCReport(tenantId, locationIds, start, end, categoryId, {
+                includeSupplier,
+                includeLocationQtys
+            });
             break;
         case 'TRANSFERS':
-            data = await generateTransfersReport(tenantId, locationIds, start, end, categoryId);
+            data = await generateTransfersReport(tenantId, locationIds, start, end, categoryId, {
+                includeSupplier,
+                includeLocationQtys
+            });
             break;
         case 'AGING':
-            data = await generateAgingReport(tenantId, locationIds, categoryId);
+            data = await generateAgingReport(tenantId, locationIds, end, categoryId, {
+                includeSupplier,
+                includeLocationQtys
+            });
             break;
     }
+    data = optimizeReportPayload(data, { includeSupplier, includeLocationQtys });
 
     // Save to Database
     const generatedReport = await prisma.generatedReport.create({
@@ -112,6 +149,7 @@ const generateReport = async (tenantId, { reportType, departmentIds, startDate, 
             departmentId: (deptIds && deptIds.length === 1) ? deptIds[0] : null,
             startDate: start,
             endDate: end,
+            // Persist only the final API shape to keep JSON size lean.
             data: { ...data, deptNames },
             generatedBy
         }
@@ -124,7 +162,17 @@ const generateReport = async (tenantId, { reportType, departmentIds, startDate, 
  * 1. Summary & 2. Detail Report:
  * Opening, Closing, Physical Count, Variance
  */
-const generateVarianceReport = async (tenantId, locationIds, start, end, isSummary, categoryId) => {
+const generateVarianceReport = async (
+    tenantId,
+    locationIds,
+    start,
+    end,
+    isSummary,
+    categoryId,
+    options = {}
+) => {
+    const includeSupplier = Boolean(options.includeSupplier);
+    const includeLocationQtys = Boolean(options.includeLocationQtys);
     // 1. Fetch Item Master & Current Closing Balances
     const stockBalances = await prisma.stockBalance.findMany({
         where: { 
@@ -132,7 +180,7 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
             locationId: { in: locationIds },
             ...(categoryId ? { item: { categoryId } } : {})
         },
-        include: { item: { include: { category: true, supplier: true } } }
+        include: { item: { include: { category: true, ...(includeSupplier ? { supplier: true } : {}) } } }
     });
 
     const locations = await prisma.location.findMany({ where: { tenantId, id: { in: locationIds } } });
@@ -166,12 +214,10 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
 
         if (p.movementType === 'RECEIVE' || p.movementType === 'RETURN' || p.movementType === 'TRANSFER_IN' || p.movementType === 'GET_PASS_RETURN') {
             m.inQty += qIn; m.inVal += val;
-        } else if (p.movementType === 'BREAKAGE') {
+        } else if (p.movementType === 'BREAKAGE' || p.movementType === 'LOAN_WRITE_OFF' || p.movementType === 'LOST') {
             m.brkQty += qOut; m.brkVal += val;
         } else if (p.movementType === 'ISSUE' || p.movementType === 'TRANSFER_OUT' || p.movementType === 'GET_PASS_OUT') {
             m.outQty += qOut; m.outVal += val;
-        } else if (p.movementType === 'LOAN_WRITE_OFF') {
-            m.brkQty += qOut; m.brkVal += val;
         } else if (p.movementType === 'OPENING_BALANCE') {
             m.obQty += qIn; m.obVal += val;
         } else if (p.movementType === 'ADJUSTMENT' || p.movementType === 'COUNT_ADJUSTMENT') {
@@ -256,8 +302,7 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
             category: item.category?.name || 'Uncategorized',
             itemCode: item.barcode || 'N/A',
             itemName: item.name || 'Unknown Item',
-            supplier: item.supplier?.name || '',
-            imageUrl: item.imageUrl || null,
+            ...(includeSupplier ? { supplier: item.supplier?.name || '' } : {}),
             unitPrice: unitPrice,
 
             openingQty: Number(reportOpenQty.toFixed(4)),
@@ -284,8 +329,7 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
 
             closingQty: Number(closeQty.toFixed(4)),
             closingValue: Number(closeVal.toFixed(2)),
-            
-            locationQtys // Pass the complete map!
+            ...(includeLocationQtys ? { locationQtys } : {})
         });
     }
 
@@ -334,18 +378,19 @@ const generateVarianceReport = async (tenantId, locationIds, start, end, isSumma
 /**
  * 3. Breakage Report
  */
-const generateBreakageReport = async (tenantId, locationIds, start, end, categoryId) => {
+const generateBreakageReport = async (tenantId, locationIds, start, end, categoryId, options = {}) => {
+    const includeSupplier = Boolean(options.includeSupplier);
     const breakages = await prisma.movementDocument.findMany({
         where: {
             tenantId,
-            movementType: 'BREAKAGE',
+            movementType: { in: ['BREAKAGE', 'LOST', 'LOAN_WRITE_OFF'] },
             status: 'POSTED',
             documentDate: { gte: start, lte: end },
             sourceLocationId: locationIds.length > 0 ? { in: locationIds } : undefined
         },
         include: {
             lines: {
-                include: { item: { include: { category: true } } }
+                include: { item: { include: { category: true, ...(includeSupplier ? { supplier: true } : {}) } } }
             },
             createdByUser: true
         },
@@ -376,12 +421,14 @@ const generateBreakageReport = async (tenantId, locationIds, start, end, categor
             rows.push({
                 date: doc.documentDate.toISOString().split('T')[0],
                 documentNo: doc.documentNo,
+                movementType: doc.movementType,
                 department: locationMap[doc.sourceLocationId]?.departmentName || 'N/A',
                 location: locationMap[doc.sourceLocationId]?.name || doc.sourceLocationId || 'N/A',
                 createdBy: doc.createdByUser ? `${doc.createdByUser.firstName} ${doc.createdByUser.lastName}` : 'N/A',
                 category: line.item.category?.name || 'Uncategorized',
                 itemCode: line.item.barcode || '',
                 itemName: line.item.name,
+                ...(includeSupplier ? { supplier: line.item.supplier?.name || '' } : {}),
                 qty: Number(line.qtyInBaseUnit) || 0,
                 value: Number(line.totalValue) || (Number(line.qtyInBaseUnit) * Number(line.item.unitPrice || 0)),
                 reason: doc.reason || ''
@@ -409,7 +456,9 @@ const generateBreakageReport = async (tenantId, locationIds, start, end, categor
  *
  * Closing = Opening + OB + In + TransferIn - Out - TransferOut ± Adjustment
  */
-const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) => {
+const generateOMCReport = async (tenantId, locationIds, start, end, categoryId, options = {}) => {
+    const includeSupplier = Boolean(options.includeSupplier);
+    const includeLocationQtys = Boolean(options.includeLocationQtys);
     const locFilter = locationIds.length > 0 ? { in: locationIds } : undefined;
 
     // ── Step 1: Best PeriodSnapshot before startDate ──────────────────────────
@@ -463,7 +512,10 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
     const allItemIds = [...new Set([...keySet].map(k => k.split('_')[0]))];
     const allLocIds  = [...new Set([...keySet].map(k => k.split('_')[1]))];
     const [items, locs] = await Promise.all([
-        prisma.item.findMany({ where: { id: { in: allItemIds }, ...(categoryId ? { categoryId } : {}) }, include: { category: true } }),
+        prisma.item.findMany({
+            where: { id: { in: allItemIds }, ...(categoryId ? { categoryId } : {}) },
+            include: { category: true, ...(includeSupplier ? { supplier: true } : {}) }
+        }),
         prisma.location.findMany({ where: { id: { in: allLocIds } }, include: { department: true } }),
     ]);
     const itemMap = {};
@@ -497,7 +549,7 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
                 m.inQty += qIn; m.inValue += val; break;
             case 'TRANSFER_IN':
                 m.inQty += qIn; m.inValue += val; m.tfrInQty += qIn; break;
-            case 'ISSUE': case 'BREAKAGE': case 'GET_PASS_OUT': case 'LOAN_WRITE_OFF':
+            case 'ISSUE': case 'BREAKAGE': case 'LOST': case 'GET_PASS_OUT': case 'LOAN_WRITE_OFF':
                 m.outQty += qOut; m.outValue += val; break;
             case 'TRANSFER_OUT':
                 m.outQty += qOut; m.outValue += val; m.tfrOutQty += qOut; break;
@@ -547,6 +599,7 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
             category:     itemMap[itemId]?.category?.name || '',
             itemCode:     itemMap[itemId]?.barcode || '',
             itemName:     itemMap[itemId]?.name || 'Unknown',
+            ...(includeSupplier ? { supplier: itemMap[itemId]?.supplier?.name || '' } : {}),
             openingQty:   Number(openQty.toFixed(4)),
             openingValue: Number(openValue.toFixed(2)),
             obQty:        Number(m.obQty.toFixed(4)),         // Initial Load (OB)
@@ -562,6 +615,7 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
             closingQty:   Number(closeQty.toFixed(4)),
             closingValue: Number(closeValue.toFixed(2)),
             unitCost:     Number(closeWac.toFixed(4)),
+            ...(includeLocationQtys ? { locationQtys: { [locationId]: Number(closeQty.toFixed(4)) } } : {}),
         });
     }
 
@@ -582,7 +636,9 @@ const generateOMCReport = async (tenantId, locationIds, start, end, categoryId) 
 /**
  * 5. Transfers Report
  */
-const generateTransfersReport = async (tenantId, locationIds, start, end, categoryId) => {
+const generateTransfersReport = async (tenantId, locationIds, start, end, categoryId, options = {}) => {
+    const includeSupplier = Boolean(options.includeSupplier);
+    const includeLocationQtys = Boolean(options.includeLocationQtys);
     // Determine if the selected locations were source OR dest
     const transfers = await prisma.storeTransfer.findMany({
         where: {
@@ -598,7 +654,7 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
             sourceLocation: true,
             destLocation: true,
             requestedByUser: true,
-            lines: { include: { item: true } }
+            lines: { include: { item: { include: { ...(includeSupplier ? { supplier: true } : {}) } } } }
         },
         orderBy: { transferDate: 'asc' }
     });
@@ -618,12 +674,25 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
                 date: doc.transferDate.toISOString().split('T')[0],
                 documentNo: doc.transferNo,
                 type,
-                source: doc.sourceLocation.name,
-                destination: doc.destLocation.name,
+                fromLocation: doc.sourceLocation?.name || '',
+                toLocation: doc.destLocation?.name || '',
+                // Keep legacy keys for frontend/export compatibility.
+                source: doc.sourceLocation?.name || '',
+                destination: doc.destLocation?.name || '',
+                itemCode: line.item.barcode || '',
                 itemName: line.item.name,
+                ...(includeSupplier ? { supplier: line.item.supplier?.name || '' } : {}),
                 qty: Number(line.receivedQty || line.requestedQty),
                 value: Number(line.totalValue),
-                requestedBy: doc.requestedByUser?.firstName + ' ' + doc.requestedByUser?.lastName
+                requestedBy: doc.requestedByUser?.firstName + ' ' + doc.requestedByUser?.lastName,
+                ...(includeLocationQtys
+                    ? {
+                        locationQtys: {
+                            [doc.sourceLocationId]: Number(-(line.receivedQty || line.requestedQty || 0)),
+                            [doc.destLocationId]: Number(line.receivedQty || line.requestedQty || 0)
+                        }
+                    }
+                    : {})
             });
         });
     });
@@ -634,7 +703,9 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
 /**
  * 6. Aging Report
  */
-const generateAgingReport = async (tenantId, locationIds, categoryId) => {
+const generateAgingReport = async (tenantId, locationIds, endDate, categoryId, options = {}) => {
+    const includeSupplier = Boolean(options.includeSupplier);
+    const includeLocationQtys = Boolean(options.includeLocationQtys);
     const balances = await prisma.stockBalance.findMany({
         where: { 
             tenantId, 
@@ -642,24 +713,31 @@ const generateAgingReport = async (tenantId, locationIds, categoryId) => {
             qtyOnHand: { gt: 0 },
             ...(categoryId ? { item: { categoryId } } : {})
         },
-        include: { location: true, item: { include: { category: true } } }
+        include: { location: true, item: { include: { category: true, ...(includeSupplier ? { supplier: true } : {}) } } }
     });
 
     let rows = [];
 
-    // Find the last receive date for each item/location
-    const now = new Date();
+    // Prefer report end date for deterministic aging snapshots.
+    const asOfDate = endDate ? new Date(endDate) : new Date();
+    asOfDate.setHours(23, 59, 59, 999);
     for (const b of balances) {
-        // Last GRN / receive ledger
-        const lastReceive = await prisma.inventoryLedger.findFirst({
-            where: { tenantId, ...OFFICIAL_LEDGER_WHERE, itemId: b.itemId, locationId: b.locationId, qtyIn: { gt: 0 } },
+        // Last official ledger movement for this item/location up to the report as-of date.
+        const lastMovement = await prisma.inventoryLedger.findFirst({
+            where: {
+                tenantId,
+                ...OFFICIAL_LEDGER_WHERE,
+                itemId: b.itemId,
+                locationId: b.locationId,
+                createdAt: { lte: asOfDate }
+            },
             orderBy: { createdAt: 'desc' }
         });
 
-        const lastDate = lastReceive ? lastReceive.createdAt : null;
+        const lastDate = lastMovement ? lastMovement.createdAt : null;
         let diffDays = 0;
         if (lastDate) {
-            diffDays = Math.floor((now - lastDate) / (1000 * 60 * 60 * 24));
+            diffDays = Math.max(0, Math.floor((asOfDate - lastDate) / (1000 * 60 * 60 * 24)));
         } else {
             // If never received but has balance, fallback to opening balance concept
             diffDays = 999;
@@ -674,10 +752,13 @@ const generateAgingReport = async (tenantId, locationIds, categoryId) => {
             location: b.location.name,
             category: b.item.category?.name || '',
             itemName: b.item.name,
+            ...(includeSupplier ? { supplier: b.item.supplier?.name || '' } : {}),
             qtyOnHand: Number(b.qtyOnHand),
+            value: Number((Number(b.qtyOnHand || 0) * Number(b.item.unitPrice || 0)).toFixed(2)),
             lastReceiveDate: lastDate ? lastDate.toISOString().split('T')[0] : 'Never',
             daysOld: diffDays,
-            bucket
+            bucket,
+            ...(includeLocationQtys ? { locationQtys: { [b.locationId]: Number(b.qtyOnHand || 0) } } : {})
         });
     }
 
@@ -759,13 +840,15 @@ const getColumnsForReport = (reportType) => {
         ];
         case 'TRANSFERS': return [
             { key: 'date', label: 'Date', width: 12 }, { key: 'documentNo', label: 'Trf No', width: 18 },
-            { key: 'type', label: 'Type', width: 15 }, { key: 'source', label: 'Source', width: 20 },
-            { key: 'destination', label: 'Destination', width: 20 }, { key: 'itemName', label: 'Item', width: 30 },
+            { key: 'type', label: 'Type', width: 15 }, { key: 'fromLocation', label: 'From', width: 20 },
+            { key: 'toLocation', label: 'To', width: 20 }, { key: 'itemCode', label: 'Code', width: 15 },
+            { key: 'itemName', label: 'Item', width: 30 },
             { key: 'qty', label: 'Qty', width: 10 }, { key: 'requestedBy', label: 'Requested By', width: 20 }
         ];
         case 'AGING': return [
             { key: 'location', label: 'Location', width: 20 }, { key: 'category', label: 'Category', width: 20 },
             { key: 'itemName', label: 'Item', width: 30 }, { key: 'qtyOnHand', label: 'Qty', width: 10 },
+            { key: 'value', label: 'Value', width: 12 },
             { key: 'lastReceiveDate', label: 'Last Rx', width: 15 }, { key: 'daysOld', label: 'Days Old', width: 10 },
             { key: 'bucket', label: 'Bucket', width: 15 }
         ];
@@ -890,7 +973,7 @@ const exportPdf = async (tenantId, reportId) => {
  * @param {Object}  filters         — { locationIds, departmentIds, categoryId }
  */
 const generateValuationReport = async (tenantId, asOfDate, filters = {}) => {
-    const { locationIds = [], departmentIds = [], categoryId } = filters;
+    const { locationIds = [], departmentIds = [], categoryId, snapshotId } = filters;
 
     // ── Resolve locations ────────────────────────────────────────────────────
     const locWhere = { tenantId, isActive: true };
@@ -915,10 +998,24 @@ const generateValuationReport = async (tenantId, asOfDate, filters = {}) => {
     const asOf = new Date(asOfDate);
     asOf.setHours(23, 59, 59, 999);
 
-    const bestClose = await prisma.periodClose.findFirst({
-        where: { tenantId, status: 'CLOSED', closedAt: { lte: asOf } },
-        orderBy: { closedAt: 'desc' },
-    });
+    let bestClose = null;
+    if (snapshotId) {
+        bestClose = await prisma.periodClose.findFirst({
+            where: { id: snapshotId, tenantId, status: 'CLOSED' },
+        });
+        if (!bestClose) {
+            throw Object.assign(new Error('Invalid snapshotId. Closed snapshot not found.'), { status: 400 });
+        }
+        if (bestClose.closedAt > asOf) {
+            throw Object.assign(new Error('snapshotId must be on or before asOfDate.'), { status: 400 });
+        }
+    }
+    if (!bestClose) {
+        bestClose = await prisma.periodClose.findFirst({
+            where: { tenantId, status: 'CLOSED', closedAt: { lte: asOf } },
+            orderBy: { closedAt: 'desc' },
+        });
+    }
 
     // Snapshot map: key = `itemId_locationId` → { qty, wac, value }
     const balanceMap = {};
@@ -1033,12 +1130,14 @@ const generateValuationReport = async (tenantId, asOfDate, filters = {}) => {
         a.itemName.localeCompare(b.itemName)
     );
 
-    return {
+    return optimizeReportPayload({
         rows,
         asOfDate: asOf.toISOString(),
         totalValue: Number(grandTotal.toFixed(2)),
-        snapshotUsed: bestClose ? { year: bestClose.year, month: bestClose.month, closedAt: bestClose.closedAt } : null,
-    };
+        snapshotUsed: bestClose
+            ? { id: bestClose.id, year: bestClose.year, month: bestClose.month, closedAt: bestClose.closedAt }
+            : null,
+    }, { includeSupplier: false, includeLocationQtys: false });
 };
 
 module.exports = {

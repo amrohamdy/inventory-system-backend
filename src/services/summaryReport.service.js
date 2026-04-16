@@ -5,12 +5,12 @@ const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OSE SUMMARY INVENTORY REPORT
-// Columns: Opening | GRN (Purchases) | Breakage | Theoretical | Physical Count
+// Columns: Opening | GRN (Purchases) | Breakage & Lost | Theoretical | Physical Count
 //           | Count Variance | Closing Balance
 //
 // Opening      = PeriodClose snapshot (immutable) → fallback: ledger before month
 // GRN          = InventoryLedger movementType='RECEIVE'   in period
-// Breakage     = InventoryLedger movementType='BREAKAGE'  in period
+// Breakage/Lost= InventoryLedger movementType in ['BREAKAGE','LOST','LOAN_WRITE_OFF'] in period
 // Theoretical  = Opening + GRN − Breakage − GatePass (Out)
 // Variance     = InventoryLedger movementType='COUNT_ADJUSTMENT' in period
 // Closing      = Theoretical + Variance
@@ -170,7 +170,7 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
         createdAt: { gte: start, lte: end },
     };
 
-    const [grnIn, breakageOut, activePasses, countAdjIn, countAdjOut] = await Promise.all([
+    const [grnIn, breakageOut, passLines, countAdjIn, countAdjOut] = await Promise.all([
         prisma.inventoryLedger.groupBy({
             by: ['itemId'],
             where: { ...periodWhere, movementType: 'RECEIVE' },
@@ -178,18 +178,28 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
         }),
         prisma.inventoryLedger.groupBy({
             by: ['itemId'],
-            where: { ...periodWhere, movementType: 'BREAKAGE' },
+            where: { ...periodWhere, movementType: { in: ['BREAKAGE', 'LOST', 'LOAN_WRITE_OFF'] } },
             _sum: { qtyOut: true, totalValue: true },
         }),
-        prisma.getPassLine.groupBy({
-            by: ['itemId'],
+        prisma.getPassLine.findMany({
             where: {
-                getPass: { tenantId, status: { in: ['OUT', 'PARTIALLY_RETURNED'] } },
-                status: { in: ['OUT', 'PARTIALLY_RETURNED'] },
+                getPass: {
+                    tenantId,
+                    checkedOutAt: { lte: end },
+                    OR: [{ closedAt: null }, { closedAt: { gt: end } }],
+                },
                 itemId: { in: itemIds },
                 locationId: { in: allLocationIds },
             },
-            _sum: { qty: true, qtyReturned: true },
+            select: {
+                itemId: true,
+                qty: true,
+                unitCost: true,
+                returns: {
+                    where: { returnDate: { lte: end } },
+                    select: { qtyReturned: true },
+                },
+            },
         }),
         prisma.inventoryLedger.groupBy({
             by: ['itemId'],
@@ -205,7 +215,7 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
 
     const grnMap = {};  // itemId → { qty, value }
     const breakageMap = {}; // itemId → { qty, value }
-    const passMap = {}; // itemId → { qty }
+    const passMap = {}; // itemId → { qty, value }
     const varMap = {}; // itemId -> { qty, value } // Variance adjustments
 
     for (const r of grnIn) {
@@ -214,9 +224,13 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
     for (const r of breakageOut) {
         breakageMap[r.itemId] = { qty: Number(r._sum.qtyOut || 0), value: Number(r._sum.totalValue || 0) };
     }
-    for (const r of activePasses) {
-        const outstanding = Number(r._sum.qty || 0) - Number(r._sum.qtyReturned || 0);
-        passMap[r.itemId] = { qty: outstanding };
+    for (const line of passLines) {
+        const returnedQty = (line.returns || []).reduce((sum, ret) => sum + Number(ret.qtyReturned || 0), 0);
+        const outstanding = Number(line.qty || 0) - returnedQty;
+        if (outstanding <= 0) continue;
+        if (!passMap[line.itemId]) passMap[line.itemId] = { qty: 0, value: 0 };
+        passMap[line.itemId].qty += outstanding;
+        passMap[line.itemId].value += outstanding * Number(line.unitCost || 0);
     }
     for (const r of countAdjIn) {   // Physical count was HIGHER than book
         if(!varMap[r.itemId]) varMap[r.itemId] = { qty: 0, value: 0 };
@@ -259,11 +273,8 @@ const getSummaryReport = async (tenantId, { startDate, endDate, departmentIds, c
         g.brkQty += breakageMap[itemId]?.qty || 0;
         g.brkVal += breakageMap[itemId]?.value || 0;
         
-        const passQty = passMap[itemId]?.qty || 0;
-        // Estimate pass value based on wacUnitCost assuming uniformity, or use average open cost
-        const currWac = g.openQty > 0 ? (g.openVal / g.openQty) : 0; // rough approximation for display summary
-        g.passQty += passQty;
-        g.passVal += passQty * currWac;
+        g.passQty += passMap[itemId]?.qty || 0;
+        g.passVal += passMap[itemId]?.value || 0;
 
         if (varMap[itemId]) {
             g.varQty += varMap[itemId].qty;

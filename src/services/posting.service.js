@@ -82,7 +82,7 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
             let destLocationId = document.destLocationId || line.locationId;
 
             const isIncrease = ['OPENING_BALANCE', 'RECEIVE', 'TRANSFER_IN', 'RETURN'].includes(document.movementType);
-            const isDecrease = ['ISSUE', 'TRANSFER_OUT', 'BREAKAGE'].includes(document.movementType);
+            const isDecrease = ['ISSUE', 'TRANSFER_OUT', 'BREAKAGE', 'LOST', 'LOAN_WRITE_OFF'].includes(document.movementType);
             const isTransfer = document.movementType === 'TRANSFER'; // Generic transfer if combined
             const isAdjustment = ['ADJUSTMENT', 'COUNT_ADJUSTMENT'].includes(document.movementType);
 

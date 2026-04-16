@@ -3,7 +3,7 @@ const { success } = require('../utils/response');
 
 const generateReport = async (req, res, next) => {
     try {
-        const { reportType, departmentIds, startDate, endDate, categoryId } = req.body;
+        const { reportType, departmentIds, startDate, endDate, categoryId, includeSupplier, includeLocationQtys } = req.body;
 
         const report = await reportService.generateReport(req.user.tenantId, {
             reportType,
@@ -11,6 +11,8 @@ const generateReport = async (req, res, next) => {
             startDate,
             endDate,
             categoryId,
+            includeSupplier,
+            includeLocationQtys,
             generatedBy: req.user.id
         });
 
@@ -68,13 +70,14 @@ const exportPdf = async (req, res, next) => {
  */
 const getValuationReport = async (req, res, next) => {
     try {
-        const { asOfDate, locationIds, departmentIds, categoryId } = req.query;
+        const { asOfDate, locationIds, departmentIds, categoryId, snapshotId, snapshotUsed } = req.query;
         if (!asOfDate) return res.status(400).json({ message: 'asOfDate is required' });
 
         const filters = {
             locationIds:   locationIds   ? locationIds.split(',').filter(Boolean)   : [],
             departmentIds: departmentIds ? departmentIds.split(',').filter(Boolean) : [],
             categoryId:    categoryId    || undefined,
+            snapshotId: (snapshotId || snapshotUsed || undefined),
         };
 
         const data = await reportService.generateValuationReport(req.user.tenantId, asOfDate, filters);

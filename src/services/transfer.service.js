@@ -3,6 +3,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
+const { checkPeriodLock } = require('./periodGuard.service');
 const {
     createStoreTransferApprovalRequest,
     processStoreTransferApproval,
@@ -242,6 +243,7 @@ const dispatchTransfer = async (id, tenantId, userId) => {
 const receiveTransfer = async (id, tenantId, userId, receivedLines = []) => {
     const trf = await findTransfer(id, tenantId);
     assertStatus(trf, 'IN_TRANSIT');
+    await checkPeriodLock(tenantId, trf.transferDate || trf.createdAt || new Date());
 
     await prisma.$transaction(async (tx) => {
         for (const line of trf.lines) {

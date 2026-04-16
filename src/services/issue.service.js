@@ -2,6 +2,7 @@
 
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const { checkPeriodLock } = require('./periodGuard.service');
 
 // ─── Auto-number ──────────────────────────────────────────────────────────────
 
@@ -118,6 +119,8 @@ const postIssue = async (issueId, tenantId, userId) => {
         throw Object.assign(new Error('Issue is already POSTED'), { status: 423 });
     if (!['APPROVED', 'PARTIALLY_ISSUED'].includes(issue.requisition.status))
         throw Object.assign(new Error('Associated requisition is not in an issuable state'), { status: 422 });
+
+    await checkPeriodLock(tenantId, issue.issueDate || issue.createdAt || new Date());
 
     await prisma.$transaction(async (tx) => {
         for (const line of issue.lines) {
