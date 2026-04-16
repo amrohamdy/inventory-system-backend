@@ -74,6 +74,7 @@ const createBreakage = async (data, tenantId, userId) => {
                 tenantId,
                 documentNo,
                 movementType: 'BREAKAGE',
+                sourceType: 'INTERNAL',
                 status: 'DRAFT',
                 sourceLocationId,
                 reason: reason.trim(),
@@ -120,12 +121,19 @@ const createBreakage = async (data, tenantId, userId) => {
 
 // ── LIST ──────────────────────────────────────────────────────────────────────
 const getBreakages = async (tenantId, query = {}) => {
-    const { skip = 0, take = 20, status, search } = query;
+    const { skip = 0, take = 20, status, search, sourceType } = query;
+    const sourceFilter =
+        sourceType === 'INTERNAL'
+            ? { getPassId: null }
+            : sourceType === 'GET_PASS_RETURN'
+                ? { getPassId: { not: null } }
+                : {};
 
     const where = {
         tenantId,
         movementType: 'BREAKAGE',
         ...(status && { status }),
+        ...sourceFilter,
         ...(search && {
             OR: [
                 { documentNo: { contains: search, mode: 'insensitive' } },
@@ -145,6 +153,7 @@ const getBreakages = async (tenantId, query = {}) => {
             orderBy: { createdAt: 'desc' },
             include: {
                 createdByUser: { select: { firstName: true, lastName: true } },
+                getPass: { select: { id: true, passNo: true } },
                 approvalRequests: {
                     select: { status: true, currentStep: true, totalSteps: true, createdAt: true },
                 },

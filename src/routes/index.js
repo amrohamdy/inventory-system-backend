@@ -53,6 +53,7 @@ router.use('/units', unitRoutes);
 
 // M08 - Breakage
 router.use('/breakage', breakageRoutes);
+router.use('/lost', lostItemsRoutes);
 router.use('/lost-items', lostItemsRoutes);
 
 // M10: Stock Count

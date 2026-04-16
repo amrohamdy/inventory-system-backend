@@ -1457,7 +1457,13 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                 },
             });
             const blocked = stock ? Number(stock.qtyBlocked || 0) : 0;
-            const releaseFromBlocked = Math.min(blocked, totalAccepted);
+            if (blocked + 1e-9 < totalAccepted) {
+                throw Object.assign(
+                    new Error(`Blocked quantity is less than accepted return quantity for line ${line.id}.`),
+                    { statusCode: 400 },
+                );
+            }
+            const releaseFromBlocked = totalAccepted;
 
             if (stock && (releaseFromBlocked > 0 || goodQty > 0)) {
                 await tx.stockBalance.update({
@@ -1492,13 +1498,13 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                         tenantId: sourceTenantId,
                         itemId: line.itemId,
                         locationId: line.locationId,
-                        movementType: 'RECEIVE',
+                        movementType: 'GET_PASS_RETURN',
                         qtyIn: goodQty,
                         qtyOut: 0,
                         unitCost: wac,
                         totalValue: goodQty * wac,
-                        referenceType: 'GET_PASS',
-                        referenceId: id,
+                        referenceType: 'GET_PASS_RETURN',
+                        referenceId: line.id,
                         referenceNo: getPass.passNo,
                         createdBy: user.id,
                         notes: 'Manager accepted good quantity from return inspection.',
@@ -1527,6 +1533,8 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             tenantId: sourceTenantId,
                             documentNo,
                             movementType: 'BREAKAGE',
+                            sourceType: 'GET_PASS_RETURN',
+                            getPassId: id,
                             status: 'POSTED',
                             postedAt: now,
                             sourceLocationId: line.locationId,
@@ -1583,6 +1591,37 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
 
             if (lostQty > 0) {
                 try {
+                    const documentNo = await generateDocNumber(sourceTenantId, 'LST', now, tx);
+                    const lostReason = `Lost return — Get Pass ${getPass.passNo}`;
+                    const lostDoc = await tx.movementDocument.create({
+                        data: {
+                            tenantId: sourceTenantId,
+                            documentNo,
+                            movementType: 'LOST',
+                            sourceType: 'GET_PASS_RETURN',
+                            getPassId: id,
+                            status: 'APPROVED',
+                            postedAt: now,
+                            sourceLocationId: line.locationId,
+                            reason: lostReason,
+                            notes: `Auto from get pass return (accept return into department)`,
+                            documentDate: now,
+                            createdBy: user.id,
+                            lines: {
+                                create: [
+                                    {
+                                        itemId: line.itemId,
+                                        locationId: line.locationId,
+                                        qtyRequested: lostQty,
+                                        qtyInBaseUnit: lostQty,
+                                        unitCost: wac,
+                                        totalValue: lostQty * wac,
+                                        notes: managerNotes?.trim() || null,
+                                    },
+                                ],
+                            },
+                        },
+                    });
                     await tx.getPassReturn.create({
                         data: {
                             getPassLineId: line.id,
@@ -1606,9 +1645,9 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             qtyOut: lostQty,
                             unitCost: wac,
                             totalValue: lostQty * wac,
-                            referenceType: 'GET_PASS',
-                            referenceId: id,
-                            referenceNo: getPass.passNo,
+                            referenceType: 'LOST',
+                            referenceId: lostDoc.id,
+                            referenceNo: lostDoc.documentNo,
                             createdBy: user.id,
                             notes: `Lost return accountability: ${accountability}`,
                         },
@@ -2066,6 +2105,38 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
             }
 
             if (qtyLost > 0) {
+                const lostNow = new Date();
+                const lostDocumentNo = await generateDocNumber(tenantId, 'LST', lostNow);
+                const lostReason = `Lost return — Get Pass ${getPass.passNo}`;
+                const lostDoc = await tx.movementDocument.create({
+                    data: {
+                        tenantId,
+                        documentNo: lostDocumentNo,
+                        movementType: 'LOST',
+                        sourceType: 'GET_PASS_RETURN',
+                        getPassId: id,
+                        status: 'APPROVED',
+                        postedAt: lostNow,
+                        sourceLocationId: line.locationId,
+                        reason: lostReason,
+                        notes: `Auto from get pass return ${returnRecord.id}`,
+                        documentDate: lostNow,
+                        createdBy: userId,
+                        lines: {
+                            create: [
+                                {
+                                    itemId: line.itemId,
+                                    locationId: line.locationId,
+                                    qtyRequested: qtyLost,
+                                    qtyInBaseUnit: qtyLost,
+                                    unitCost: wac,
+                                    totalValue: qtyLost * wac,
+                                    notes: input.notes?.trim() || null,
+                                },
+                            ],
+                        },
+                    },
+                });
                 await tx.inventoryLedger.create({
                     data: {
                         tenantId,
@@ -2076,9 +2147,9 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
                         qtyOut: qtyLost,
                         unitCost: wac,
                         totalValue: qtyLost * wac,
-                        referenceType: 'GET_PASS_RETURN',
-                        referenceId: returnRecord.id,
-                        referenceNo: getPass.passNo,
+                        referenceType: 'LOST',
+                        referenceId: lostDoc.id,
+                        referenceNo: lostDoc.documentNo,
                         createdBy: userId,
                     },
                 });
@@ -2092,6 +2163,8 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
                         tenantId,
                         documentNo,
                         movementType: 'BREAKAGE',
+                        sourceType: 'GET_PASS_RETURN',
+                        getPassId: id,
                         status: 'POSTED',
                         postedAt: new Date(),
                         sourceLocationId: line.locationId,

@@ -218,12 +218,20 @@ const getMovements = async (tenantId, query) => {
         };
     }
 
-    const { skip = 0, take = 10, status, movementType, search } = query;
+    const { skip = 0, take = 10, status, movementType, search, sourceType } = query;
+
+    const sourceFilter =
+        sourceType === 'INTERNAL'
+            ? { getPassId: null }
+            : sourceType === 'GET_PASS_RETURN'
+                ? { getPassId: { not: null } }
+                : {};
 
     const where = {
         tenantId,
         ...(status && { status }),
         ...(movementType && { movementType }),
+        ...sourceFilter,
         ...(search && {
             OR: [
                 { documentNo: { contains: search, mode: 'insensitive' } },
@@ -241,6 +249,7 @@ const getMovements = async (tenantId, query) => {
             orderBy: { documentDate: 'desc' },
             include: {
                 createdByUser: { select: { firstName: true, lastName: true } },
+                getPass: { select: { id: true, passNo: true } },
                 _count: { select: { lines: true } }
             }
         }),

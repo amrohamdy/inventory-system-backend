@@ -2,9 +2,14 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/lostItems.controller');
 const { authenticate } = require('../middleware/authenticate');
-const { requirePermission } = require('../middleware/authorize');
+const { requireAnyPermission, requirePermission } = require('../middleware/authorize');
 
 router.use(authenticate);
-router.get('/', requirePermission('LOST_ITEMS_VIEW'), ctrl.listLostItems);
+router.post('/', requirePermission('MANAGE_INVENTORY'), ctrl.createLost);
+router.get('/', requireAnyPermission('LOST_ITEMS_VIEW', 'VIEW_INVENTORY'), ctrl.listLostItems);
+router.post('/:id/approve-dept', requirePermission('APPROVE_LOST'), ctrl.approveDept);
+router.post('/:id/approve-cost', requirePermission('APPROVE_LOST'), ctrl.approveCost);
+router.post('/:id/approve-finance', requirePermission('APPROVE_LOST'), ctrl.approveFinance);
+router.post('/:id/approve-gm', requirePermission('APPROVE_LOST'), ctrl.approveGm);
 
 module.exports = router;

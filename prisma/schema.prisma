@@ -513,6 +513,8 @@ model MovementDocument {
   tenantId         String              @db.Uuid
   documentNo       String
   movementType     MovementType
+  sourceType       MovementSourceType  @default(INTERNAL)
+  getPassId        String?             @db.Uuid
   status           MovementStatus      @default(DRAFT)
   sourceLocationId String?             @db.Uuid
   destLocationId   String?             @db.Uuid
@@ -530,6 +532,7 @@ model MovementDocument {
   approvalRequests ApprovalRequest?
   createdByUser    User                @relation("MovementCreatedBy", fields: [createdBy], references: [id])
   supplier         Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  getPass          GetPass?            @relation(fields: [getPassId], references: [id], onDelete: SetNull)
   tenant           Tenant              @relation(fields: [tenantId], references: [id])
   lines            MovementLine[]
   sessions         StockCountSession[]
@@ -539,6 +542,8 @@ model MovementDocument {
   @@index([tenantId, movementType, documentDate])
   @@index([tenantId, status])
   @@index([tenantId, supplierId])
+  @@index([tenantId, sourceType])
+  @@index([tenantId, getPassId])
   @@map("movement_documents")
 }
 
@@ -1151,6 +1156,7 @@ model GetPass {
   destinationDeptAccepter User?    @relation("GetPassDestinationDeptAccepter", fields: [destinationDeptAcceptedBy], references: [id])
   tenant             Tenant        @relation(fields: [tenantId], references: [id])
   targetTenant       Tenant?       @relation("GetPassTargetTenant", fields: [targetTenantId], references: [id], onDelete: SetNull)
+  movementDocuments  MovementDocument[]
 
   @@unique([tenantId, passNo])
   @@index([tenantId])
@@ -1361,6 +1367,7 @@ enum MovementType {
   RETURN
   ADJUSTMENT
   BREAKAGE
+  LOST
   COUNT_ADJUSTMENT
   TRANSFER
   LOAN_WRITE_OFF
@@ -1414,10 +1421,19 @@ enum GetPassReturnAccountability {
 
 enum MovementStatus {
   DRAFT
+  DEPT_APPROVED
+  COST_CONTROL_APPROVED
+  FINANCE_APPROVED
+  APPROVED
   PENDING_APPROVAL
   POSTED
   VOID
   REJECTED
+}
+
+enum MovementSourceType {
+  INTERNAL
+  GET_PASS_RETURN
 }
 
 enum UnitType {
