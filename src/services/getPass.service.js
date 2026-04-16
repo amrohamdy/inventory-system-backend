@@ -66,6 +66,126 @@ const findReadablePass = (tx, id, viewerTenantId) =>
         include: getPassDetailInclude,
     });
 
+const DEFAULT_TRANSFERRED_CATEGORY_NAME = 'Transferred Items';
+
+const normalizeComparableName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const resolveTransferredCategoryId = async (tx, { sourceCategoryId, sourceTenantId, targetTenantId, targetDepartmentId }) => {
+    if (sourceCategoryId) {
+        const sameIdCategory = await tx.category.findFirst({
+            where: { id: sourceCategoryId, tenantId: targetTenantId, isActive: true },
+            select: { id: true },
+        });
+        if (sameIdCategory) {
+            return sameIdCategory.id;
+        }
+
+        const sourceCategory = await tx.category.findFirst({
+            where: { id: sourceCategoryId, tenantId: sourceTenantId },
+            select: { name: true },
+        });
+
+        if (sourceCategory?.name) {
+            const normalizedSourceCategoryName = normalizeComparableName(sourceCategory.name);
+            const targetCategories = await tx.category.findMany({
+                where: { tenantId: targetTenantId, isActive: true },
+                select: { id: true, name: true },
+            });
+            const sameNameCategory = targetCategories.find(
+                (category) => normalizeComparableName(category.name) === normalizedSourceCategoryName,
+            );
+            if (sameNameCategory) {
+                return sameNameCategory.id;
+            }
+        }
+    }
+
+    const targetCategories = await tx.category.findMany({
+        where: { tenantId: targetTenantId },
+        select: { id: true, name: true },
+    });
+    const fallbackCategory = targetCategories.find(
+        (category) => normalizeComparableName(category.name) === normalizeComparableName(DEFAULT_TRANSFERRED_CATEGORY_NAME),
+    );
+    if (fallbackCategory) {
+        return fallbackCategory.id;
+    }
+
+    const createdCategory = await tx.category.create({
+        data: {
+            tenantId: targetTenantId,
+            name: DEFAULT_TRANSFERRED_CATEGORY_NAME,
+            departmentId: targetDepartmentId || null,
+            isActive: true,
+        },
+        select: { id: true },
+    });
+    return createdCategory.id;
+};
+
+const resolveDestinationItemForPermanentTransfer = async (
+    tx,
+    { line, sourceTenantId, targetTenantId, targetDepartmentId, targetLocationId },
+) => {
+    const sourceItem = line.item;
+    if (!sourceItem) {
+        throw Object.assign(new Error('Transferred line item could not be resolved.'), { statusCode: 400 });
+    }
+
+    if (sourceItem.code) {
+        const existingByCode = await tx.item.findFirst({
+            where: { tenantId: targetTenantId, code: sourceItem.code },
+            select: { id: true },
+        });
+        if (existingByCode) {
+            return existingByCode.id;
+        }
+    }
+
+    const existingByName = await tx.item.findFirst({
+        where: { tenantId: targetTenantId, name: sourceItem.name },
+        select: { id: true },
+    });
+    if (existingByName) {
+        return existingByName.id;
+    }
+
+    const categoryId = await resolveTransferredCategoryId(tx, {
+        sourceCategoryId: sourceItem.categoryId,
+        sourceTenantId,
+        targetTenantId,
+        targetDepartmentId,
+    });
+
+    const conflictingCode = sourceItem.code
+        ? await tx.item.findFirst({
+              where: { tenantId: targetTenantId, code: sourceItem.code },
+              select: { id: true },
+          })
+        : null;
+
+    const createdItem = await tx.item.create({
+        data: {
+            tenantId: targetTenantId,
+            name: sourceItem.name,
+            description: sourceItem.description || null,
+            categoryId,
+            barcode: sourceItem.barcode || null,
+            unitPrice: sourceItem.unitPrice || 0,
+            imageUrl: sourceItem.imageUrl || null,
+            isActive: sourceItem.isActive !== false,
+            code: conflictingCode ? null : sourceItem.code || null,
+            defaultStoreId: targetLocationId,
+            departmentId: targetDepartmentId,
+            reorderPoint: Number(sourceItem.reorderPoint || 0),
+            reorderQty: Number(sourceItem.reorderQty || 0),
+        },
+        select: { id: true },
+    });
+
+    return createdItem.id;
+};
+
 /**
  * Issuing hotel only — mutations (update, checkout, returns, …).
  */
@@ -826,6 +946,13 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
             for (const line of getPass.lines ?? []) {
                 const receivedQty = Number(line.qtyReceivedAtDestination ?? line.qty ?? 0);
                 if (!Number.isFinite(receivedQty) || receivedQty <= 0) continue;
+                const destinationItemId = await resolveDestinationItemForPermanentTransfer(tx, {
+                    line,
+                    sourceTenantId: getPass.tenantId,
+                    targetTenantId: viewerTenantId,
+                    targetDepartmentId,
+                    targetLocationId,
+                });
                 const sourceStock = await tx.stockBalance.findUnique({
                     where: {
                         tenantId_itemId_locationId: {
@@ -839,7 +966,7 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
                 await tx.inventoryLedger.create({
                     data: {
                         tenantId: viewerTenantId,
-                        itemId: line.itemId,
+                        itemId: destinationItemId,
                         locationId: targetLocationId,
                         movementType: 'RECEIVE',
                         qtyIn: receivedQty,
@@ -856,7 +983,7 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
                     where: {
                         tenantId_itemId_locationId: {
                             tenantId: viewerTenantId,
-                            itemId: line.itemId,
+                            itemId: destinationItemId,
                             locationId: targetLocationId,
                         },
                     },
@@ -865,7 +992,7 @@ const acceptDestinationDepartment = async (id, viewerTenantId, user, payload = {
                     },
                     create: {
                         tenantId: viewerTenantId,
-                        itemId: line.itemId,
+                        itemId: destinationItemId,
                         locationId: targetLocationId,
                         qtyOnHand: receivedQty,
                         qtyBlocked: 0,

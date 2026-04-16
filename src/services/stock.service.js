@@ -3,16 +3,39 @@ const prisma = new PrismaClient();
 const ExcelJS = require('exceljs');
 const settingService = require('./setting.service');
 
+const normalizeComparableName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const decorateStockBalanceRow = (row, tenantId) => {
+    const sourceItem = row.item || null;
+    const isExternalItem = !sourceItem || sourceItem.tenantId !== tenantId;
+    const displayName = isExternalItem
+        ? `[External] ${sourceItem?.name?.trim() || row.itemId}`
+        : sourceItem?.name || '';
+    const displayBarcode = sourceItem?.barcode || null;
+    const displayCategoryName = isExternalItem
+        ? null
+        : sourceItem?.category?.name || null;
+    const displayDepartmentName = isExternalItem
+        ? null
+        : sourceItem?.department?.name || null;
+
+    return {
+        ...row,
+        item: isExternalItem ? null : sourceItem,
+        displayName,
+        displayBarcode,
+        displayCategoryName,
+        displayDepartmentName,
+        pendingCategorization: isExternalItem,
+    };
+};
+
 // ─── Shared WHERE builder ──────────────────────────────────────────────────────
 const buildWhere = (tenantId, query = {}, includeZero = false) => {
     const { locationId, categoryId, departmentId, search, showZero } = query;
 
-    // Build item-level conditions separately then merge into one `item:` block.
-    // Using separate spread calls (e.g. { item: {categoryId} }, { item: {departmentId} })
-    // would cause the second to silently overwrite the first.
     const itemFilter = {};
     if (categoryId) itemFilter.categoryId = categoryId;
-    if (departmentId) itemFilter.departmentId = departmentId;
     if (search) {
         itemFilter.OR = [
             { name: { contains: search, mode: 'insensitive' } },
@@ -24,6 +47,7 @@ const buildWhere = (tenantId, query = {}, includeZero = false) => {
         tenantId,
         ...(!includeZero && showZero !== 'true' && { qtyOnHand: { gt: 0 } }),
         ...(locationId && { locationId }),
+        ...(departmentId && { location: { departmentId } }),
         ...(Object.keys(itemFilter).length > 0 && { item: itemFilter }),
     };
 };
@@ -46,7 +70,7 @@ const getStockBalances = async (tenantId, query = {}) => {
             include: {
                 item: {
                     select: {
-                        id: true, name: true, barcode: true,
+                        id: true, tenantId: true, name: true, barcode: true,
                         reorderPoint: true,
                         category: { select: { name: true } },
                         department: { select: { name: true } },
@@ -59,7 +83,19 @@ const getStockBalances = async (tenantId, query = {}) => {
         prisma.stockBalance.count({ where }),
     ]);
 
-    return { balances, total };
+    const normalizedBalances = balances
+        .map((row) => decorateStockBalanceRow(row, tenantId))
+        .sort((a, b) => {
+            const leftLocation = a.location?.name ?? '';
+            const rightLocation = b.location?.name ?? '';
+            const locationSort = leftLocation.localeCompare(rightLocation, undefined, { sensitivity: 'base' });
+            if (locationSort !== 0) return locationSort;
+            return normalizeComparableName(a.displayName).localeCompare(normalizeComparableName(b.displayName), undefined, {
+                sensitivity: 'base',
+            });
+        });
+
+    return { balances: normalizedBalances, total };
 };
 
 // ─── GET SUMMARY STATS ────────────────────────────────────────────────────────
@@ -77,14 +113,17 @@ const getStockSummary = async (tenantId, query = {}) => {
 
     const where = buildWhere(tenantId, query, true); // include zero-qty for totals
 
-    const rows = await prisma.stockBalance.findMany({
-        where,
-        select: {
-            qtyOnHand: true,
-            wacUnitCost: true,
-            item: { select: { reorderPoint: true } },
-        },
-    });
+    const [totalItems, rows] = await Promise.all([
+        prisma.stockBalance.count({ where }),
+        prisma.stockBalance.findMany({
+            where,
+            select: {
+                qtyOnHand: true,
+                wacUnitCost: true,
+                reorderPoint: true,
+            },
+        }),
+    ]);
 
     let totalQty = 0;
     let totalValue = 0;
@@ -97,12 +136,12 @@ const getStockSummary = async (tenantId, query = {}) => {
         totalQty += qty;
         totalValue += qty * wac;
         if (qty === 0) zeroStockCount++;
-        const reorder = Number(r.item?.reorderPoint || 0);
+        const reorder = Number(r.reorderPoint || 0);
         if (reorder > 0 && qty <= reorder) lowStockCount++;
     }
 
     return {
-        totalItems: rows.length,
+        totalItems,
         totalQty,
         totalValue,
         lowStockCount,
