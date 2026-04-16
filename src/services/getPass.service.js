@@ -408,6 +408,24 @@ const isGetPassOverdue = (getPass, now = new Date()) => {
     return new Date(getPass.expectedReturnDate) < now;
 };
 
+const parsePositiveInt = (value, fallback) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return fallback;
+    }
+    return parsed;
+};
+
+const normalizeStatusList = (value, fallback = []) => {
+    const rawValues = Array.isArray(value) ? value : value ? [value] : [];
+    const normalized = rawValues
+        .flatMap((entry) => String(entry || '').split(','))
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+    return normalized.length > 0 ? normalized : fallback;
+};
+
 const assertInternalTransferAllowed = async (tx, sourceTenantId, targetTenantId) => {
     if (!targetTenantId || targetTenantId === sourceTenantId) {
         throw Object.assign(new Error('targetTenantId must be a different hotel in your organization.'), {
@@ -500,7 +518,9 @@ const createGetPass = async (tenantId, data, userId) => {
 };
 
 const getGetPasses = async (tenantId, params = {}, user) => {
-    const { status, transferType, page = 1, limit = 50 } = params;
+    const { status, transferType } = params;
+    const page = parsePositiveInt(params.page, 1);
+    const limit = parsePositiveInt(params.limit, 50);
     const skip = (page - 1) * limit;
 
     const listContext = user ? await resolveOrgWideGetPassListContext(tenantId, user.role) : null;
@@ -546,7 +566,8 @@ const getGetPasses = async (tenantId, params = {}, user) => {
  * APPROVED (not yet dispatched from source) is excluded until checkout.
  */
 const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
-    const { page = 1, limit = 50 } = params;
+    const page = parsePositiveInt(params.page, 1);
+    const limit = parsePositiveInt(params.limit, 50);
     const skip = (page - 1) * limit;
 
     const listContext = user ? await resolveOrgWideGetPassListContext(targetTenantId, user.role) : null;
@@ -611,8 +632,15 @@ const getIncomingGetPasses = async (targetTenantId, params = {}, user) => {
  * internal temporary/catering passes currently returning back to issuer.
  */
 const getReturningGetPasses = async (sourceTenantId, params = {}, user) => {
-    const { page = 1, limit = 50 } = params;
+    const page = parsePositiveInt(params.page, 1);
+    const limit = parsePositiveInt(params.limit, 50);
     const skip = (page - 1) * limit;
+    const returnStatuses = normalizeStatusList(params.status, [
+        'RETURNING',
+        'RETURN_RECEIVED_AT_GATE',
+        'PARTIALLY_RETURNED',
+        'RETURNED',
+    ]);
 
     const listContext = user ? await resolveOrgWideGetPassListContext(sourceTenantId, user.role) : null;
 
@@ -620,14 +648,17 @@ const getReturningGetPasses = async (sourceTenantId, params = {}, user) => {
     if (listContext?.organizationRootId) {
         where = {
             isInternalTransfer: true,
-            status: { in: ['RETURNING', 'RETURN_RECEIVED_AT_GATE'] },
-            tenant: { parentId: listContext.organizationRootId },
+            status: { in: returnStatuses },
+            OR: [
+                { tenant: { parentId: listContext.organizationRootId } },
+                { targetTenant: { parentId: listContext.organizationRootId } },
+            ],
         };
     } else {
         where = {
-            tenantId: sourceTenantId,
             isInternalTransfer: true,
-            status: { in: ['RETURNING', 'RETURN_RECEIVED_AT_GATE'] },
+            status: { in: returnStatuses },
+            OR: [{ tenantId: sourceTenantId }, { targetTenantId: sourceTenantId }],
         };
     }
 
