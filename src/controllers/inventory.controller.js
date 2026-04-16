@@ -67,7 +67,21 @@ const getItemsByLocation = async (req, res, next) => {
     }
 };
 
+/**
+ * GET /inventory/items-by-locations/:locationId/select — list-select source (no pagination).
+ */
+const getItemsByLocationSelect = async (req, res, next) => {
+    try {
+        const { locationId } = req.params;
+        const data = await itemService.getAllItemsByLocationId(req.user.tenantId, locationId, req.query);
+        return success(res, data, 'Items fetched successfully');
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     patchInventoryStatus,
     getItemsByLocation,
+    getItemsByLocationSelect,
 };

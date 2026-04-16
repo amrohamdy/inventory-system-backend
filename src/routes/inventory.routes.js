@@ -12,6 +12,12 @@ router.get(
     inventoryController.getItemsByLocation,
 );
 
+router.get(
+    '/items-by-locations/:locationId/select',
+    authenticate,
+    inventoryController.getItemsByLocationSelect,
+);
+
 router.patch(
     '/status',
     authenticate,

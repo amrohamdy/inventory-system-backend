@@ -529,6 +529,73 @@ const getItemsByLocationId = async (tenantId, locationId, query = {}) => {
     });
 };
 
+/**
+ * Lightweight list-select source: all active items tied to this location (no pagination).
+ * Includes stock-derived relation, default store relation, or location-category relation.
+ */
+const getAllItemsByLocationId = async (tenantId, locationId, query = {}) => {
+    if (!uuidValidate(locationId)) throw badRequest('Invalid locationId');
+
+    const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true },
+    });
+    if (!location) {
+        const e = new Error('Location not found');
+        e.statusCode = 404;
+        throw e;
+    }
+
+    const { search } = query;
+    const term = search && String(search).trim() ? String(search).trim() : '';
+
+    const where = {
+        tenantId,
+        isActive: true,
+        AND: [
+            {
+                OR: [
+                    { stockBalances: { some: { locationId } } },
+                    { defaultStoreId: locationId },
+                    { category: { locationCategories: { some: { locationId } } } },
+                ],
+            },
+            ...(term
+                ? [{
+                    OR: [
+                        { name: { contains: term, mode: 'insensitive' } },
+                        { barcode: { contains: term, mode: 'insensitive' } },
+                        { code: { contains: term, mode: 'insensitive' } },
+                    ],
+                }]
+                : []),
+        ],
+    };
+
+    const items = await prisma.item.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        select: {
+            id: true,
+            name: true,
+            code: true,
+            barcode: true,
+            stockBalances: {
+                where: { locationId },
+                select: { qtyOnHand: true },
+            },
+        },
+    });
+
+    return items.map((it) => ({
+        id: it.id,
+        name: it.name,
+        code: it.code,
+        barcode: it.barcode,
+        currentStock: it.stockBalances?.[0]?.qtyOnHand != null ? Number(it.stockBalances[0].qtyOnHand) : 0,
+    }));
+};
+
 // ── GET BY ID ──────────────────────────────────────────────────────────────────
 const getItemById = async (id, tenantId) => {
     const item = await prisma.item.findFirst({
@@ -1396,6 +1463,7 @@ module.exports = {
     createItem,
     getItems,
     getItemsByLocationId,
+    getAllItemsByLocationId,
     getItemById,
     updateItem,
     updateItemImage,
