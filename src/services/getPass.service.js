@@ -1464,8 +1464,14 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                 );
             }
             const releaseFromBlocked = totalAccepted;
-
-            if (stock && (releaseFromBlocked > 0 || goodQty > 0)) {
+            // Reversible checkout only increased qtyBlocked; qtyOnHand still includes custodied qty.
+            // Release the full shipment from blocked; reduce on-hand only for lost/damaged (pending
+            // disposition — not sellable). Net available increases by goodQty only.
+            const nonGood = damagedQty + lostQty;
+            if (!stock && releaseFromBlocked > 0) {
+                throw Object.assign(new Error(`Stock balance not found for line ${line.id}.`), { statusCode: 400 });
+            }
+            if (stock && releaseFromBlocked > 0) {
                 await tx.stockBalance.update({
                     where: {
                         tenantId_itemId_locationId: {
@@ -1475,19 +1481,8 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                         },
                     },
                     data: {
-                        qtyOnHand: { increment: goodQty },
                         qtyBlocked: { decrement: releaseFromBlocked },
-                    },
-                });
-            } else if (!stock && goodQty > 0) {
-                await tx.stockBalance.create({
-                    data: {
-                        tenantId: sourceTenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        qtyOnHand: goodQty,
-                        qtyBlocked: 0,
-                        wacUnitCost: wac,
+                        ...(nonGood > 0 ? { qtyOnHand: { decrement: nonGood } } : {}),
                     },
                 });
             }
@@ -1498,7 +1493,7 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                         tenantId: sourceTenantId,
                         itemId: line.itemId,
                         locationId: line.locationId,
-                        movementType: 'GET_PASS_RETURN',
+                        movementType: 'RETURN',
                         qtyIn: goodQty,
                         qtyOut: 0,
                         unitCost: wac,
@@ -1507,7 +1502,7 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                         referenceId: line.id,
                         referenceNo: getPass.passNo,
                         createdBy: user.id,
-                        notes: 'Manager accepted good quantity from return inspection.',
+                        notes: 'Manager accepted good quantity from return inspection (RETURN to available).',
                     },
                 });
             }
@@ -2062,166 +2057,83 @@ const processReturns = async (id, tenantId, userId, linesPayload, notes) => {
             });
 
             const wac = Number(line.unitCost);
-
-            const postGoodToStock = async (qty) => {
-                if (qty <= 0) return;
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'GET_PASS_RETURN',
-                        qtyIn: qty,
-                        qtyOut: 0,
-                        unitCost: wac,
-                        totalValue: qty * wac,
-                        referenceType: 'GET_PASS_RETURN',
-                        referenceId: returnRecord.id,
-                        referenceNo: getPass.passNo,
-                        createdBy: userId,
-                    },
-                });
-                const currentStock = await tx.stockBalance.findUnique({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                });
-                const curQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
-                const curWac = currentStock ? Number(currentStock.wacUnitCost) : 0;
-                const totalValBefore = curQty * curWac;
-                const newVal = totalValBefore + qty * wac;
-                const newWac = curQty + qty > 0 ? newVal / (curQty + qty) : 0;
-                await tx.stockBalance.upsert({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                    update: { qtyOnHand: { increment: qty }, wacUnitCost: newWac },
-                    create: { tenantId, itemId: line.itemId, locationId: line.locationId, qtyOnHand: qty, wacUnitCost: wac },
-                });
+            const stockKey = {
+                tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId },
             };
 
-            await postGoodToStock(qtyGood);
+            // Blocking transfer checkout only increased qtyBlocked; qtyOnHand was not reduced.
+            // Do not increment qtyOnHand for good qty (that double-counts). Release blocked by the
+            // full returned shipment; reduce on-hand by lost+damaged (not sellable until GM path).
             if (isBlockingTransferType(getPass.transferType) && total > 0) {
+                const row = await tx.stockBalance.findUnique({ where: stockKey });
+                const blocked = row ? Number(row.qtyBlocked || 0) : 0;
+                if (!row || blocked + 1e-9 < total) {
+                    throw Object.assign(
+                        new Error(`Insufficient blocked quantity for ${itemName} (get pass return).`),
+                        { statusCode: 400 },
+                    );
+                }
+                const nonGood = qtyLost + qtyDamaged;
                 await tx.stockBalance.update({
-                    where: { tenantId_itemId_locationId: { tenantId, itemId: line.itemId, locationId: line.locationId } },
-                    data: { qtyBlocked: { decrement: total } },
-                });
-            }
-
-            if (qtyLost > 0) {
-                const lostNow = new Date();
-                const lostDocumentNo = await generateDocNumber(tenantId, 'LST', lostNow);
-                const lostReason = `Lost return — Get Pass ${getPass.passNo}`;
-                const lostDoc = await tx.movementDocument.create({
+                    where: stockKey,
                     data: {
-                        tenantId,
-                        documentNo: lostDocumentNo,
-                        movementType: 'LOST',
-                        sourceType: 'GET_PASS_RETURN',
-                        getPassId: id,
-                        status: 'APPROVED',
-                        postedAt: lostNow,
-                        sourceLocationId: line.locationId,
-                        reason: lostReason,
-                        notes: `Auto from get pass return ${returnRecord.id}`,
-                        documentDate: lostNow,
-                        createdBy: userId,
-                        lines: {
-                            create: [
-                                {
-                                    itemId: line.itemId,
-                                    locationId: line.locationId,
-                                    qtyRequested: qtyLost,
-                                    qtyInBaseUnit: qtyLost,
-                                    unitCost: wac,
-                                    totalValue: qtyLost * wac,
-                                    notes: input.notes?.trim() || null,
-                                },
-                            ],
+                        qtyBlocked: { decrement: total },
+                        ...(nonGood > 0 ? { qtyOnHand: { decrement: nonGood } } : {}),
+                    },
+                });
+                if (qtyGood > 0) {
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                            movementType: 'RETURN',
+                            qtyIn: qtyGood,
+                            qtyOut: 0,
+                            unitCost: wac,
+                            totalValue: qtyGood * wac,
+                            referenceType: 'GET_PASS_RETURN',
+                            referenceId: returnRecord.id,
+                            referenceNo: getPass.passNo,
+                            createdBy: userId,
+                            notes: `Get pass return — good qty back to available (${qtyGood}).`,
                         },
-                    },
-                });
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'LOAN_WRITE_OFF',
-                        qtyIn: 0,
-                        qtyOut: qtyLost,
-                        unitCost: wac,
-                        totalValue: qtyLost * wac,
-                        referenceType: 'LOST',
-                        referenceId: lostDoc.id,
-                        referenceNo: lostDoc.documentNo,
-                        createdBy: userId,
-                    },
-                });
-            }
-
-            if (qtyDamaged > 0) {
-                const documentNo = await generateDocNumber(tenantId, DocPrefix.BREAKAGE, new Date());
-                const brkReason = `Damaged return — Get Pass ${getPass.passNo}`;
-                const brkDoc = await tx.movementDocument.create({
-                    data: {
-                        tenantId,
-                        documentNo,
-                        movementType: 'BREAKAGE',
-                        sourceType: 'GET_PASS_RETURN',
-                        getPassId: id,
-                        status: 'POSTED',
-                        postedAt: new Date(),
-                        sourceLocationId: line.locationId,
-                        reason: brkReason,
-                        notes: `Auto from get pass return ${returnRecord.id}`,
-                        documentDate: new Date(),
-                        createdBy: userId,
-                        lines: {
-                            create: [
-                                {
-                                    itemId: line.itemId,
-                                    locationId: line.locationId,
-                                    qtyRequested: qtyDamaged,
-                                    qtyInBaseUnit: qtyDamaged,
-                                    unitCost: wac,
-                                    totalValue: qtyDamaged * wac,
-                                    notes: input.notes?.trim() || null,
-                                },
-                            ],
+                    });
+                }
+            } else if (total > 0) {
+                const postGoodToStock = async (qty) => {
+                    if (qty <= 0) return;
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId,
+                            itemId: line.itemId,
+                            locationId: line.locationId,
+                            movementType: 'RETURN',
+                            qtyIn: qty,
+                            qtyOut: 0,
+                            unitCost: wac,
+                            totalValue: qty * wac,
+                            referenceType: 'GET_PASS_RETURN',
+                            referenceId: returnRecord.id,
+                            referenceNo: getPass.passNo,
+                            createdBy: userId,
                         },
-                    },
-                });
-
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'GET_PASS_RETURN',
-                        qtyIn: qtyDamaged,
-                        qtyOut: 0,
-                        unitCost: wac,
-                        totalValue: qtyDamaged * wac,
-                        referenceType: 'GET_PASS_RETURN',
-                        referenceId: returnRecord.id,
-                        referenceNo: getPass.passNo,
-                        createdBy: userId,
-                    },
-                });
-
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId,
-                        itemId: line.itemId,
-                        locationId: line.locationId,
-                        movementType: 'BREAKAGE',
-                        qtyIn: 0,
-                        qtyOut: qtyDamaged,
-                        unitCost: wac,
-                        totalValue: qtyDamaged * wac,
-                        referenceType: 'BREAKAGE',
-                        referenceId: brkDoc.id,
-                        referenceNo: brkDoc.documentNo,
-                        notes: brkReason,
-                        createdBy: userId,
-                    },
-                });
+                    });
+                    const currentStock = await tx.stockBalance.findUnique({
+                        where: stockKey,
+                    });
+                    const curQty = currentStock ? Number(currentStock.qtyOnHand) : 0;
+                    const curWac = currentStock ? Number(currentStock.wacUnitCost) : 0;
+                    const totalValBefore = curQty * curWac;
+                    const newVal = totalValBefore + qty * wac;
+                    const newWac = curQty + qty > 0 ? newVal / (curQty + qty) : 0;
+                    await tx.stockBalance.upsert({
+                        where: stockKey,
+                        update: { qtyOnHand: { increment: qty }, wacUnitCost: newWac },
+                        create: { tenantId, itemId: line.itemId, locationId: line.locationId, qtyOnHand: qty, wacUnitCost: wac },
+                    });
+                };
+                await postGoodToStock(qtyGood);
             }
 
             const newReturned = Number(line.qtyReturned) + total;
