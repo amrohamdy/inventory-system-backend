@@ -3,7 +3,67 @@
 const prisma = require('../config/database');
 const { generateDocNumber } = require('./docNumbering.service');
 const { checkPeriodLock } = require('./periodGuard.service');
+const { normalizeRole } = require('./rbac.service');
 const { APPROVAL_CHAIN, STATUS_BY_APPROVED_STEP } = require('./breakage.service');
+
+const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
+    'COST_CONTROL',
+    'FINANCE_MANAGER',
+    'GENERAL_MANAGER',
+    'ADMIN',
+    'ORG_MANAGER',
+    'SUPER_ADMIN',
+]);
+
+const APPROVER_PIPELINE_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED', 'APPROVED'];
+
+const buildStatusWhere = (statusRaw) => {
+    const raw = typeof statusRaw === 'string' ? statusRaw.trim() : '';
+    if (!raw) return {};
+    if (raw.includes(',')) {
+        const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+        return parts.length === 0 ? {} : parts.length === 1 ? { status: parts[0] } : { status: { in: parts } };
+    }
+    return { status: raw };
+};
+
+const lostListInclude = (user) => {
+    const role = user?.role ? normalizeRole(user.role) : '';
+    const fullApproval = TENANT_WIDE_MOVEMENT_APPROVAL_ROLES.has(role);
+    const base = {
+        createdByUser: { select: { id: true, firstName: true, lastName: true } },
+        getPass: { select: { id: true, passNo: true } },
+        lines: {
+            select: {
+                qtyInBaseUnit: true,
+                item: { select: { id: true, name: true, barcode: true } },
+            },
+        },
+        _count: { select: { lines: true } },
+    };
+    if (fullApproval) {
+        return {
+            ...base,
+            approvalRequests: {
+                include: {
+                    steps: {
+                        orderBy: { stepNumber: 'asc' },
+                        include: {
+                            actedByUser: { select: { id: true, firstName: true, lastName: true } },
+                            requiredRole: { select: { id: true, code: true } },
+                        },
+                    },
+                },
+            },
+        };
+    }
+    return {
+        ...base,
+        approvalRequests: {
+            select: { id: true, status: true, currentStep: true, totalSteps: true, createdAt: true },
+        },
+    };
+};
 
 const LOST_INCLUDE = {
     createdByUser: { select: { id: true, firstName: true, lastName: true } },
@@ -27,7 +87,7 @@ const LOST_INCLUDE = {
     },
 };
 
-const getApproval = (doc) => doc.approvalRequests?.[0] || null;
+const getApproval = (doc) => doc.approvalRequests || null;
 
 const LOST_FLOW = [
     { status: 'DRAFT', nextStatus: 'DEPT_APPROVED', role: 'DEPT_MANAGER' },
@@ -57,12 +117,23 @@ const ensureCanApprove = (doc, userRole) => {
     return current;
 };
 
-const listLostItems = async (tenantId, query = {}) => {
+const listLostItems = async (tenantId, query = {}, user = null) => {
     const skipN = Number.parseInt(String(query.skip ?? 0), 10) || 0;
     const takeN = Math.min(Number.parseInt(String(query.take ?? 20), 10) || 20, 100);
     const search = typeof query.search === 'string' ? query.search.trim() : '';
     const status = typeof query.status === 'string' ? query.status.trim() : '';
     const sourceType = typeof query.sourceType === 'string' ? query.sourceType.trim() : '';
+    const pipeline = query.pipeline;
+
+    const role = user?.role ? normalizeRole(user.role) : '';
+    const tenantWide = TENANT_WIDE_MOVEMENT_APPROVAL_ROLES.has(role);
+
+    let statusWhere = {};
+    if (status) {
+        statusWhere = buildStatusWhere(status);
+    } else if (tenantWide && (pipeline === '1' || pipeline === 'true' || pipeline === true)) {
+        statusWhere = { status: { in: APPROVER_PIPELINE_STATUSES } };
+    }
 
     const sourceFilter =
         sourceType === 'INTERNAL'
@@ -75,7 +146,7 @@ const listLostItems = async (tenantId, query = {}) => {
         tenantId,
         movementType: 'LOST',
         ...sourceFilter,
-        ...(status ? { status } : {}),
+        ...statusWhere,
         ...(search
             ? {
                   OR: [
@@ -88,30 +159,48 @@ const listLostItems = async (tenantId, query = {}) => {
             : {}),
     };
 
+    const listInclude = lostListInclude(user);
+
     const [documents, total] = await Promise.all([
         prisma.movementDocument.findMany({
             where,
             orderBy: { createdAt: 'desc' },
             skip: skipN,
             take: takeN,
-            include: {
-                createdByUser: { select: { id: true, firstName: true, lastName: true } },
-                getPass: { select: { id: true, passNo: true } },
-                lines: {
-                    select: {
-                        qtyInBaseUnit: true,
-                        item: { select: { id: true, name: true, barcode: true } },
-                    },
-                },
-                _count: { select: { lines: true } },
-            },
+            include: listInclude,
         }),
         prisma.movementDocument.count({ where }),
     ]);
 
     const items = documents.map((doc) => {
-        const qtyLost = doc.lines.reduce((sum, line) => sum + Number(line.qtyInBaseUnit || 0), 0);
+        const totalQtyLost = doc.lines.reduce((sum, line) => sum + Number(line.qtyInBaseUnit || 0), 0);
         const firstLine = doc.lines[0];
+        const ar = doc.approvalRequests;
+        let approvalRequests = [];
+        if (ar) {
+            if (ar.steps) {
+                approvalRequests = [
+                    {
+                        id: ar.id,
+                        status: ar.status,
+                        currentStep: ar.currentStep,
+                        totalSteps: ar.totalSteps,
+                        createdAt: ar.createdAt,
+                        steps: ar.steps,
+                    },
+                ];
+            } else {
+                approvalRequests = [
+                    {
+                        id: ar.id,
+                        status: ar.status,
+                        currentStep: ar.currentStep,
+                        totalSteps: ar.totalSteps,
+                        createdAt: ar.createdAt,
+                    },
+                ];
+            }
+        }
         return {
             id: doc.id,
             documentNo: doc.documentNo,
@@ -125,7 +214,9 @@ const listLostItems = async (tenantId, query = {}) => {
             createdByUser: doc.createdByUser,
             itemName: firstLine?.item?.name || '',
             itemBarcode: firstLine?.item?.barcode || null,
-            qtyLost,
+            qtyLost: totalQtyLost,
+            totalQtyLost,
+            approvalRequests,
             _count: doc._count,
         };
     });

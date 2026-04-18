@@ -1,7 +1,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
-const { connectRole } = require('./rbac.service');
+const { connectRole, normalizeRole } = require('./rbac.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -70,6 +70,61 @@ const AUTO_APPROVER_ROLES = new Set([
     'ORG_MANAGER',
     'SUPER_ADMIN',
 ]);
+
+/** Cross-department list + approval-chain payload for these roles (tenant-wide). */
+const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
+    'COST_CONTROL',
+    'FINANCE_MANAGER',
+    'GENERAL_MANAGER',
+    'ADMIN',
+    'ORG_MANAGER',
+    'SUPER_ADMIN',
+]);
+
+const APPROVER_PIPELINE_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED', 'APPROVED'];
+
+const buildStatusWhere = (statusRaw) => {
+    const raw = typeof statusRaw === 'string' ? statusRaw.trim() : '';
+    if (!raw) return {};
+    if (raw.includes(',')) {
+        const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+        return parts.length === 0 ? {} : parts.length === 1 ? { status: parts[0] } : { status: { in: parts } };
+    }
+    return { status: raw };
+};
+
+const breakageListInclude = (user) => {
+    const role = user?.role ? normalizeRole(user.role) : '';
+    const fullApproval = TENANT_WIDE_MOVEMENT_APPROVAL_ROLES.has(role);
+    const base = {
+        createdByUser: { select: { firstName: true, lastName: true } },
+        getPass: { select: { id: true, passNo: true } },
+        _count: { select: { lines: true } },
+        lines: { select: { qtyInBaseUnit: true } },
+    };
+    if (fullApproval) {
+        return {
+            ...base,
+            approvalRequests: {
+                include: {
+                    steps: {
+                        orderBy: { stepNumber: 'asc' },
+                        include: {
+                            actedByUser: { select: { id: true, firstName: true, lastName: true } },
+                            requiredRole: { select: { id: true, code: true } },
+                        },
+                    },
+                },
+            },
+        };
+    }
+    return {
+        ...base,
+        approvalRequests: {
+            select: { id: true, status: true, currentStep: true, totalSteps: true, createdAt: true },
+        },
+    };
+};
 
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
 
@@ -190,8 +245,8 @@ const createBreakage = async (data, tenantId, userId, userRole) => {
 };
 
 // ── LIST ──────────────────────────────────────────────────────────────────────
-const getBreakages = async (tenantId, query = {}) => {
-    const { skip = 0, take = 20, status, search, sourceType } = query;
+const getBreakages = async (tenantId, query = {}, user = null) => {
+    const { skip = 0, take = 20, status, search, sourceType, pipeline } = query;
     const sourceFilter =
         sourceType === 'INTERNAL'
             ? { getPassId: null }
@@ -199,10 +254,20 @@ const getBreakages = async (tenantId, query = {}) => {
                 ? { getPassId: { not: null } }
                 : {};
 
+    const role = user?.role ? normalizeRole(user.role) : '';
+    const tenantWide = TENANT_WIDE_MOVEMENT_APPROVAL_ROLES.has(role);
+
+    let statusWhere = {};
+    if (status) {
+        statusWhere = buildStatusWhere(status);
+    } else if (tenantWide && (pipeline === '1' || pipeline === 'true' || pipeline === true)) {
+        statusWhere = { status: { in: APPROVER_PIPELINE_STATUSES } };
+    }
+
     const where = {
         tenantId,
         movementType: 'BREAKAGE',
-        ...(status && { status }),
+        ...statusWhere,
         ...sourceFilter,
         ...(search && {
             OR: [
@@ -215,21 +280,15 @@ const getBreakages = async (tenantId, query = {}) => {
     const skipN = Number.parseInt(String(skip), 10) || 0;
     const takeN = Number.parseInt(String(take), 10) || 20;
 
+    const listInclude = breakageListInclude(user);
+
     const [rawDocuments, total] = await Promise.all([
         prisma.movementDocument.findMany({
             where,
             skip: skipN,
             take: takeN,
             orderBy: { createdAt: 'desc' },
-            include: {
-                createdByUser: { select: { firstName: true, lastName: true } },
-                getPass: { select: { id: true, passNo: true } },
-                approvalRequests: {
-                    select: { status: true, currentStep: true, totalSteps: true, createdAt: true },
-                },
-                _count: { select: { lines: true } },
-                lines: { select: { qtyInBaseUnit: true } },
-            },
+            include: listInclude,
         }),
         prisma.movementDocument.count({ where }),
     ]);
@@ -240,18 +299,38 @@ const getBreakages = async (tenantId, query = {}) => {
             0,
         );
         const { lines: _lines, ...rest } = d;
-        const approval = d.approvalRequests
-            ? {
-                status: d.approvalRequests.status,
-                currentStep: d.approvalRequests.currentStep,
-                totalSteps: d.approvalRequests.totalSteps,
-            }
-            : null;
+        const ar = d.approvalRequests;
+        if (!ar) {
+            return { ...rest, totalQtyDamaged, approvalRequests: [] };
+        }
+        if (ar.steps) {
+            return {
+                ...rest,
+                totalQtyDamaged,
+                approvalRequests: [
+                    {
+                        id: ar.id,
+                        status: ar.status,
+                        currentStep: ar.currentStep,
+                        totalSteps: ar.totalSteps,
+                        createdAt: ar.createdAt,
+                        steps: ar.steps,
+                    },
+                ],
+            };
+        }
         return {
             ...rest,
             totalQtyDamaged,
-            // Keep backward-compatible API shape (array), though relation is now 1:1.
-            approvalRequests: approval ? [approval] : [],
+            approvalRequests: [
+                {
+                    id: ar.id,
+                    status: ar.status,
+                    currentStep: ar.currentStep,
+                    totalSteps: ar.totalSteps,
+                    createdAt: ar.createdAt,
+                },
+            ],
         };
     });
 

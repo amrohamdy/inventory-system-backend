@@ -104,7 +104,7 @@ const authenticate = async (req, res, next) => {
                 userId: decoded.userId,
                 tenantId: decoded.tenantId || null,
             },
-            select: { isActive: true, role: true, roleId: true, tenantId: true },
+            select: { isActive: true, role: true, roleId: true, tenantId: true, departmentId: true },
         });
 
         // If there is no direct membership for this tenant context, allow ORG_MANAGER
@@ -131,7 +131,7 @@ const authenticate = async (req, res, next) => {
                         isActive: true,
                         tenant: { is: { isActive: true, parentId: null } },
                     },
-                    select: { isActive: true, role: true, roleId: true, tenantId: true },
+                    select: { isActive: true, role: true, roleId: true, tenantId: true, departmentId: true },
                 });
 
                 if (parentOrgMembership) {
@@ -141,6 +141,7 @@ const authenticate = async (req, res, next) => {
                         roleId: parentOrgMembership.roleId,
                         isActive: true,
                         isInherited: true,
+                        departmentId: parentOrgMembership.departmentId ?? null,
                     };
                 }
             }
@@ -204,6 +205,7 @@ const authenticate = async (req, res, next) => {
             roleId: membership?.roleId ?? decoded.roleId,
             permissions,
             email: decoded.email,
+            departmentId: membership?.departmentId ?? null,
             readOnly: decoded.readOnly || false,
             impersonatedBy: decoded.impersonatedBy || null,
         };

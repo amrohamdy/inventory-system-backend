@@ -18,7 +18,7 @@ const createBreakage = async (req, res, next) => {
 /** GET /api/breakage */
 const getBreakages = async (req, res, next) => {
     try {
-        const { documents, total } = await breakageService.getBreakages(req.user.tenantId, req.query);
+        const { documents, total } = await breakageService.getBreakages(req.user.tenantId, req.query, req.user);
         return success(res, documents, 'Breakage documents fetched.', 200, {
             total, skip: parseInt(req.query.skip) || 0, take: parseInt(req.query.take) || 20,
         });

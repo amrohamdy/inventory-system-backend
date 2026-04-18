@@ -10,8 +10,8 @@ router.use(authenticate);
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
 router.post('/', requirePermission('MANAGE_INVENTORY'), ctrl.createBreakage);
-router.get('/', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getBreakages);
-router.get('/:id', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getBreakage);
+router.get('/', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW', 'READ_BREAKAGE'), ctrl.getBreakages);
+router.get('/:id', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW', 'READ_BREAKAGE'), ctrl.getBreakage);
 
 // ── Workflow ──────────────────────────────────────────────────────────────────
 router.post('/:id/submit', requirePermission('MANAGE_INVENTORY'), ctrl.submitBreakage);
@@ -23,7 +23,7 @@ router.post('/:id/void', requirePermission('MANAGE_INVENTORY'), ctrl.voidBreakag
 router.post('/:id/attachment', requirePermission('MANAGE_INVENTORY'), uploadAttachment.single('file'), ctrl.uploadAttachment);
 
 // ── Evidence ──────────────────────────────────────────────────────────────────
-router.get('/:id/evidence', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getEvidence);
-router.get('/:id/evidence/pdf', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW'), ctrl.getEvidencePDF);
+router.get('/:id/evidence', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW', 'READ_BREAKAGE'), ctrl.getEvidence);
+router.get('/:id/evidence/pdf', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW', 'READ_BREAKAGE'), ctrl.getEvidencePDF);
 
 module.exports = router;

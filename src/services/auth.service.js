@@ -697,6 +697,9 @@ const getProfile = async (userId, tenantId) => {
         phone: me.phone ?? null,
         department: me.department ?? null,
         role: me.role,
+        permissions: me.permissions ?? [],
+        departmentId: me.departmentId ?? null,
+        tenant: me.tenant ?? null,
     };
 };
 

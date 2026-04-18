@@ -95,6 +95,10 @@ const PERMISSIONS = {
     /** Sidebar + read access to Breakage & Loss (Transactions); API may also use VIEW_INVENTORY. */
     BREAKAGE_VIEW: ['ADMIN', 'SUPER_ADMIN', 'DEPT_MANAGER', 'SECURITY'],
 
+    /** DB/JWT-friendly read flags for breakage / lost lists (also aliased to INVENTORY_VIEW for checks). */
+    READ_BREAKAGE: ['COST_CONTROL', 'FINANCE_MANAGER', 'GENERAL_MANAGER', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN'],
+    READ_LOST: ['COST_CONTROL', 'FINANCE_MANAGER', 'GENERAL_MANAGER', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN'],
+
     /** Get Pass loan write-offs (lost qty) — ledger LOAN_WRITE_OFF linked to GetPassReturn. */
     LOST_ITEMS_VIEW: ['ADMIN', 'GENERAL_MANAGER', 'DEPT_MANAGER'],
     LOST_APPROVE_REJECT: ['ADMIN', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'GENERAL_MANAGER'],
@@ -168,6 +172,9 @@ const PERMISSION_ALIASES = {
     CREATE_GET_PASS: 'GET_PASS_CREATE',
     VIEW_GET_PASS: 'GET_PASS_VIEW',
     REGISTER_GET_PASS_RETURN: 'GET_PASS_APPROVE_RETURN',
+    /** JWT may store friendly codes; resolve to canonical matrix keys for route checks. */
+    READ_BREAKAGE: 'INVENTORY_VIEW',
+    READ_LOST: 'INVENTORY_VIEW',
 };
 
 const resolvePermissionKey = (permission) => PERMISSION_ALIASES[permission] || permission;
@@ -200,7 +207,9 @@ const hasPermission = (userOrRole, permission) => {
     const user = typeof userOrRole === 'string' ? { role: userOrRole } : userOrRole;
     const resolvedPermission = resolvePermissionKey(permission);
     if (user && Array.isArray(user.permissions) && user.permissions.length > 0) {
-        return user.permissions.includes(resolvedPermission);
+        if (user.permissions.includes(resolvedPermission)) return true;
+        if (user.permissions.includes(permission)) return true;
+        if (user.permissions.some((p) => resolvePermissionKey(p) === resolvedPermission)) return true;
     }
     const normalizedRole = normalizeRole(user?.role);
     const allowedRoles = PERMISSIONS[resolvedPermission] || [];

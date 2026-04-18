@@ -6,7 +6,7 @@ const { requireAnyPermission, requirePermission } = require('../middleware/autho
 
 router.use(authenticate);
 router.post('/', requirePermission('BREAKAGE_CREATE'), ctrl.createLost);
-router.get('/', requireAnyPermission('LOST_ITEMS_VIEW', 'VIEW_INVENTORY'), ctrl.listLostItems);
+router.get('/', requireAnyPermission('LOST_ITEMS_VIEW', 'VIEW_INVENTORY', 'READ_LOST'), ctrl.listLostItems);
 router.post('/:id/approve-dept', requirePermission('APPROVE_LOST'), ctrl.approveDept);
 router.post('/:id/approve-cost', requirePermission('APPROVE_LOST'), ctrl.approveCost);
 router.post('/:id/approve-finance', requirePermission('APPROVE_LOST'), ctrl.approveFinance);

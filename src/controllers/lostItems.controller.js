@@ -18,7 +18,7 @@ const createLost = async (req, res, next) => {
 /** GET /api/lost-items */
 const listLostItems = async (req, res, next) => {
     try {
-        const { items, total } = await lostItemsService.listLostItems(req.user.tenantId, req.query);
+        const { items, total } = await lostItemsService.listLostItems(req.user.tenantId, req.query, req.user);
         return success(res, items, 'Lost items fetched.', 200, {
             total,
             skip: Number.parseInt(String(req.query.skip), 10) || 0,
