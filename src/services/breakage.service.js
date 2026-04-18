@@ -80,15 +80,6 @@ const createMovementApprovalRequest = async (tx, {
     });
 };
 const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
-const AUTO_APPROVER_ROLES = new Set([
-    'DEPT_MANAGER',
-    'COST_CONTROL',
-    'FINANCE_MANAGER',
-    'GENERAL_MANAGER',
-    'ADMIN',
-    'ORG_MANAGER',
-    'SUPER_ADMIN',
-]);
 
 /** Cross-department list + approval-chain payload for these roles (tenant-wide). */
 const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
@@ -218,8 +209,8 @@ const BREAKAGE_INCLUDE = {
 const getApproval = (doc) => doc.approvalRequests || null;
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createBreakage = async (data, tenantId, userId, userRole) => {
-    const { lines = [], reason, notes, sourceLocationId, documentDate } = data;
+const createBreakage = async (data, tenantId, userId, _userRole) => {
+    const { lines = [], reason, notes, sourceLocationId, documentDate, accountabilityType, accountability } = data;
 
     if (!reason?.trim()) throw err('Reason is required for breakage documents.');
     if (lines.length === 0) throw err('At least one line item is required.');
@@ -246,18 +237,23 @@ const createBreakage = async (data, tenantId, userId, userRole) => {
         if (!line.qty || parseFloat(line.qty) <= 0) throw err(`Quantity for item ${item.name} must be positive.`);
     }
 
-    const isAutoApproved = AUTO_APPROVER_ROLES.has(userRole);
-    const now = new Date();
+    const firstStepAccountabilityType =
+        typeof accountabilityType === 'string' && accountabilityType.trim()
+            ? accountabilityType.trim()
+            : typeof accountability === 'string' && accountability.trim()
+                ? accountability.trim()
+                : undefined;
 
     return prisma.$transaction(async (tx) => {
-        // Create the movement document
+        // INTERNAL manual breakage: enter the same 4-step chain as get-pass return — dept step recorded on
+        // creation, document already DEPT_APPROVED so Cost Control is next (timeline + pipeline).
         const doc = await tx.movementDocument.create({
             data: {
                 tenantId,
                 documentNo,
                 movementType: 'BREAKAGE',
                 sourceType: 'INTERNAL',
-                status: isAutoApproved ? 'DEPT_APPROVED' : 'DRAFT',
+                status: 'DEPT_APPROVED',
                 sourceLocationId,
                 reason: reason.trim(),
                 notes: notes?.trim() || null,
@@ -277,31 +273,14 @@ const createBreakage = async (data, tenantId, userId, userRole) => {
             },
         });
 
-        // Create role-based approval request (dept -> cost -> finance -> gm)
-        await tx.approvalRequest.create({
-            data: {
-                tenantId,
-                requestType: 'BREAKAGE',
-                status: 'PENDING',
-                documentId: doc.id,
-                currentStep: isAutoApproved ? 2 : 0,
-                totalSteps: APPROVAL_CHAIN.length,
-                createdBy: userId,
-                steps: {
-                    create: APPROVAL_CHAIN.map(c => ({
-                        stepNumber: c.step,
-                        requiredRole: connectRole(c.role),
-                        status: isAutoApproved && c.step === 1 ? 'APPROVED' : 'PENDING',
-                        ...(isAutoApproved && c.step === 1
-                            ? {
-                                actedByUser: { connect: { id: userId } },
-                                actedAt: now,
-                                comment: AUTO_APPROVAL_NOTE,
-                            }
-                            : {}),
-                    })),
-                },
-            },
+        await createMovementApprovalRequest(tx, {
+            tenantId,
+            documentId: doc.id,
+            createdBy: userId,
+            requestType: 'BREAKAGE',
+            deptApproverUserId: userId,
+            firstStepComment: AUTO_APPROVAL_NOTE,
+            firstStepAccountabilityType,
         });
 
         return tx.movementDocument.findFirst({ where: { id: doc.id }, include: BREAKAGE_INCLUDE });
@@ -510,7 +489,7 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
             comment: comment?.trim() || null,
         };
         if (
-            doc.sourceType === 'GET_PASS_RETURN'
+            (doc.sourceType === 'GET_PASS_RETURN' || doc.sourceType === 'INTERNAL')
             && action === 'APPROVE'
             && typeof accountability === 'string'
             && GET_PASS_ACCOUNTABILITY.has(accountability)
@@ -664,6 +643,70 @@ const _postBreakageInTransaction = async (tx, doc, tenantId, userId) => {
             data: { qtyOnHand: { decrement: qty } },
         });
     }
+};
+
+/**
+ * Get-pass return breakage (and any doc with an ApprovalRequest) must use {@link processApprovalStep}
+ * via POST /breakage/:id/approve. Legacy approve-dept/cost/… routes apply only to purely INTERNAL documents
+ * without an approval request (edge / migrated data).
+ */
+const shouldUseUnifiedBreakageApproval = (doc) =>
+    doc.sourceType === 'GET_PASS_RETURN' || doc.approvalRequests != null;
+
+const BREAKAGE_MANUAL_FLOW = [
+    { status: 'DRAFT', nextStatus: 'DEPT_APPROVED', role: 'DEPT_MANAGER' },
+    { status: 'DEPT_APPROVED', nextStatus: 'COST_CONTROL_APPROVED', role: 'COST_CONTROL' },
+    { status: 'COST_CONTROL_APPROVED', nextStatus: 'FINANCE_APPROVED', role: 'FINANCE_MANAGER' },
+    { status: 'FINANCE_APPROVED', nextStatus: 'APPROVED', role: 'GENERAL_MANAGER' },
+];
+
+const ensureCanApproveBreakageManual = (doc, userRole) => {
+    const current = BREAKAGE_MANUAL_FLOW.find((s) => s.status === doc.status);
+    if (!current) throw err(`Document status ${doc.status} is not approvable.`);
+    if (userRole !== current.role && userRole !== 'ADMIN' && userRole !== 'ORG_MANAGER') {
+        throw err(`Status ${doc.status} requires role ${current.role}.`, 403);
+    }
+    return current;
+};
+
+const approveBreakageAtLevel = async (id, tenantId, userId, userRole, expectedStatus, body = {}) => {
+    const doc = await getBreakageById(id, tenantId);
+
+    if (shouldUseUnifiedBreakageApproval(doc)) {
+        return processApprovalStep(
+            id,
+            tenantId,
+            userId,
+            userRole,
+            'APPROVE',
+            body.comment,
+            body.accountability,
+        );
+    }
+
+    if (doc.sourceType !== 'INTERNAL') throw err('Only internal breakage documents can be approved manually.');
+    if (doc.status !== expectedStatus) throw err(`Document must be in ${expectedStatus} status.`);
+    const current = ensureCanApproveBreakageManual(doc, userRole);
+    const isFinal = current.nextStatus === 'APPROVED';
+
+    if (isFinal) {
+        await checkPeriodLock(tenantId, doc.documentDate || doc.createdAt || new Date());
+    }
+
+    return prisma.$transaction(async (tx) => {
+        if (isFinal) {
+            await _postBreakageInTransaction(tx, doc, tenantId, userId);
+        }
+
+        return tx.movementDocument.update({
+            where: { id: doc.id },
+            data: {
+                status: current.nextStatus,
+                ...(isFinal ? { postedAt: new Date() } : {}),
+            },
+            include: BREAKAGE_INCLUDE,
+        });
+    });
 };
 
 // ── UPLOAD ATTACHMENT ─────────────────────────────────────────────────────────
@@ -839,6 +882,7 @@ module.exports = {
     getBreakages,
     getBreakageById,
     submitBreakage,
+    approveBreakageAtLevel,
     processApprovalStep,
     addAttachment,
     getEvidence,

@@ -42,6 +42,63 @@ const submitBreakage = async (req, res, next) => {
     } catch (e) { next(e); }
 };
 
+/** POST /api/breakage/:id/approve-dept — legacy step; delegates to unified workflow when required. */
+const approveDept = async (req, res, next) => {
+    try {
+        const doc = await breakageService.approveBreakageAtLevel(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'DRAFT',
+            req.body,
+        );
+        return success(res, doc, 'Breakage document approved by department manager.');
+    } catch (e) { next(e); }
+};
+
+const approveCost = async (req, res, next) => {
+    try {
+        const doc = await breakageService.approveBreakageAtLevel(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'DEPT_APPROVED',
+            req.body,
+        );
+        return success(res, doc, 'Breakage document approved by cost control.');
+    } catch (e) { next(e); }
+};
+
+const approveFinance = async (req, res, next) => {
+    try {
+        const doc = await breakageService.approveBreakageAtLevel(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'COST_CONTROL_APPROVED',
+            req.body,
+        );
+        return success(res, doc, 'Breakage document approved by finance.');
+    } catch (e) { next(e); }
+};
+
+const approveGm = async (req, res, next) => {
+    try {
+        const doc = await breakageService.approveBreakageAtLevel(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'FINANCE_APPROVED',
+            req.body,
+        );
+        return success(res, doc, 'Breakage document approved by general manager.');
+    } catch (e) { next(e); }
+};
+
 /** POST /api/breakage/:id/approve */
 const approveBreakage = async (req, res, next) => {
     try {
@@ -135,6 +192,7 @@ const voidBreakage = async (req, res, next) => {
 
 module.exports = {
     createBreakage, getBreakages, getBreakage, submitBreakage,
+    approveDept, approveCost, approveFinance, approveGm,
     approveBreakage, rejectBreakage, uploadAttachment,
     getEvidence, getEvidencePDF, voidBreakage,
 };

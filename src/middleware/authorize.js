@@ -158,6 +158,8 @@ const PERMISSION_ALIASES = {
     CREATE_ISSUE: 'ISSUE_CREATE',
     VIEW_MOVEMENTS: 'INVENTORY_VIEW',
     CREATE_BREAKAGE: 'BREAKAGE_CREATE',
+    /** Same matrix row as BREAKAGE_CREATE; lost manual create opens the same 4-step workflow from DEPT_APPROVED. */
+    CREATE_LOST: 'BREAKAGE_CREATE',
     CREATE_ADJUSTMENT: 'ADJUSTMENT_CREATE',
     /** Legacy Excel/matrix keys → canonical JWT codes (Prisma `permissions.code`). */
     BREAKAGE_APPROVE_REJECT: 'APPROVE_BREAKAGE',

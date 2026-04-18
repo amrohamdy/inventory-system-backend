@@ -5,6 +5,7 @@ const { authenticate } = require('../middleware/authenticate');
 const { requireAnyPermission, requirePermission } = require('../middleware/authorize');
 
 router.use(authenticate);
+// Same privilege as breakage create (BREAKAGE_CREATE / CREATE_LOST / CREATE_BREAKAGE aliases).
 router.post('/', requirePermission('BREAKAGE_CREATE'), ctrl.createLost);
 router.get('/', requireAnyPermission('LOST_ITEMS_VIEW', 'VIEW_INVENTORY', 'READ_LOST'), ctrl.listLostItems);
 router.get('/:id', requireAnyPermission('LOST_ITEMS_VIEW', 'VIEW_INVENTORY', 'READ_LOST'), ctrl.getLostItem);

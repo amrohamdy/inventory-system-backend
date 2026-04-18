@@ -48,6 +48,7 @@ const approveDept = async (req, res, next) => {
             req.user.id,
             req.user.role,
             'DRAFT',
+            req.body,
         );
         return success(res, doc, 'Lost document approved by department manager.');
     } catch (e) {
@@ -63,6 +64,7 @@ const approveCost = async (req, res, next) => {
             req.user.id,
             req.user.role,
             'DEPT_APPROVED',
+            req.body,
         );
         return success(res, doc, 'Lost document approved by cost control.');
     } catch (e) {
@@ -78,6 +80,7 @@ const approveFinance = async (req, res, next) => {
             req.user.id,
             req.user.role,
             'COST_CONTROL_APPROVED',
+            req.body,
         );
         return success(res, doc, 'Lost document approved by finance.');
     } catch (e) {
@@ -93,6 +96,7 @@ const approveGm = async (req, res, next) => {
             req.user.id,
             req.user.role,
             'FINANCE_APPROVED',
+            req.body,
         );
         return success(res, doc, 'Lost document approved by general manager.');
     } catch (e) {

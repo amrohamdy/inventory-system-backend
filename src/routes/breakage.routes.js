@@ -9,12 +9,18 @@ const { uploadAttachment } = require('../middleware/upload.middleware');
 router.use(authenticate);
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
-router.post('/', requirePermission('MANAGE_INVENTORY'), ctrl.createBreakage);
+// Must use BREAKAGE_CREATE (not MANAGE_INVENTORY/MOVEMENT_CREATE): INTERNAL docs start at DEPT_APPROVED with
+// step 1 auto-recorded — only roles trusted to open the workflow should create (ADMIN, STOREKEEPER, DEPT_MANAGER).
+router.post('/', requirePermission('BREAKAGE_CREATE'), ctrl.createBreakage);
 router.get('/', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW', 'READ_BREAKAGE'), ctrl.getBreakages);
 router.get('/:id', requireAnyPermission('VIEW_INVENTORY', 'BREAKAGE_VIEW', 'READ_BREAKAGE'), ctrl.getBreakage);
 
 // ── Workflow ──────────────────────────────────────────────────────────────────
 router.post('/:id/submit', requirePermission('MANAGE_INVENTORY'), ctrl.submitBreakage);
+router.post('/:id/approve-dept', requirePermission('APPROVE_BREAKAGE'), ctrl.approveDept);
+router.post('/:id/approve-cost', requirePermission('APPROVE_BREAKAGE'), ctrl.approveCost);
+router.post('/:id/approve-finance', requirePermission('APPROVE_BREAKAGE'), ctrl.approveFinance);
+router.post('/:id/approve-gm', requirePermission('APPROVE_BREAKAGE'), ctrl.approveGm);
 router.post('/:id/approve', requirePermission('APPROVE_BREAKAGE'), ctrl.approveBreakage);
 router.post('/:id/reject', requirePermission('APPROVE_BREAKAGE'), ctrl.rejectBreakage);
 router.post('/:id/void', requirePermission('MANAGE_INVENTORY'), ctrl.voidBreakage);

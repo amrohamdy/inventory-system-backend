@@ -4,7 +4,7 @@ const prisma = require('../config/database');
 const { generateDocNumber } = require('./docNumbering.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { normalizeRole } = require('./rbac.service');
-const { APPROVAL_CHAIN, STATUS_BY_APPROVED_STEP } = require('./breakage.service');
+const { APPROVAL_CHAIN, STATUS_BY_APPROVED_STEP, createMovementApprovalRequest } = require('./breakage.service');
 
 const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
     'COST_CONTROL',
@@ -145,15 +145,6 @@ const GET_PASS_ACCOUNTABILITY = new Set([
 ]);
 
 const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
-const AUTO_APPROVER_ROLES = new Set([
-    'DEPT_MANAGER',
-    'COST_CONTROL',
-    'FINANCE_MANAGER',
-    'GENERAL_MANAGER',
-    'ADMIN',
-    'ORG_MANAGER',
-    'SUPER_ADMIN',
-]);
 
 const ensureCanApprove = (doc, userRole) => {
     const current = LOST_FLOW.find((s) => s.status === doc.status);
@@ -275,8 +266,8 @@ const listLostItems = async (tenantId, query = {}, user = null) => {
     return { items, total };
 };
 
-const createLost = async (tenantId, userId, userRole, body = {}) => {
-    const { lines = [], reason, notes, sourceLocationId, documentDate } = body;
+const createLost = async (tenantId, userId, _userRole, body = {}) => {
+    const { lines = [], reason, notes, sourceLocationId, documentDate, accountabilityType, accountability } = body;
     if (!reason?.trim()) throw err('Reason is required.');
     if (!sourceLocationId) throw err('Location is required.');
     if (!Array.isArray(lines) || lines.length === 0) throw err('At least one line is required.');
@@ -286,35 +277,51 @@ const createLost = async (tenantId, userId, userRole, body = {}) => {
 
     const documentNo = await generateDocNumber(tenantId, 'LST', new Date());
 
-    const isAutoApproved = AUTO_APPROVER_ROLES.has(userRole);
-    const stampText = `[Stamp] ${new Date().toISOString()} | User: ${userId} | Note: ${AUTO_APPROVAL_NOTE}`;
-    const mergedNotes = [notes?.trim() || '', isAutoApproved ? stampText : ''].filter(Boolean).join('\n');
+    const firstStepAccountabilityType =
+        typeof accountabilityType === 'string' && accountabilityType.trim()
+            ? accountabilityType.trim()
+            : typeof accountability === 'string' && accountability.trim()
+                ? accountability.trim()
+                : undefined;
 
-    return prisma.movementDocument.create({
-        data: {
-            tenantId,
-            documentNo,
-            movementType: 'LOST',
-            sourceType: 'INTERNAL',
-            status: isAutoApproved ? 'DEPT_APPROVED' : 'DRAFT',
-            sourceLocationId,
-            reason: reason.trim(),
-            notes: mergedNotes || null,
-            documentDate: documentDate ? new Date(documentDate) : new Date(),
-            createdBy: userId,
-            lines: {
-                create: lines.map((line) => ({
-                    itemId: line.itemId,
-                    locationId: line.locationId || sourceLocationId,
-                    qtyRequested: Number(line.qty),
-                    qtyInBaseUnit: Number(line.qty),
-                    unitCost: Number(line.unitCost || 0),
-                    totalValue: Number(line.totalValue || 0),
-                    notes: line.notes?.trim() || null,
-                })),
+    return prisma.$transaction(async (tx) => {
+        const doc = await tx.movementDocument.create({
+            data: {
+                tenantId,
+                documentNo,
+                movementType: 'LOST',
+                sourceType: 'INTERNAL',
+                status: 'DEPT_APPROVED',
+                sourceLocationId,
+                reason: reason.trim(),
+                notes: notes?.trim() || null,
+                documentDate: documentDate ? new Date(documentDate) : new Date(),
+                createdBy: userId,
+                lines: {
+                    create: lines.map((line) => ({
+                        itemId: line.itemId,
+                        locationId: line.locationId || sourceLocationId,
+                        qtyRequested: Number(line.qty),
+                        qtyInBaseUnit: Number(line.qty),
+                        unitCost: Number(line.unitCost || 0),
+                        totalValue: Number(line.totalValue || 0),
+                        notes: line.notes?.trim() || null,
+                    })),
+                },
             },
-        },
-        include: LOST_INCLUDE,
+        });
+
+        await createMovementApprovalRequest(tx, {
+            tenantId,
+            documentId: doc.id,
+            createdBy: userId,
+            requestType: 'LOST',
+            deptApproverUserId: userId,
+            firstStepComment: AUTO_APPROVAL_NOTE,
+            firstStepAccountabilityType,
+        });
+
+        return tx.movementDocument.findFirst({ where: { id: doc.id }, include: LOST_INCLUDE });
     });
 };
 
@@ -405,8 +412,29 @@ const applyStockImpactOnFinalApproval = async (tx, doc, userId) => {
     }
 };
 
-const approveLostAtLevel = async (id, tenantId, userId, userRole, expectedStatus) => {
+/**
+ * Lost docs created from get-pass returns (and any doc with an ApprovalRequest) use
+ * {@link processLostApprovalStep} via POST /lost/:id/approve. Legacy approve-dept/cost/… routes only apply to
+ * purely INTERNAL documents without an approval request.
+ */
+const shouldUseUnifiedLostApproval = (doc) =>
+    doc.sourceType === 'GET_PASS_RETURN' || doc.approvalRequests != null;
+
+const approveLostAtLevel = async (id, tenantId, userId, userRole, expectedStatus, body = {}) => {
     const doc = await getLostById(id, tenantId);
+
+    if (shouldUseUnifiedLostApproval(doc)) {
+        return processLostApprovalStep(
+            id,
+            tenantId,
+            userId,
+            userRole,
+            'APPROVE',
+            body.comment,
+            body.accountability,
+        );
+    }
+
     if (doc.sourceType !== 'INTERNAL') throw err('Only internal lost documents can be approved manually.');
     if (doc.status !== expectedStatus) throw err(`Document must be in ${expectedStatus} status.`);
     const current = ensureCanApprove(doc, userRole);
@@ -485,7 +513,7 @@ const processLostApprovalStep = async (id, tenantId, userId, userRole, action, c
             comment: comment?.trim() || null,
         };
         if (
-            doc.sourceType === 'GET_PASS_RETURN'
+            (doc.sourceType === 'GET_PASS_RETURN' || doc.sourceType === 'INTERNAL')
             && action === 'APPROVE'
             && typeof accountability === 'string'
             && GET_PASS_ACCOUNTABILITY.has(accountability)
