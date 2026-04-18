@@ -47,6 +47,26 @@ const buildStatusWhere = (statusRaw) => {
     return { status: raw };
 };
 
+const DEPT_MANAGER_IN_FLIGHT_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED'];
+
+const buildDeptManagerListScopeWhere = (user, statusWhere) => {
+    const role = user?.role ? normalizeRole(user.role) : '';
+    if (role !== 'DEPT_MANAGER' || !user?.id) return {};
+    const s = statusWhere?.status;
+    if (!s) return {};
+    if (s === 'APPROVED') {
+        return { createdBy: user.id };
+    }
+    if (s.in && Array.isArray(s.in)) {
+        const got = [...s.in].map(String).sort().join('|');
+        const want = [...DEPT_MANAGER_IN_FLIGHT_STATUSES].sort().join('|');
+        if (got === want) {
+            return { createdBy: user.id };
+        }
+    }
+    return {};
+};
+
 const lostListInclude = (user) => {
     const role = user?.role ? normalizeRole(user.role) : '';
     const fullApproval = TENANT_WIDE_MOVEMENT_APPROVAL_ROLES.has(role);
@@ -163,6 +183,8 @@ const listLostItems = async (tenantId, query = {}, user = null) => {
         statusWhere = { status: { in: PIPELINE_NON_FINAL_STATUSES } };
     }
 
+    const deptManagerScope = buildDeptManagerListScopeWhere(user, statusWhere);
+
     const sourceFilter =
         sourceType === 'INTERNAL'
             ? { getPassId: null }
@@ -175,6 +197,7 @@ const listLostItems = async (tenantId, query = {}, user = null) => {
         movementType: 'LOST',
         ...sourceFilter,
         ...statusWhere,
+        ...deptManagerScope,
         ...(search
             ? {
                   OR: [

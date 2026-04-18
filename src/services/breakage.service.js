@@ -136,6 +136,27 @@ const buildStatusWhere = (statusRaw) => {
     return { status: raw };
 };
 
+const DEPT_MANAGER_IN_FLIGHT_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED'];
+
+/** Dept managers only see their own submissions on the in-flight + approved archive lists. */
+const buildDeptManagerListScopeWhere = (user, statusWhere) => {
+    const role = user?.role ? normalizeRole(user.role) : '';
+    if (role !== 'DEPT_MANAGER' || !user?.id) return {};
+    const s = statusWhere?.status;
+    if (!s) return {};
+    if (s === 'APPROVED') {
+        return { createdBy: user.id };
+    }
+    if (s.in && Array.isArray(s.in)) {
+        const got = [...s.in].map(String).sort().join('|');
+        const want = [...DEPT_MANAGER_IN_FLIGHT_STATUSES].sort().join('|');
+        if (got === want) {
+            return { createdBy: user.id };
+        }
+    }
+    return {};
+};
+
 const breakageListInclude = (user) => {
     const role = user?.role ? normalizeRole(user.role) : '';
     const fullApproval = TENANT_WIDE_MOVEMENT_APPROVAL_ROLES.has(role);
@@ -308,10 +329,13 @@ const getBreakages = async (tenantId, query = {}, user = null) => {
         statusWhere = { status: { in: PIPELINE_NON_FINAL_STATUSES } };
     }
 
+    const deptManagerScope = buildDeptManagerListScopeWhere(user, statusWhere);
+
     const where = {
         tenantId,
         movementType: 'BREAKAGE',
         ...statusWhere,
+        ...deptManagerScope,
         ...sourceFilter,
         ...(search && {
             OR: [
