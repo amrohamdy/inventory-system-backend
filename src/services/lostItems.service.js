@@ -5,6 +5,7 @@ const { generateDocNumber } = require('./docNumbering.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { normalizeRole } = require('./rbac.service');
 const { APPROVAL_CHAIN, STATUS_BY_APPROVED_STEP, createMovementApprovalRequest } = require('./breakage.service');
+const { incrementTotalQtyLost } = require('./stockCumulative.service');
 
 const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
     'COST_CONTROL',
@@ -353,7 +354,7 @@ const applyStockImpactOnFinalApproval = async (tx, doc, userId) => {
                     tenantId: doc.tenantId,
                     itemId: line.itemId,
                     locationId: line.locationId,
-                    movementType: 'LOAN_WRITE_OFF',
+                    movementType: 'LOST',
                     qtyIn: 0,
                     qtyOut: qty,
                     unitCost,
@@ -365,6 +366,7 @@ const applyStockImpactOnFinalApproval = async (tx, doc, userId) => {
                     createdBy: userId,
                 },
             });
+            await incrementTotalQtyLost(tx, doc.tenantId, line.itemId, line.locationId, qty);
         }
         return;
     }
@@ -407,7 +409,10 @@ const applyStockImpactOnFinalApproval = async (tx, doc, userId) => {
 
         await tx.stockBalance.update({
             where: stockKey,
-            data: { qtyOnHand: { decrement: qty } },
+            data: {
+                qtyOnHand: { decrement: qty },
+                totalQtyLost: { increment: qty },
+            },
         });
     }
 };

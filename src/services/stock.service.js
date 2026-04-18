@@ -187,6 +187,9 @@ const exportStockBalances = async (tenantId, query = {}) => {
         { header: 'Category', key: 'cat', width: 20 },
         { header: 'Location', key: 'loc', width: 22 },
         { header: 'Qty On Hand', key: 'qty', width: 14 },
+        { header: 'Qty Blocked', key: 'blocked', width: 12 },
+        { header: 'Lost (cumulative)', key: 'lost', width: 14 },
+        { header: 'Damage (cumulative)', key: 'damage', width: 16 },
         { header: 'Reorder Point', key: 'reorder', width: 14 },
         { header: 'WAC (SAR)', key: 'wac', width: 14 },
         { header: 'Total Value (SAR)', key: 'value', width: 18 },
@@ -202,8 +205,12 @@ const exportStockBalances = async (tenantId, query = {}) => {
 
     balances.forEach(b => {
         const qty = Number(b.qtyOnHand);
+        const blocked = Number(b.qtyBlocked || 0);
+        const lost = Number(b.totalQtyLost || 0);
+        const damage = Number(b.totalQtyDamage || 0);
         const wac = Number(b.wacUnitCost);
-        const value = qty * wac;
+        const avail = Math.max(0, qty - blocked);
+        const value = avail * wac;
         const reorder = Number(b.item?.reorderPoint || 0);
         grandTotal += value;
 
@@ -217,6 +224,9 @@ const exportStockBalances = async (tenantId, query = {}) => {
             cat: b.item?.category?.name || '',
             loc: b.location?.name || '',
             qty,
+            blocked,
+            lost,
+            damage,
             reorder: reorder || '',
             wac: wac.toFixed(2),
             value: value.toFixed(2),

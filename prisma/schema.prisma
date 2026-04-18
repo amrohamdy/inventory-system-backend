@@ -492,6 +492,10 @@ model StockBalance {
   locationId   String   @db.Uuid
   qtyOnHand    Decimal  @default(0) @db.Decimal(15, 4)
   qtyBlocked   Decimal  @default(0) @db.Decimal(15, 4)
+  /// Cumulative qty exited via finalized LOST documents (GM approval), per item/location.
+  totalQtyLost Decimal  @default(0) @db.Decimal(15, 4)
+  /// Cumulative qty exited via finalized BREAKAGE documents (GM approval), per item/location.
+  totalQtyDamage Decimal @default(0) @db.Decimal(15, 4)
   wacUnitCost  Decimal  @default(0) @db.Decimal(15, 4)
   lastUpdated  DateTime @default(now()) @updatedAt
   maxQty       Decimal  @default(0) @db.Decimal(15, 4)

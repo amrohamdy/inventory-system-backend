@@ -4,6 +4,7 @@ const emailService = require('./email.service');
 const { connectRole, normalizeRole } = require('./rbac.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { formatStructuredMovementNotes } = require('../utils/formatMovementNotes');
+const { incrementTotalQtyDamage } = require('./stockCumulative.service');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -591,6 +592,7 @@ const _postBreakageInTransaction = async (tx, doc, tenantId, userId) => {
                     createdBy: userId,
                 },
             });
+            await incrementTotalQtyDamage(tx, tenantId, line.itemId, line.locationId, qty);
         }
         return;
     }
@@ -637,10 +639,13 @@ const _postBreakageInTransaction = async (tx, doc, tenantId, userId) => {
             },
         });
 
-        // Update stock balance
+        // Update stock balance (on-hand reduction + cumulative damage counter)
         await tx.stockBalance.update({
             where: { tenantId_itemId_locationId: stockKey },
-            data: { qtyOnHand: { decrement: qty } },
+            data: {
+                qtyOnHand: { decrement: qty },
+                totalQtyDamage: { increment: qty },
+            },
         });
     }
 };
