@@ -3,6 +3,7 @@ const prisma = new PrismaClient();
 const emailService = require('./email.service');
 const { connectRole, normalizeRole } = require('./rbac.service');
 const { checkPeriodLock } = require('./periodGuard.service');
+const { formatStructuredMovementNotes } = require('../utils/formatMovementNotes');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,13 @@ const STATUS_BY_APPROVED_STEP = {
     4: 'APPROVED',
 };
 
+/** Stored on approval_steps.accountabilityType for GET_PASS_RETURN workflow approvals. */
+const GET_PASS_ACCOUNTABILITY = new Set([
+    'EMPLOYEE_DEDUCTION',
+    'COMPANY_LOSS',
+    'TARGET_HOTEL_COMPENSATION',
+]);
+
 /**
  * Same 4-step chain as manual breakage, with step 1 pre-approved (e.g. dept manager accepted get-pass return).
  * Sets currentStep to 2 so Cost Control is the next actor.
@@ -31,9 +39,16 @@ const createMovementApprovalRequest = async (tx, {
     requestType,
     deptApproverUserId,
     firstStepComment,
+    /** Pre-approved DEPT_MANAGER step: accountability from get-pass return lines (Workflow History). */
+    firstStepAccountabilityType,
 }) => {
     const now = new Date();
     const comment = firstStepComment || AUTO_APPROVAL_NOTE;
+    const rawAccountability =
+        typeof firstStepAccountabilityType === 'string' ? firstStepAccountabilityType.trim() : '';
+    const step1Accountability = rawAccountability && GET_PASS_ACCOUNTABILITY.has(rawAccountability)
+        ? rawAccountability
+        : undefined;
     await tx.approvalRequest.create({
         data: {
             tenantId,
@@ -53,6 +68,10 @@ const createMovementApprovalRequest = async (tx, {
                               actedByUser: { connect: { id: deptApproverUserId } },
                               actedAt: now,
                               comment,
+                              // Persist accountability on the auto-approved DEPT_MANAGER step (get-pass returns).
+                              ...(step1Accountability
+                                  ? { accountabilityType: step1Accountability }
+                                  : {}),
                           }
                         : {}),
                 })),
@@ -82,13 +101,6 @@ const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
 ]);
 
 const APPROVER_PIPELINE_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED', 'APPROVED'];
-
-/** Stored on approval_steps.accountabilityType for GET_PASS_RETURN workflow approvals. */
-const GET_PASS_ACCOUNTABILITY = new Set([
-    'EMPLOYEE_DEDUCTION',
-    'COMPANY_LOSS',
-    'TARGET_HOTEL_COMPENSATION',
-]);
 
 const buildStatusWhere = (statusRaw) => {
     const raw = typeof statusRaw === 'string' ? statusRaw.trim() : '';
@@ -419,7 +431,7 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
     if (!chain) throw err('All approval steps already completed.');
 
     // ── Role enforcement ──────────────────────────────────────────────────────
-    if (userRole !== chain.role && userRole !== 'ADMIN') {
+    if (userRole !== chain.role && userRole !== 'ADMIN' && userRole !== 'ORG_MANAGER') {
         throw err(`Step ${currentStepNo} requires role ${chain.role}. Your role: ${userRole}`);
     }
 
@@ -710,7 +722,7 @@ const getEvidence = async (id, tenantId) => {
             documentNo: doc.documentNo,
             status: doc.status,
             reason: doc.reason,
-            notes: doc.notes,
+            notes: formatStructuredMovementNotes(doc.notes) ?? doc.notes,
             documentDate: doc.documentDate,
             createdBy: doc.createdByUser
                 ? `${doc.createdByUser.firstName} ${doc.createdByUser.lastName}`
@@ -727,7 +739,7 @@ const getEvidence = async (id, tenantId) => {
             itemName: l.item.name,
             barcode: l.item.barcode,
             qty: parseFloat(l.qtyInBaseUnit),
-            notes: l.notes,
+            notes: formatStructuredMovementNotes(l.notes) ?? l.notes,
         })),
         approvalChainDefinition: APPROVAL_CHAIN,
         approvalHistory,

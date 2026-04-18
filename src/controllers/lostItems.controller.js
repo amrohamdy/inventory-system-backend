@@ -1,5 +1,6 @@
 const lostItemsService = require('../services/lostItems.service');
 const { success } = require('../utils/response');
+const { formatMovementDocumentNotes } = require('../utils/formatMovementNotes');
 
 const createLost = async (req, res, next) => {
     try {
@@ -24,6 +25,16 @@ const listLostItems = async (req, res, next) => {
             skip: Number.parseInt(String(req.query.skip), 10) || 0,
             take: Number.parseInt(String(req.query.take), 10) || 20,
         });
+    } catch (e) {
+        next(e);
+    }
+};
+
+/** GET /api/lost-items/:id */
+const getLostItem = async (req, res, next) => {
+    try {
+        const doc = await lostItemsService.getLostById(req.params.id, req.user.tenantId);
+        return success(res, formatMovementDocumentNotes(doc), 'Lost document fetched.');
     } catch (e) {
         next(e);
     }
@@ -132,6 +143,7 @@ const rejectLostApprovalStep = async (req, res, next) => {
 module.exports = {
     createLost,
     listLostItems,
+    getLostItem,
     approveDept,
     approveCost,
     approveFinance,

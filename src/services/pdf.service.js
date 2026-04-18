@@ -98,7 +98,10 @@ const generateBreakageEvidencePDF = (evidence) => {
         kv('Status', header.status.replace('_', ' '), col2X, infoY, colW);
         kv('Posted At', header.postedAt ? fmtDT(header.postedAt) : 'Not posted', col2X, infoY + 16, colW);
         kv('Reason', header.reason, col2X, infoY + 32, colW);
-        if (header.notes) kv('Notes', header.notes, col2X, infoY + 48, colW);
+        if (header.notes) {
+            const notesPdf = String(header.notes).replace(/\s*\n\s*/g, ' · ').trim();
+            kv('Notes', notesPdf, col2X, infoY + 48, colW);
+        }
 
         doc.y = infoY + 68;
 

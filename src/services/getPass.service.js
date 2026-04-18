@@ -1559,6 +1559,7 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                         requestType: 'BREAKAGE',
                         deptApproverUserId: user.id,
                         firstStepComment: 'Department manager approved via get pass return acceptance',
+                        firstStepAccountabilityType: accountability,
                     });
                 } catch (error) {
                     console.error('[getPass.service] acceptReturnIntoDepartment damaged posting failed', {
@@ -1614,6 +1615,7 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                         requestType: 'LOST',
                         deptApproverUserId: user.id,
                         firstStepComment: 'Department manager approved via get pass return acceptance',
+                        firstStepAccountabilityType: accountability,
                     });
                     await tx.getPassReturn.create({
                         data: {

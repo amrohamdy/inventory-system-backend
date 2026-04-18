@@ -1,6 +1,7 @@
 const breakageService = require('../services/breakage.service');
 const { generateBreakageEvidencePDF } = require('../services/pdf.service');
 const { success } = require('../utils/response');
+const { formatMovementDocumentNotes } = require('../utils/formatMovementNotes');
 
 /** POST /api/breakage */
 const createBreakage = async (req, res, next) => {
@@ -29,7 +30,7 @@ const getBreakages = async (req, res, next) => {
 const getBreakage = async (req, res, next) => {
     try {
         const doc = await breakageService.getBreakageById(req.params.id, req.user.tenantId);
-        return success(res, doc, 'Breakage document fetched.');
+        return success(res, formatMovementDocumentNotes(doc), 'Breakage document fetched.');
     } catch (e) { next(e); }
 };
 
