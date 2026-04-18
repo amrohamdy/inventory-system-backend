@@ -593,17 +593,19 @@ model ApprovalRequest {
 }
 
 model ApprovalStep {
-  id             String             @id @default(uuid()) @db.Uuid
-  requestId      String             @db.Uuid
-  stepNumber     Int
-  requiredRoleId String             @db.Uuid
-  status         ApprovalStepStatus @default(PENDING)
-  actedBy        String?            @db.Uuid
-  actedAt        DateTime?
-  comment        String?
-  actedByUser    User?              @relation(fields: [actedBy], references: [id])
-  request        ApprovalRequest    @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  requiredRole   Role               @relation(fields: [requiredRoleId], references: [id])
+  id                   String                       @id @default(uuid()) @db.Uuid
+  requestId            String                       @db.Uuid
+  stepNumber           Int
+  requiredRoleId       String                       @db.Uuid
+  status               ApprovalStepStatus           @default(PENDING)
+  actedBy              String?                      @db.Uuid
+  actedAt              DateTime?
+  comment              String?
+  /// For get-pass return workflows: accountability chosen when this step was approved.
+  accountabilityType   GetPassReturnAccountability?
+  actedByUser          User?                        @relation(fields: [actedBy], references: [id])
+  request              ApprovalRequest              @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requiredRole         Role                         @relation(fields: [requiredRoleId], references: [id])
 
   @@unique([requestId, stepNumber])
   @@index([requiredRoleId])

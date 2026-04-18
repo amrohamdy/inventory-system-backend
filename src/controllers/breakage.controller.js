@@ -44,9 +44,15 @@ const submitBreakage = async (req, res, next) => {
 /** POST /api/breakage/:id/approve */
 const approveBreakage = async (req, res, next) => {
     try {
-        const { comment } = req.body;
+        const { comment, accountability } = req.body;
         const doc = await breakageService.processApprovalStep(
-            req.params.id, req.user.tenantId, req.user.id, req.user.role, 'APPROVE', comment
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'APPROVE',
+            comment,
+            accountability,
         );
         return success(res, doc, 'Step approved.');
     } catch (e) { next(e); }

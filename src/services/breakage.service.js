@@ -83,6 +83,13 @@ const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
 
 const APPROVER_PIPELINE_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED', 'APPROVED'];
 
+/** Stored on approval_steps.accountabilityType for GET_PASS_RETURN workflow approvals. */
+const GET_PASS_ACCOUNTABILITY = new Set([
+    'EMPLOYEE_DEDUCTION',
+    'COMPANY_LOSS',
+    'TARGET_HOTEL_COMPENSATION',
+]);
+
 const buildStatusWhere = (statusRaw) => {
     const raw = typeof statusRaw === 'string' ? statusRaw.trim() : '';
     if (!raw) return {};
@@ -392,7 +399,7 @@ const submitBreakage = async (id, tenantId, userId) => {
 };
 
 // ── PROCESS APPROVAL STEP ─────────────────────────────────────────────────────
-const processApprovalStep = async (id, tenantId, userId, userRole, action, comment) => {
+const processApprovalStep = async (id, tenantId, userId, userRole, action, comment, accountability) => {
     const doc = await getBreakageById(id, tenantId);
 
     // ── Lock checks ───────────────────────────────────────────────────────────
@@ -435,15 +442,25 @@ const processApprovalStep = async (id, tenantId, userId, userRole, action, comme
     }
 
     return prisma.$transaction(async (tx) => {
+        const stepUpdate = {
+            status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+            actedBy: userId,
+            actedAt: now,
+            comment: comment?.trim() || null,
+        };
+        if (
+            doc.sourceType === 'GET_PASS_RETURN'
+            && action === 'APPROVE'
+            && typeof accountability === 'string'
+            && GET_PASS_ACCOUNTABILITY.has(accountability)
+        ) {
+            stepUpdate.accountabilityType = accountability;
+        }
+
         // Update the current step
         await tx.approvalStep.update({
             where: { id: step.id },
-            data: {
-                status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED',
-                actedBy: userId,
-                actedAt: now,
-                comment: comment?.trim() || null,
-            },
+            data: stepUpdate,
         });
 
         if (action === 'REJECT') {

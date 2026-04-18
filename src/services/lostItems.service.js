@@ -97,6 +97,13 @@ const LOST_FLOW = [
 ];
 
 const err = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
+
+const GET_PASS_ACCOUNTABILITY = new Set([
+    'EMPLOYEE_DEDUCTION',
+    'COMPANY_LOSS',
+    'TARGET_HOTEL_COMPENSATION',
+]);
+
 const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
 const AUTO_APPROVER_ROLES = new Set([
     'DEPT_MANAGER',
@@ -385,7 +392,7 @@ const approveLostAtLevel = async (id, tenantId, userId, userRole, expectedStatus
  * Same 4-step approval chain as breakage (Cost → Finance → GM), for LOST documents that have an ApprovalRequest
  * (e.g. auto-created from get-pass return). Internal lost docs without an approval request keep using approve-dept/cost/… routes.
  */
-const processLostApprovalStep = async (id, tenantId, userId, userRole, action, comment) => {
+const processLostApprovalStep = async (id, tenantId, userId, userRole, action, comment, accountability) => {
     const doc = await getLostById(id, tenantId);
 
     if (doc.status === 'APPROVED') throw err('Document is already APPROVED and locked. No further actions allowed.');
@@ -427,14 +434,24 @@ const processLostApprovalStep = async (id, tenantId, userId, userRole, action, c
     }
 
     return prisma.$transaction(async (tx) => {
+        const stepUpdate = {
+            status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+            actedBy: userId,
+            actedAt: now,
+            comment: comment?.trim() || null,
+        };
+        if (
+            doc.sourceType === 'GET_PASS_RETURN'
+            && action === 'APPROVE'
+            && typeof accountability === 'string'
+            && GET_PASS_ACCOUNTABILITY.has(accountability)
+        ) {
+            stepUpdate.accountabilityType = accountability;
+        }
+
         await tx.approvalStep.update({
             where: { id: step.id },
-            data: {
-                status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED',
-                actedBy: userId,
-                actedAt: now,
-                comment: comment?.trim() || null,
-            },
+            data: stepUpdate,
         });
 
         if (action === 'REJECT') {
