@@ -15,7 +15,27 @@ const TENANT_WIDE_MOVEMENT_APPROVAL_ROLES = new Set([
     'SUPER_ADMIN',
 ]);
 
-const APPROVER_PIPELINE_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED', 'APPROVED'];
+/** In-flight workflow only (excludes final APPROVED — archive tab uses status=APPROVED). */
+const PIPELINE_NON_FINAL_STATUSES = ['DEPT_APPROVED', 'COST_CONTROL_APPROVED', 'FINANCE_APPROVED'];
+
+/**
+ * Same as breakage: keep processed-but-not-final documents in the role’s workflow tab.
+ */
+const buildRolePipelineStageStatusWhere = (statusRaw, userRole) => {
+    const raw = typeof statusRaw === 'string' ? statusRaw.trim() : '';
+    if (!raw || raw.includes(',')) return null;
+    const role = userRole ? normalizeRole(userRole) : '';
+    if (role === 'COST_CONTROL' && raw === 'DEPT_APPROVED') {
+        return { status: { in: ['DEPT_APPROVED', 'COST_CONTROL_APPROVED'] } };
+    }
+    if (role === 'FINANCE_MANAGER' && raw === 'COST_CONTROL_APPROVED') {
+        return { status: { in: ['COST_CONTROL_APPROVED', 'FINANCE_APPROVED'] } };
+    }
+    if (role === 'GENERAL_MANAGER' && raw === 'FINANCE_APPROVED') {
+        return { status: 'FINANCE_APPROVED' };
+    }
+    return null;
+};
 
 const buildStatusWhere = (statusRaw) => {
     const raw = typeof statusRaw === 'string' ? statusRaw.trim() : '';
@@ -137,9 +157,10 @@ const listLostItems = async (tenantId, query = {}, user = null) => {
 
     let statusWhere = {};
     if (status) {
-        statusWhere = buildStatusWhere(status);
+        const expanded = buildRolePipelineStageStatusWhere(status, role);
+        statusWhere = expanded ?? buildStatusWhere(status);
     } else if (tenantWide && (pipeline === '1' || pipeline === 'true' || pipeline === true)) {
-        statusWhere = { status: { in: APPROVER_PIPELINE_STATUSES } };
+        statusWhere = { status: { in: PIPELINE_NON_FINAL_STATUSES } };
     }
 
     const sourceFilter =
