@@ -96,7 +96,7 @@ const BREAKAGE_INCLUDE = {
 };
 
 // Helper: get first approvalRequest from the array
-const getApproval = (doc) => doc.approvalRequests?.[0] || null;
+const getApproval = (doc) => doc.approvalRequests || null;
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
 const createBreakage = async (data, tenantId, userId, userRole) => {
@@ -240,13 +240,18 @@ const getBreakages = async (tenantId, query = {}) => {
             0,
         );
         const { lines: _lines, ...rest } = d;
+        const approval = d.approvalRequests
+            ? {
+                status: d.approvalRequests.status,
+                currentStep: d.approvalRequests.currentStep,
+                totalSteps: d.approvalRequests.totalSteps,
+            }
+            : null;
         return {
             ...rest,
             totalQtyDamaged,
-            approvalRequests: [...(d.approvalRequests ?? [])]
-                .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
-                .slice(0, 1)
-                .map(({ status, currentStep, totalSteps }) => ({ status, currentStep, totalSteps })),
+            // Keep backward-compatible API shape (array), though relation is now 1:1.
+            approvalRequests: approval ? [approval] : [],
         };
     });
 
