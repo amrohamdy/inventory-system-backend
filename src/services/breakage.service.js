@@ -50,7 +50,7 @@ const createMovementApprovalRequest = async (tx, {
                     status: c.step === 1 ? 'APPROVED' : 'PENDING',
                     ...(c.step === 1
                         ? {
-                              actedBy: deptApproverUserId,
+                              actedByUser: { connect: { id: deptApproverUserId } },
                               actedAt: now,
                               comment,
                           }
@@ -175,7 +175,7 @@ const createBreakage = async (data, tenantId, userId, userRole) => {
                         status: isAutoApproved && c.step === 1 ? 'APPROVED' : 'PENDING',
                         ...(isAutoApproved && c.step === 1
                             ? {
-                                actedBy: userId,
+                                actedByUser: { connect: { id: userId } },
                                 actedAt: now,
                                 comment: AUTO_APPROVAL_NOTE,
                             }
