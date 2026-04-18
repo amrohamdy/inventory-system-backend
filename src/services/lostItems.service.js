@@ -3,6 +3,7 @@
 const prisma = require('../config/database');
 const { generateDocNumber } = require('./docNumbering.service');
 const { checkPeriodLock } = require('./periodGuard.service');
+const { APPROVAL_CHAIN, STATUS_BY_APPROVED_STEP } = require('./breakage.service');
 
 const LOST_INCLUDE = {
     createdByUser: { select: { id: true, firstName: true, lastName: true } },
@@ -13,7 +14,20 @@ const LOST_INCLUDE = {
             location: { select: { id: true, name: true } },
         },
     },
+    approvalRequests: {
+        include: {
+            steps: {
+                orderBy: { stepNumber: 'asc' },
+                include: {
+                    actedByUser: { select: { id: true, firstName: true, lastName: true } },
+                    requiredRole: { select: { id: true, code: true } },
+                },
+            },
+        },
+    },
 };
+
+const getApproval = (doc) => doc.approvalRequests?.[0] || null;
 
 const LOST_FLOW = [
     { status: 'DRAFT', nextStatus: 'DEPT_APPROVED', role: 'DEPT_MANAGER' },
@@ -172,6 +186,40 @@ const getLostById = async (id, tenantId) => {
 };
 
 const applyStockImpactOnFinalApproval = async (tx, doc, userId) => {
+    const isGetPassReturn = doc.sourceType === 'GET_PASS_RETURN';
+
+    if (isGetPassReturn) {
+        const existing = await tx.inventoryLedger.findFirst({
+            where: { tenantId: doc.tenantId, referenceId: doc.id },
+        });
+        if (existing) throw err('Document has already been posted to ledger. Double-posting prevented.');
+
+        for (const line of doc.lines) {
+            const qty = Number(line.qtyInBaseUnit || 0);
+            if (qty <= 0) continue;
+            const unitCost = Number(line.unitCost || 0);
+
+            await tx.inventoryLedger.create({
+                data: {
+                    tenantId: doc.tenantId,
+                    itemId: line.itemId,
+                    locationId: line.locationId,
+                    movementType: 'LOAN_WRITE_OFF',
+                    qtyIn: 0,
+                    qtyOut: qty,
+                    unitCost,
+                    totalValue: qty * unitCost,
+                    referenceType: 'LOST',
+                    referenceId: doc.id,
+                    referenceNo: doc.documentNo,
+                    notes: doc.reason || null,
+                    createdBy: userId,
+                },
+            });
+        }
+        return;
+    }
+
     for (const line of doc.lines) {
         const qty = Number(line.qtyInBaseUnit || 0);
         if (qty <= 0) continue;
@@ -242,9 +290,107 @@ const approveLostAtLevel = async (id, tenantId, userId, userRole, expectedStatus
     });
 };
 
+/**
+ * Same 4-step approval chain as breakage (Cost → Finance → GM), for LOST documents that have an ApprovalRequest
+ * (e.g. auto-created from get-pass return). Internal lost docs without an approval request keep using approve-dept/cost/… routes.
+ */
+const processLostApprovalStep = async (id, tenantId, userId, userRole, action, comment) => {
+    const doc = await getLostById(id, tenantId);
+
+    if (doc.status === 'APPROVED') throw err('Document is already APPROVED and locked. No further actions allowed.');
+    if (doc.status === 'VOID') throw err('Document has been voided.');
+    if (doc.status === 'REJECTED')
+        throw err('Document is REJECTED. Resubmit from draft to continue workflow.');
+
+    const approval = getApproval(doc);
+    if (!approval) {
+        throw err(
+            'This lost document has no approval request. Use the department/cost/finance/GM endpoints for internal lost items.',
+            404,
+        );
+    }
+
+    const currentStepNo = approval.currentStep;
+    const chain = APPROVAL_CHAIN.find((c) => c.step === currentStepNo);
+
+    if (!chain) throw err('All approval steps already completed.');
+
+    if (userRole !== chain.role && userRole !== 'ADMIN' && userRole !== 'ORG_MANAGER') {
+        throw err(`Step ${currentStepNo} requires role ${chain.role}. Your role: ${userRole}`);
+    }
+
+    const step = approval.steps.find((s) => s.stepNumber === currentStepNo);
+    if (!step) throw err(`Step ${currentStepNo} not found in approval chain.`, 404);
+    if (step.status !== 'PENDING') throw err(`Step ${currentStepNo} has already been ${step.status}.`);
+
+    const prevSteps = approval.steps.filter((s) => s.stepNumber < currentStepNo);
+    for (const ps of prevSteps) {
+        if (ps.status !== 'APPROVED') throw err(`Step ${ps.stepNumber} must be approved first.`);
+    }
+
+    const now = new Date();
+    const isFinalApproveAction = action === 'APPROVE' && currentStepNo === approval.totalSteps;
+
+    if (isFinalApproveAction) {
+        await checkPeriodLock(tenantId, doc.documentDate || doc.createdAt || now);
+    }
+
+    return prisma.$transaction(async (tx) => {
+        await tx.approvalStep.update({
+            where: { id: step.id },
+            data: {
+                status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+                actedBy: userId,
+                actedAt: now,
+                comment: comment?.trim() || null,
+            },
+        });
+
+        if (action === 'REJECT') {
+            await tx.approvalRequest.update({
+                where: { id: approval.id },
+                data: { status: 'REJECTED', resolvedAt: now },
+            });
+            await tx.movementDocument.update({
+                where: { id },
+                data: { status: 'REJECTED' },
+            });
+        } else {
+            const isLastStep = currentStepNo === approval.totalSteps;
+            const nextStatus = STATUS_BY_APPROVED_STEP[currentStepNo] || 'DRAFT';
+
+            if (isLastStep) {
+                await tx.approvalRequest.update({
+                    where: { id: approval.id },
+                    data: { status: 'APPROVED', currentStep: currentStepNo, resolvedAt: now },
+                });
+
+                await applyStockImpactOnFinalApproval(tx, doc, userId);
+
+                await tx.movementDocument.update({
+                    where: { id },
+                    data: { status: nextStatus, postedAt: now },
+                });
+            } else {
+                await tx.approvalRequest.update({
+                    where: { id: approval.id },
+                    data: { currentStep: currentStepNo + 1 },
+                });
+                await tx.movementDocument.update({
+                    where: { id },
+                    data: { status: nextStatus },
+                });
+            }
+        }
+
+        return tx.movementDocument.findFirst({ where: { id }, include: LOST_INCLUDE });
+    });
+};
+
 module.exports = {
     listLostItems,
     createLost,
     getLostById,
     approveLostAtLevel,
+    processLostApprovalStep,
 };

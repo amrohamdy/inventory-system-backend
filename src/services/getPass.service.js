@@ -4,6 +4,7 @@ const { generateDocNumber, DocPrefix } = require('./docNumbering.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { normalizeRole } = require('./rbac.service');
+const { createMovementApprovalRequest } = require('./breakage.service');
 const { organizationRootId } = require('./organization.service');
 const {
     notifyIncomingInternalGetPass,
@@ -1530,8 +1531,7 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             movementType: 'BREAKAGE',
                             sourceType: 'GET_PASS_RETURN',
                             getPassId: id,
-                            status: 'POSTED',
-                            postedAt: now,
+                            status: 'DEPT_APPROVED',
                             sourceLocationId: line.locationId,
                             reason: `Damaged on get pass return ${getPass.passNo}`,
                             notes: managerNotes || null,
@@ -1552,22 +1552,13 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             },
                         },
                     });
-                    await tx.inventoryLedger.create({
-                        data: {
-                            tenantId: sourceTenantId,
-                            itemId: line.itemId,
-                            locationId: line.locationId,
-                            movementType: 'BREAKAGE',
-                            qtyIn: 0,
-                            qtyOut: damagedQty,
-                            unitCost: wac,
-                            totalValue: damagedQty * wac,
-                            referenceType: 'BREAKAGE',
-                            referenceId: brkDoc.id,
-                            referenceNo: brkDoc.documentNo,
-                            createdBy: user.id,
-                            notes: `Damaged return accountability: ${accountability}`,
-                        },
+                    await createMovementApprovalRequest(tx, {
+                        tenantId: sourceTenantId,
+                        documentId: brkDoc.id,
+                        createdBy: user.id,
+                        requestType: 'BREAKAGE',
+                        deptApproverUserId: user.id,
+                        firstStepComment: 'Department manager approved via get pass return acceptance',
                     });
                 } catch (error) {
                     console.error('[getPass.service] acceptReturnIntoDepartment damaged posting failed', {
@@ -1595,8 +1586,7 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             movementType: 'LOST',
                             sourceType: 'GET_PASS_RETURN',
                             getPassId: id,
-                            status: 'APPROVED',
-                            postedAt: now,
+                            status: 'DEPT_APPROVED',
                             sourceLocationId: line.locationId,
                             reason: lostReason,
                             notes: `Auto from get pass return (accept return into department)`,
@@ -1617,6 +1607,14 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             },
                         },
                     });
+                    await createMovementApprovalRequest(tx, {
+                        tenantId: sourceTenantId,
+                        documentId: lostDoc.id,
+                        createdBy: user.id,
+                        requestType: 'LOST',
+                        deptApproverUserId: user.id,
+                        firstStepComment: 'Department manager approved via get pass return acceptance',
+                    });
                     await tx.getPassReturn.create({
                         data: {
                             getPassLineId: line.id,
@@ -1628,23 +1626,6 @@ const acceptReturnIntoDepartment = async (id, sourceTenantId, user, payload = {}
                             isDamaged: false,
                             notes: `ACCOUNTABILITY:${accountability}${managerNotes ? ` | MANAGER_NOTES:${managerNotes}` : ''}`,
                             registeredBy: user.id,
-                        },
-                    });
-                    await tx.inventoryLedger.create({
-                        data: {
-                            tenantId: sourceTenantId,
-                            itemId: line.itemId,
-                            locationId: line.locationId,
-                            movementType: 'LOAN_WRITE_OFF',
-                            qtyIn: 0,
-                            qtyOut: lostQty,
-                            unitCost: wac,
-                            totalValue: lostQty * wac,
-                            referenceType: 'LOST',
-                            referenceId: lostDoc.id,
-                            referenceNo: lostDoc.documentNo,
-                            createdBy: user.id,
-                            notes: `Lost return accountability: ${accountability}`,
                         },
                     });
                 } catch (error) {

@@ -1451,6 +1451,7 @@ enum LocationType {
 enum ApprovalRequestType {
   ADJUSTMENT
   BREAKAGE
+  LOST
   COUNT_ADJUSTMENT
   GRN_IMPORT
   STORE_REQUISITION

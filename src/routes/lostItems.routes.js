@@ -11,5 +11,7 @@ router.post('/:id/approve-dept', requirePermission('APPROVE_LOST'), ctrl.approve
 router.post('/:id/approve-cost', requirePermission('APPROVE_LOST'), ctrl.approveCost);
 router.post('/:id/approve-finance', requirePermission('APPROVE_LOST'), ctrl.approveFinance);
 router.post('/:id/approve-gm', requirePermission('APPROVE_LOST'), ctrl.approveGm);
+router.post('/:id/approve', requirePermission('APPROVE_LOST'), ctrl.approveLostApprovalStep);
+router.post('/:id/reject', requirePermission('APPROVE_LOST'), ctrl.rejectLostApprovalStep);
 
 module.exports = router;

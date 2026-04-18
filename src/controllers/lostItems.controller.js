@@ -89,6 +89,45 @@ const approveGm = async (req, res, next) => {
     }
 };
 
+/** POST /api/lost-items/:id/approve — same 4-step chain as breakage (for lost docs with ApprovalRequest, e.g. get-pass return). */
+const approveLostApprovalStep = async (req, res, next) => {
+    try {
+        const { comment } = req.body;
+        const doc = await lostItemsService.processLostApprovalStep(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'APPROVE',
+            comment,
+        );
+        return success(res, doc, 'Step approved.');
+    } catch (e) {
+        next(e);
+    }
+};
+
+/** POST /api/lost-items/:id/reject */
+const rejectLostApprovalStep = async (req, res, next) => {
+    try {
+        const { comment } = req.body;
+        if (!comment?.trim()) {
+            return res.status(400).json({ success: false, message: 'Rejection comment is required.' });
+        }
+        const doc = await lostItemsService.processLostApprovalStep(
+            req.params.id,
+            req.user.tenantId,
+            req.user.id,
+            req.user.role,
+            'REJECT',
+            comment,
+        );
+        return success(res, doc, 'Step rejected.');
+    } catch (e) {
+        next(e);
+    }
+};
+
 module.exports = {
     createLost,
     listLostItems,
@@ -96,4 +135,6 @@ module.exports = {
     approveCost,
     approveFinance,
     approveGm,
+    approveLostApprovalStep,
+    rejectLostApprovalStep,
 };

@@ -19,6 +19,47 @@ const STATUS_BY_APPROVED_STEP = {
     3: 'FINANCE_APPROVED',
     4: 'APPROVED',
 };
+
+/**
+ * Same 4-step chain as manual breakage, with step 1 pre-approved (e.g. dept manager accepted get-pass return).
+ * Sets currentStep to 2 so Cost Control is the next actor.
+ */
+const createMovementApprovalRequest = async (tx, {
+    tenantId,
+    documentId,
+    createdBy,
+    requestType,
+    deptApproverUserId,
+    firstStepComment,
+}) => {
+    const now = new Date();
+    const comment = firstStepComment || AUTO_APPROVAL_NOTE;
+    await tx.approvalRequest.create({
+        data: {
+            tenantId,
+            requestType,
+            status: 'PENDING',
+            documentId,
+            currentStep: 2,
+            totalSteps: APPROVAL_CHAIN.length,
+            createdBy,
+            steps: {
+                create: APPROVAL_CHAIN.map((c) => ({
+                    stepNumber: c.step,
+                    requiredRole: connectRole(c.role),
+                    status: c.step === 1 ? 'APPROVED' : 'PENDING',
+                    ...(c.step === 1
+                        ? {
+                              actedBy: deptApproverUserId,
+                              actedAt: now,
+                              comment,
+                          }
+                        : {}),
+                })),
+            },
+        },
+    });
+};
 const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
 const AUTO_APPROVER_ROLES = new Set([
     'DEPT_MANAGER',
@@ -187,18 +228,27 @@ const getBreakages = async (tenantId, query = {}) => {
                     select: { status: true, currentStep: true, totalSteps: true, createdAt: true },
                 },
                 _count: { select: { lines: true } },
+                lines: { select: { qtyInBaseUnit: true } },
             },
         }),
         prisma.movementDocument.count({ where }),
     ]);
 
-    const documents = rawDocuments.map((d) => ({
-        ...d,
-        approvalRequests: [...(d.approvalRequests ?? [])]
-            .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
-            .slice(0, 1)
-            .map(({ status, currentStep, totalSteps }) => ({ status, currentStep, totalSteps })),
-    }));
+    const documents = rawDocuments.map((d) => {
+        const totalQtyDamaged = (d.lines ?? []).reduce(
+            (sum, line) => sum + Number(line.qtyInBaseUnit || 0),
+            0,
+        );
+        const { lines: _lines, ...rest } = d;
+        return {
+            ...rest,
+            totalQtyDamaged,
+            approvalRequests: [...(d.approvalRequests ?? [])]
+                .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+                .slice(0, 1)
+                .map(({ status, currentStep, totalSteps }) => ({ status, currentStep, totalSteps })),
+        };
+    });
 
     return { documents, total };
 };
@@ -371,6 +421,38 @@ const _postBreakageInTransaction = async (tx, doc, tenantId, userId) => {
         where: { tenantId, referenceId: doc.id },
     });
     if (existing) throw err('Document has already been posted to ledger. Double-posting prevented.');
+
+    const isGetPassReturn = doc.sourceType === 'GET_PASS_RETURN';
+
+    if (isGetPassReturn) {
+        // Physical qty was already removed from on-hand when the dept manager accepted the return.
+        // Final GM approval only records the financial breakage (ledger), paired with no further stock change.
+        for (const line of doc.lines) {
+            const qty = parseFloat(line.qtyInBaseUnit);
+            if (qty <= 0) continue;
+            const unitCost = parseFloat(line.unitCost || 0);
+            const lossValue = qty * unitCost;
+
+            await tx.inventoryLedger.create({
+                data: {
+                    tenantId,
+                    itemId: line.itemId,
+                    locationId: line.locationId,
+                    movementType: 'BREAKAGE',
+                    qtyOut: qty,
+                    qtyIn: 0,
+                    unitCost,
+                    totalValue: lossValue,
+                    referenceType: 'BREAKAGE',
+                    referenceId: doc.id,
+                    referenceNo: doc.documentNo,
+                    notes: doc.reason,
+                    createdBy: userId,
+                },
+            });
+        }
+        return;
+    }
 
     for (const line of doc.lines) {
         const itemId = line.itemId;
@@ -600,4 +682,6 @@ module.exports = {
     getEvidence,
     voidBreakage,
     APPROVAL_CHAIN,
+    STATUS_BY_APPROVED_STEP,
+    createMovementApprovalRequest,
 };
