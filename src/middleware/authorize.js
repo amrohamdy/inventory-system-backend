@@ -121,6 +121,23 @@ const PERMISSIONS = {
         'FINANCE_MANAGER',
         'AUDITOR',
         'GENERAL_MANAGER',
+        'SECURITY',
+    ],
+
+    /**
+     * Full dashboard analytics API (role-scoped summary) — enforced on /dashboard/summary + /dashboard/charts.
+     * JWT/DB code: DASHBOARD_VIEW (replaces legacy DASHBOARD_ADMIN_VIEW).
+     */
+    DASHBOARD_VIEW: [
+        'ADMIN',
+        'ORG_MANAGER',
+        'DEPT_MANAGER',
+        'COST_CONTROL',
+        'FINANCE_MANAGER',
+        'GENERAL_MANAGER',
+        'SECURITY',
+        'STOREKEEPER',
+        'AUDITOR',
     ],
 
     GET_PASS_CREATE: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
@@ -167,8 +184,6 @@ const PERMISSION_ALIASES = {
     MANAGE_COUNT: 'STOCK_COUNT_MANAGE',
     VIEW_COUNT: 'STOCK_COUNT_VIEW',
     VIEW_REPORTS: 'REPORTS_VIEW',
-    /** Alias for dashboard routes using legacy naming */
-    DASHBOARD_VIEW: 'VIEW_DASHBOARD',
     EXPORT_REPORTS: 'REPORTS_EXPORT',
     MANAGE_USERS: 'USERS_COMPANY_MANAGE',
     MANAGE_SETTINGS: 'SETTINGS_MANAGE',

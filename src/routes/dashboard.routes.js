@@ -6,8 +6,8 @@ const ctrl = require('../controllers/dashboard.controller');
 
 router.use(authenticate);
 
-router.get('/summary', requirePermission('VIEW_DASHBOARD'), ctrl.getSummary);
-router.get('/charts', requirePermission('VIEW_DASHBOARD'), ctrl.getCharts);
+router.get('/summary', requirePermission('DASHBOARD_VIEW'), ctrl.getSummary);
+router.get('/charts', requirePermission('DASHBOARD_VIEW'), ctrl.getCharts);
 router.get(
     '/organization-summary',
     authorize('SUPER_ADMIN', 'ORG_MANAGER'),

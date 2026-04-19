@@ -41,7 +41,11 @@ const assertCanViewOrganizationSummary = async (req, parentTenantId) => {
 const getSummary = async (req, res, next) => {
     try {
         const start = Date.now();
-        const data = await dashboardService.getDashboardSummary(req.user.tenantId);
+        const data = await dashboardService.getDashboardSummary(req.user.tenantId, {
+            id: req.user.id,
+            role: req.user.role,
+            departmentId: req.user.departmentId ?? null,
+        });
         const responseTime = Date.now() - start;
         res.json({ success: true, data, meta: { responseTimeMs: responseTime } });
     } catch (e) { next(e); }
@@ -49,7 +53,11 @@ const getSummary = async (req, res, next) => {
 
 const getCharts = async (req, res, next) => {
     try {
-        const data = await dashboardService.getChartData(req.user.tenantId);
+        const data = await dashboardService.getChartData(req.user.tenantId, {
+            id: req.user.id,
+            role: req.user.role,
+            departmentId: req.user.departmentId ?? null,
+        });
         res.json({ success: true, data });
     } catch (e) { next(e); }
 };
