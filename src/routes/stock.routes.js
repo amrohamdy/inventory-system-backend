@@ -2,8 +2,10 @@ const express = require('express');
 const router = express.Router();
 const stockController = require('../controllers/stock.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
+const { requirePermission } = require('../middleware/authorize');
 
 router.use(protect);
+router.use(requirePermission('INVENTORY_VIEW'));
 
 router.get('/summary', stockController.getStockSummary);
 router.get('/export', stockController.exportStockBalances);

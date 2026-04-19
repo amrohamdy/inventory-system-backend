@@ -94,7 +94,7 @@ const PERMISSIONS = {
     ],
 
     /** Sidebar + read access to Breakage & Loss (Transactions); API may also use VIEW_INVENTORY. */
-    BREAKAGE_VIEW: ['ADMIN', 'SUPER_ADMIN', 'DEPT_MANAGER', 'SECURITY'],
+    BREAKAGE_VIEW: ['ADMIN', 'SUPER_ADMIN', 'DEPT_MANAGER'],
 
     /** DB/JWT-friendly read flags for breakage / lost lists (also aliased to INVENTORY_VIEW for checks). */
     READ_BREAKAGE: ['COST_CONTROL', 'FINANCE_MANAGER', 'GENERAL_MANAGER', 'ADMIN', 'ORG_MANAGER', 'SUPER_ADMIN'],
