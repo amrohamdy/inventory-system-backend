@@ -1091,7 +1091,6 @@ async function computeControlTowerMetrics(tenantId, monthStart, userCtx, opts = 
             include: {
                 lines: true,
                 approvalRequests: {
-                    take: 1,
                     include: { steps: { orderBy: { stepNumber: 'asc' } } },
                 },
             },
@@ -1230,7 +1229,7 @@ async function computeControlTowerMetrics(tenantId, monthStart, userCtx, opts = 
     };
 
     for (const d of monthlyPostedDocs) {
-        const steps = d.approvalRequests?.[0]?.steps ?? [];
+        const steps = d.approvalRequests?.steps ?? [];
         let acc = null;
         for (let i = steps.length - 1; i >= 0; i -= 1) {
             if (steps[i].accountabilityType) {
