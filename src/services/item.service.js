@@ -1307,16 +1307,20 @@ const upsertOpeningBalanceForItemLocation = async (
         : tenantDraftDoc;
 
     if (canonicalDoc) {
-        if (existingDraftLines.length > 0) {
-            // Dedupe: ensure a single source of truth line for this item+location across OPEN drafts.
-            await tx.movementLine.deleteMany({
-                where: {
-                    id: { in: existingDraftLines.map((ln) => ln.id) },
+        // Aggressive pre-cleanup before insert (safer under concurrent updates).
+        await tx.movementLine.deleteMany({
+            where: {
+                itemId,
+                locationId,
+                document: {
+                    tenantId,
+                    movementType: 'OPENING_BALANCE',
+                    status: 'DRAFT',
                 },
-            });
-        }
+            },
+        });
 
-        await tx.movementLine.create({
+        const createdLine = await tx.movementLine.create({
             data: {
                 documentId: canonicalDoc.id,
                 itemId,
@@ -1325,6 +1329,21 @@ const upsertOpeningBalanceForItemLocation = async (
                 qtyInBaseUnit: qty,
                 unitCost,
                 totalValue,
+            },
+        });
+
+        // Post-cleanup: keep exactly one line for this item+location across all OB DRAFT docs.
+        // This protects against double-submit/concurrent requests that might insert duplicates.
+        await tx.movementLine.deleteMany({
+            where: {
+                itemId,
+                locationId,
+                id: { not: createdLine.id },
+                document: {
+                    tenantId,
+                    movementType: 'OPENING_BALANCE',
+                    status: 'DRAFT',
+                },
             },
         });
 
