@@ -123,6 +123,10 @@ router.use('/settings', settingRoutes);
 const inventoryRoutes = require('./inventory.routes');
 router.use('/inventory', inventoryRoutes);
 
+// Signed-URL resolver for cloud-stored attachments (authenticated + tenant-scoped)
+const fileRoutes = require('./file.routes');
+router.use('/files', fileRoutes);
+
 // Super Admin — Tenant Management & Platform Controls
 const superAdminRoutes = require('./superAdmin.routes');
 router.use('/super-admin', superAdminRoutes);

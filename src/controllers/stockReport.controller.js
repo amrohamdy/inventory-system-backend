@@ -1,6 +1,4 @@
 const stockReportService = require('../services/stockReport.service');
-const path = require('path');
-const fs = require('fs');
 
 // GET /api/stock-report
 const getReport = async (req, res, next) => {
@@ -54,7 +52,7 @@ const uploadCount = async (req, res, next) => {
         }
 
         const result = await stockReportService.uploadCountedExcel(
-            req.file.path,
+            req.file.buffer,
             req.user.tenantId,
             departmentId,
             categoryId,
@@ -62,14 +60,8 @@ const uploadCount = async (req, res, next) => {
             req.user.id,
         );
 
-        // Cleanup uploaded file
-        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
-
         res.json(result);
     } catch (err) {
-        if (req.file?.path) {
-            try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
-        }
         next(err);
     }
 };

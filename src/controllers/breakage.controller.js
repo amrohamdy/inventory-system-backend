@@ -2,6 +2,7 @@ const breakageService = require('../services/breakage.service');
 const { generateBreakageEvidencePDF } = require('../services/pdf.service');
 const { success } = require('../utils/response');
 const { formatMovementDocumentNotes } = require('../utils/formatMovementNotes');
+const { putBuffer, buildAttachmentKey } = require('../middleware/upload.middleware');
 
 /** POST /api/breakage */
 const createBreakage = async (req, res, next) => {
@@ -135,10 +136,13 @@ const uploadAttachment = async (req, res, next) => {
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
 
+        const key = buildAttachmentKey(req.user.tenantId, 'BREAKAGE', req.params.id, req.file.originalname);
+        await putBuffer(key, req.file);
+
         const attachmentMeta = {
-            filename: req.file.filename,
+            key,
+            url: key,
             originalName: req.file.originalname,
-            url: `/uploads/attachments/${req.file.filename}`,
             mimetype: req.file.mimetype,
             size: req.file.size,
             uploadedBy: `${req.user.firstName || ''} ${req.user.lastName || ''} (${req.user.role})`.trim(),

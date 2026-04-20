@@ -1,76 +1,41 @@
-const multer = require('multer');
+'use strict';
+
+/**
+ * Upload middleware — memory-backed multer + storage-service pipe.
+ *
+ * Previous behavior: `multer.diskStorage` wrote directly to local `uploads/`
+ * folders and controllers persisted the resulting `/uploads/...` path in the
+ * DB. That breaks on ephemeral filesystems (Railway) and leaks files across
+ * tenants (static mount has no auth).
+ *
+ * New behavior: files arrive as Buffers in `req.file.buffer` / `req.files[].buffer`.
+ * Controllers then call `storage.put(key, buffer, {contentType, originalName})`
+ * with a tenant-scoped key like `tenants/{tenantId}/items/{uuid}.jpg`.
+ * The key (not a URL) is what gets stored in the DB. `/api/files/signed-url`
+ * is used to render short-lived, tenant-validated download URLs.
+ */
+
+const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
+const multer = require('multer');
+const { getStorage, isLocalDriver } = require('../config/storage');
 
-// Ensure uploads directories exist
-const UPLOADS_DIR = path.join(__dirname, '../../uploads/items');
-const IMPORT_DIR = path.join(__dirname, '../../uploads/imports');
-const ATTACHMENT_DIR = path.join(__dirname, '../../uploads/attachments');
+const memoryStorage = multer.memoryStorage();
 
-[UPLOADS_DIR, IMPORT_DIR, ATTACHMENT_DIR].forEach(d => {
-    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-});
-
-// ── Item Image Storage ────────────────────────────────────────────────────────
-const imageStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase();
-        const name = `item-${req.params.id || Date.now()}-${Date.now()}${ext}`;
-        cb(null, name);
-    },
-});
-
+// ── Filters (mirror pre-existing mime/ext rules) ──────────────────────────────
 const imageFilter = (_req, file, cb) => {
     const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Only image files are allowed (jpg, jpeg, png, webp, gif)'));
-    }
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('Only image files are allowed (jpg, jpeg, png, webp, gif)'));
 };
-
-const uploadImage = multer({
-    storage: imageStorage,
-    fileFilter: imageFilter,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
-});
-
-// ── Excel/CSV Import Storage ──────────────────────────────────────────────────
-const importStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, IMPORT_DIR),
-    filename: (_req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase();
-        cb(null, `import-${Date.now()}${ext}`);
-    },
-});
 
 const importFilter = (_req, file, cb) => {
     const allowed = ['.xlsx', '.xls', '.csv'];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Only Excel (.xlsx, .xls) or CSV files are allowed'));
-    }
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('Only Excel (.xlsx, .xls) or CSV files are allowed'));
 };
-
-const uploadImport = multer({
-    storage: importStorage,
-    fileFilter: importFilter,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
-});
-
-// ── Breakage Attachment Storage ───────────────────────────────────────────────
-const attachmentStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, ATTACHMENT_DIR),
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase();
-        const base = path.basename(file.originalname, ext).replace(/[^a-z0-9]/gi, '_');
-        cb(null, `attach-${req.params.id || 'doc'}-${Date.now()}-${base}${ext}`);
-    },
-});
 
 const attachmentFilter = (_req, file, cb) => {
     const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.docx', '.doc', '.xlsx', '.xls'];
@@ -79,40 +44,142 @@ const attachmentFilter = (_req, file, cb) => {
     else cb(new Error('Attachment must be an image, PDF, Word, or Excel file.'));
 };
 
-const uploadAttachment = multer({
-    storage: attachmentStorage,
-    fileFilter: attachmentFilter,
-    limits: { fileSize: 10 * 1024 * 1024 },
-});
-
-// ── ZIP Upload Storage ────────────────────────────────────────────────────────
-const ZIP_DIR = path.join(__dirname, '../../uploads/temp-zip');
-if (!fs.existsSync(ZIP_DIR)) fs.mkdirSync(ZIP_DIR, { recursive: true });
-
-const zipStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, ZIP_DIR),
-    filename: (_req, file, cb) => {
-        cb(null, `zip-${Date.now()}${path.extname(file.originalname).toLowerCase()}`);
-    },
-});
-
 const zipFilter = (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     if (ext === '.zip') cb(null, true);
     else cb(new Error('Only ZIP files are allowed'));
 };
 
+const uploadImage = multer({
+    storage: memoryStorage,
+    fileFilter: imageFilter,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+});
+
+const uploadImport = multer({
+    storage: memoryStorage,
+    fileFilter: importFilter,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
+
+const uploadAttachment = multer({
+    storage: memoryStorage,
+    fileFilter: attachmentFilter,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
+
 const uploadZip = multer({
-    storage: zipStorage,
+    storage: memoryStorage,
     fileFilter: zipFilter,
     limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
 });
 
-// Helper: delete a file safely
-const deleteFile = (filePath) => {
-    try {
-        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch { /* ignore */ }
+// ── Key builders ─────────────────────────────────────────────────────────────
+// Under the local driver we keep the old `/uploads/.../xxx.ext` layout so that
+// DB values stay byte-identical to pre-cloud behaviour (frontend <img src> keeps
+// working unchanged). Under R2 we use tenant-scoped keys which the signed-URL
+// endpoint validates against req.user.tenantId.
+const extOf = (filename) => path.extname(filename || '').toLowerCase();
+const uuid = () => crypto.randomUUID();
+
+const buildItemImageKey = (tenantId, originalName, itemId) => {
+    if (isLocalDriver()) {
+        return `/uploads/items/item-${itemId || 'new'}-${Date.now()}${extOf(originalName)}`;
+    }
+    return `tenants/${tenantId}/items/${uuid()}${extOf(originalName)}`;
 };
 
-module.exports = { uploadImage, uploadImport, uploadAttachment, uploadZip, deleteFile, UPLOADS_DIR, ATTACHMENT_DIR };
+const buildAttachmentKey = (tenantId, docType, docId, originalName) => {
+    const base = path.basename(originalName || '', extOf(originalName)).replace(/[^a-z0-9]/gi, '_');
+    if (isLocalDriver()) {
+        return `/uploads/attachments/attach-${docId || 'doc'}-${Date.now()}-${base}${extOf(originalName)}`;
+    }
+    return `tenants/${tenantId}/attachments/${docType}/${docId}/${uuid()}${extOf(originalName)}`;
+};
+
+const buildImportKey = (tenantId, originalName) => {
+    if (isLocalDriver()) {
+        return `/uploads/imports/import-${Date.now()}${extOf(originalName)}`;
+    }
+    return `tenants/${tenantId}/imports/${Date.now()}${extOf(originalName)}`;
+};
+
+const buildGrnPdfKey = (tenantId, grnId) => {
+    if (isLocalDriver()) {
+        return `/uploads/attachments/grn-${grnId || 'new'}-${Date.now()}.pdf`;
+    }
+    return `tenants/${tenantId}/grn/${grnId || uuid()}-${Date.now()}.pdf`;
+};
+
+const buildDamagePhotoKey = (tenantId, getPassLineId, originalName) => {
+    if (isLocalDriver()) {
+        return `/uploads/attachments/damage-${getPassLineId || 'line'}-${Date.now()}${extOf(originalName)}`;
+    }
+    return `tenants/${tenantId}/damage-photos/${getPassLineId}/${uuid()}${extOf(originalName)}`;
+};
+
+const buildZipTempKey = (tenantId, originalName) => {
+    if (isLocalDriver()) {
+        return `/uploads/temp-zip/zip-${Date.now()}${extOf(originalName)}`;
+    }
+    return `tenants/${tenantId}/tmp/zip-${Date.now()}${extOf(originalName)}`;
+};
+
+const buildLogoKey = (tenantId, originalName) => {
+    if (isLocalDriver()) {
+        return `/uploads/branding/logo-${tenantId}-${Date.now()}${extOf(originalName)}`;
+    }
+    return `tenants/${tenantId}/branding/logo-${Date.now()}${extOf(originalName)}`;
+};
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+/**
+ * Persist an in-memory file via the configured storage provider.
+ *
+ * @param {string} key      Tenant-scoped object key (use a build* helper).
+ * @param {Express.Multer.File} file  multer memoryStorage file object.
+ * @returns {Promise<{key: string, size: number, mime: string, originalName: string}>}
+ */
+const putBuffer = async (key, file) => {
+    const storage = getStorage();
+    await storage.put(key, file.buffer, {
+        contentType: file.mimetype,
+        originalName: file.originalname,
+    });
+    return {
+        key,
+        size: file.size,
+        mime: file.mimetype,
+        originalName: file.originalname,
+    };
+};
+
+/**
+ * Best-effort delete. Accepts either a cloud key (tenants/...) or a legacy
+ * `/uploads/...` path. Never throws.
+ */
+const deleteFile = async (keyOrPath) => {
+    if (!keyOrPath) return false;
+    try {
+        const storage = getStorage();
+        return await storage.delete(keyOrPath);
+    } catch {
+        return false;
+    }
+};
+
+module.exports = {
+    uploadImage,
+    uploadImport,
+    uploadAttachment,
+    uploadZip,
+    deleteFile,
+    putBuffer,
+    buildItemImageKey,
+    buildAttachmentKey,
+    buildImportKey,
+    buildGrnPdfKey,
+    buildDamagePhotoKey,
+    buildZipTempKey,
+    buildLogoKey,
+};

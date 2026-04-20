@@ -1,25 +1,26 @@
 'use strict';
-const path = require('path');
 const multer = require('multer');
 const grnService = require('../services/grn.service');
 const periodGuard = require('../services/periodGuard.service');
 const { normalizeRole } = require('../services/rbac.service');
+const { putBuffer, buildGrnPdfKey } = require('../middleware/upload.middleware');
 
 /** Roles allowed to create GRNs (POST /api/grn). */
 const GRN_CREATE_ROLES = ['COST_CONTROL', 'STOREKEEPER', 'ADMIN', 'SUPER_ADMIN'];
 
-// ─── Multer: invoice PDF upload ───────────────────────────────────────────────
+// ─── Multer (memory-backed; bytes are forwarded to storage.put below) ────────
+const memoryStorage = multer.memoryStorage();
+
 const invoiceUpload = multer({
-    dest: path.join(__dirname, '../../uploads/grn/invoices'),
+    storage: memoryStorage,
     limits: { fileSize: 20 * 1024 * 1024 },
     fileFilter: (_req, file, cb) =>
         cb(null, file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')),
 });
 const uploadInvoice = invoiceUpload.single('invoice');
 
-// ─── Multer: Excel upload ─────────────────────────────────────────────────────
 const excelUpload = multer({
-    dest: path.join(__dirname, '../../uploads/grn/excel'),
+    storage: memoryStorage,
     limits: { fileSize: 10 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
         const ok = file.mimetype.includes('spreadsheet') ||
@@ -32,9 +33,8 @@ const excelUpload = multer({
 });
 const uploadExcel = excelUpload.single('file');
 
-// ─── Multer: PDF invoice for parse+preview ───────────────────────
 const pdfUpload = multer({
-    dest: path.join(__dirname, '../../uploads/grn/pdf'),
+    storage: memoryStorage,
     limits: { fileSize: 20 * 1024 * 1024 },
     fileFilter: (_req, file, cb) =>
         cb(null, file.mimetype === 'application/pdf' || file.originalname.endsWith('.pdf')),
@@ -118,12 +118,18 @@ const createGrn = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid lines format — expected JSON array.' });
         }
 
+        // Persist the invoice via the storage provider. Under local driver the key
+        // looks like `/uploads/attachments/grn-...` (legacy format), under r2 it's
+        // `tenants/{tenantId}/grn/...`.
+        const invoiceKey = buildGrnPdfKey(req.user.tenantId, null);
+        await putBuffer(invoiceKey, invoiceFile);
+
         const created = await grnService.createGrn({
             supplierId,
             locationId,
             grnNumber,
             receivingDate,
-            invoiceUrl: invoiceFile.path,
+            invoiceUrl: invoiceKey,
             notes,
             lines: parsedLines,
             tenantId: req.user.tenantId,
@@ -327,7 +333,7 @@ const previewExcel = async (req, res) => {
         const xlFile = req.file;
         if (!xlFile)
             return res.status(400).json({ success: false, message: 'Excel file is required.' });
-        const result = await grnService.previewGrnExcel(xlFile.path, req.user.tenantId);
+        const result = await grnService.previewGrnExcel(xlFile.buffer, req.user.tenantId);
         sendSuccess(res, result);
     } catch (err) {
         sendError(res, err);
@@ -340,7 +346,7 @@ const previewPdf = async (req, res) => {
         const pdfFile = req.file;
         if (!pdfFile)
             return res.status(400).json({ success: false, message: 'PDF file is required.' });
-        const result = await grnService.previewGrnPdf(pdfFile.path, req.user.tenantId);
+        const result = await grnService.previewGrnPdf(pdfFile.buffer, req.user.tenantId);
         sendSuccess(res, result);
     } catch (err) {
         sendError(res, err);

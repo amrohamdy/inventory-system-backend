@@ -726,10 +726,14 @@ const generateGrnTemplate = async () => {
 /**
  * Parse uploaded GRN Excel, validate each row against Item Master.
  */
-const previewGrnExcel = async (filePath, tenantId) => {
+const previewGrnExcel = async (fileBufferOrPath, tenantId) => {
     const wb = new ExcelJS.Workbook();
     try {
-        await wb.xlsx.readFile(filePath);
+        if (Buffer.isBuffer(fileBufferOrPath)) {
+            await wb.xlsx.load(fileBufferOrPath);
+        } else {
+            await wb.xlsx.readFile(fileBufferOrPath);
+        }
     } catch {
         throw Object.assign(new Error('Failed to read Excel file. Make sure it is a valid .xlsx or .xls file.'), { status: 400 });
     }
@@ -867,11 +871,13 @@ const fuzzyPdfScore = (text, pattern) => {
  * Extracts item-like lines (description + qty) and matches them to Item Master
  * using: exact barcode → fuzzy name (>=60%) → UNMAPPED (needs manual mapping).
  */
-const previewGrnPdf = async (filePath, tenantId) => {
+const previewGrnPdf = async (fileBufferOrPath, tenantId) => {
     // ── Step 1: Extract raw text ─────────────────────────────────────────────
     let pdfText = '';
     try {
-        const buffer = fs.readFileSync(filePath);
+        const buffer = Buffer.isBuffer(fileBufferOrPath)
+            ? fileBufferOrPath
+            : fs.readFileSync(fileBufferOrPath);
         const data = await pdfParse(buffer, { max: 0 });
         pdfText = data.text || '';
     } catch (err) {
