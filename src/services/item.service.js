@@ -778,13 +778,19 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                 throw badRequest('Unit price is required when opening quantity is greater than 0.');
             }
 
-            const currentStock = await tx.stockBalance.findUnique({
+            const currentDraftAgg = await tx.movementLine.aggregate({
                 where: {
-                    tenantId_itemId_locationId: { tenantId, itemId: id, locationId },
+                    itemId: id,
+                    locationId,
+                    document: {
+                        tenantId,
+                        movementType: 'OPENING_BALANCE',
+                        status: 'DRAFT',
+                    },
                 },
-                select: { qtyOnHand: true },
+                _sum: { qtyInBaseUnit: true },
             });
-            const currentQty = Number(currentStock?.qtyOnHand ?? 0);
+            const currentQty = Number(currentDraftAgg._sum.qtyInBaseUnit ?? 0);
             const deltaQty = openingQtyTarget - currentQty;
             const absDelta = Math.abs(deltaQty);
 
@@ -807,23 +813,6 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                 });
             }
 
-            await tx.stockBalance.upsert({
-                where: {
-                    tenantId_itemId_locationId: { tenantId, itemId: id, locationId },
-                },
-                update: {
-                    qtyOnHand: openingQtyTarget,
-                    ...(unitCost > 0 ? { wacUnitCost: unitCost } : {}),
-                },
-                create: {
-                    tenantId,
-                    itemId: id,
-                    locationId,
-                    qtyOnHand: openingQtyTarget,
-                    wacUnitCost: unitCost > 0 ? unitCost : 0,
-                },
-            });
-
             if (openingQtyTarget > 0) {
                 // Keep OPEN draft totals in sync with overwrite behavior:
                 // item-level openingQuantity edit is treated as the final total target.
@@ -840,19 +829,63 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                     },
                 });
 
-                await upsertOpeningBalanceForItemLocation(
-                    tx,
-                    {
-                        tenantId,
+                // Keep exactly one draft line for this item/location so OPEN UI sum matches stock balance.
+                await tx.movementLine.deleteMany({
+                    where: {
                         itemId: id,
                         locationId,
-                        targetQty: openingQtyTarget,
-                        unitCost,
-                        userId,
-                        itemName: row.name,
+                        document: {
+                            tenantId,
+                            movementType: 'OPENING_BALANCE',
+                            status: 'DRAFT',
+                        },
                     },
-                    movementService
-                );
+                });
+
+                const tenantDraftDoc = await tx.movementDocument.findFirst({
+                    where: {
+                        tenantId,
+                        movementType: 'OPENING_BALANCE',
+                        status: 'DRAFT',
+                    },
+                    orderBy: { createdAt: 'asc' },
+                    select: { id: true },
+                });
+
+                if (tenantDraftDoc) {
+                    await tx.movementLine.create({
+                        data: {
+                            documentId: tenantDraftDoc.id,
+                            itemId: id,
+                            locationId,
+                            qtyRequested: openingQtyTarget,
+                            qtyInBaseUnit: openingQtyTarget,
+                            unitCost,
+                            totalValue: openingQtyTarget * unitCost,
+                        },
+                    });
+                } else {
+                    await movementService.createMovementDraft(
+                        {
+                            movementType: 'OPENING_BALANCE',
+                            documentDate: new Date().toISOString(),
+                            destLocationId: locationId,
+                            notes: `Opening quantity synced from item update — ${row.name}`,
+                            lines: [
+                                {
+                                    itemId: id,
+                                    locationId,
+                                    qtyRequested: openingQtyTarget,
+                                    unitCost,
+                                    totalValue: openingQtyTarget * unitCost,
+                                },
+                            ],
+                        },
+                        tenantId,
+                        userId,
+                        tx
+                    );
+                }
             } else {
                 // For zero target, ensure no OPEN draft lines remain for this item in any location.
                 await tx.movementLine.deleteMany({
@@ -866,6 +899,23 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                     },
                 });
             }
+
+            await tx.stockBalance.upsert({
+                where: {
+                    tenantId_itemId_locationId: { tenantId, itemId: id, locationId },
+                },
+                update: {
+                    qtyOnHand: openingQtyTarget,
+                    ...(unitCost > 0 ? { wacUnitCost: unitCost } : {}),
+                },
+                create: {
+                    tenantId,
+                    itemId: id,
+                    locationId,
+                    qtyOnHand: openingQtyTarget,
+                    wacUnitCost: unitCost > 0 ? unitCost : 0,
+                },
+            });
         }
 
         return row;
