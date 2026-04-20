@@ -332,6 +332,11 @@ const createItem = async (data, tenantId, userId = null) => {
         throw badRequest('User context is required to record opening balance quantity.');
     }
 
+    const obStatus = await settingService.getObStatus(tenantId);
+    if (wantsOpeningLine && obStatus !== 'OPEN') {
+        throw badRequest('Opening quantity can only be set while Opening Balance is in OPEN status.');
+    }
+
     const movementService = require('./movement.service');
 
     const createdId = await prisma.$transaction(async (tx) => {
@@ -778,41 +783,6 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                 throw badRequest('Unit price is required when opening quantity is greater than 0.');
             }
 
-            const currentDraftAgg = await tx.movementLine.aggregate({
-                where: {
-                    itemId: id,
-                    locationId,
-                    document: {
-                        tenantId,
-                        movementType: 'OPENING_BALANCE',
-                        status: 'DRAFT',
-                    },
-                },
-                _sum: { qtyInBaseUnit: true },
-            });
-            const currentQty = Number(currentDraftAgg._sum.qtyInBaseUnit ?? 0);
-            const deltaQty = openingQtyTarget - currentQty;
-            const absDelta = Math.abs(deltaQty);
-
-            if (absDelta > 0) {
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId,
-                        itemId: id,
-                        locationId,
-                        movementType: 'OPENING_BALANCE',
-                        qtyIn: deltaQty > 0 ? absDelta : 0,
-                        qtyOut: deltaQty < 0 ? absDelta : 0,
-                        unitCost,
-                        totalValue: absDelta * unitCost,
-                        balanceAfter: openingQtyTarget,
-                        referenceType: 'ITEM_OPENING_EDIT',
-                        notes: 'Opening quantity edited from item update (delta posting).',
-                        createdBy: userId,
-                    },
-                });
-            }
-
             if (openingQtyTarget > 0) {
                 // Keep OPEN draft totals in sync with overwrite behavior:
                 // item-level openingQuantity edit is treated as the final total target.
@@ -829,7 +799,7 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                     },
                 });
 
-                // Keep exactly one draft line for this item/location so OPEN UI sum matches stock balance.
+                // Keep exactly one draft line for this item/location so OPEN UI sum matches draft total.
                 await tx.movementLine.deleteMany({
                     where: {
                         itemId: id,
@@ -899,23 +869,6 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                     },
                 });
             }
-
-            await tx.stockBalance.upsert({
-                where: {
-                    tenantId_itemId_locationId: { tenantId, itemId: id, locationId },
-                },
-                update: {
-                    qtyOnHand: openingQtyTarget,
-                    ...(unitCost > 0 ? { wacUnitCost: unitCost } : {}),
-                },
-                create: {
-                    tenantId,
-                    itemId: id,
-                    locationId,
-                    qtyOnHand: openingQtyTarget,
-                    wacUnitCost: unitCost > 0 ? unitCost : 0,
-                },
-            });
         }
 
         return row;
@@ -951,6 +904,16 @@ const updateItemImage = async (id, tenantId, imageUrl, oldImagePath) => {
 const deleteItem = async (id, tenantId) => {
     await getItemById(id, tenantId);
     const obStatus = await settingService.getObStatus(tenantId);
+
+    if (obStatus === 'OPEN') {
+        // During OPEN, physical stock is not posted yet; drafts live on movement_lines only.
+        return prisma.$transaction(async (tx) => {
+            await tx.movementLine.deleteMany({ where: { itemId: id } });
+            await tx.stockBalance.deleteMany({ where: { itemId: id, tenantId } });
+            await tx.inventoryLedger.deleteMany({ where: { itemId: id, tenantId } });
+            return tx.item.delete({ where: { id } });
+        });
+    }
 
     const stockCount = await prisma.stockBalance.count({
         where: { itemId: id, qtyOnHand: { gt: 0 } },
