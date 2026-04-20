@@ -69,12 +69,14 @@ async function seedRolePermissions() {
             throw new Error(`Role not found: ${roleCode}`);
         }
         let permissionRows;
+        let permissionCodes;
         if (roleCode === 'ORG_MANAGER') {
             permissionRows = await prisma.permission.findMany({
                 select: { id: true, code: true },
             });
+            permissionCodes = permissionRows.map((p) => p.code);
         } else {
-            const permissionCodes = getPermissionsForRole(roleCode);
+            permissionCodes = getPermissionsForRole(roleCode);
             permissionRows = await prisma.permission.findMany({
                 where: { code: { in: permissionCodes } },
                 select: { id: true, code: true },
