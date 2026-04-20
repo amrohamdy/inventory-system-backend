@@ -157,48 +157,94 @@ const postDocument = async (documentId, tenantId, userId, db = prisma) => {
                 const receiveUnitCost = Number(unitCost) > 0 ? Number(unitCost) : currentWac;
                 const receiveTotalValue = Number(totalValue) > 0 ? Number(totalValue) : (qty * receiveUnitCost);
 
-                // Calculate new WAC
-                const totalValueBefore = currentQty * currentWac;
-                const newTotalQty = currentQty + qty;
-                const newWac = newTotalQty > 0 ? ((totalValueBefore + receiveTotalValue) / newTotalQty) : 0;
-                const balanceAfter = currentQty + qty;
+                // OPENING_BALANCE while OB is open is an overwrite (stock = qty), not additive.
+                if (document.movementType === 'OPENING_BALANCE') {
+                    const targetQty = qty;
+                    const deltaQty = targetQty - currentQty;
+                    const isIncreaseDelta = deltaQty >= 0;
+                    const absDelta = Math.abs(deltaQty);
+                    const balanceAfter = targetQty;
+                    const deltaTotalValue = absDelta * receiveUnitCost;
 
-                // Create Ledger Entry for Receipt
-                await tx.inventoryLedger.create({
-                    data: {
-                        tenantId,
-                        itemId,
-                        locationId: destLoc,
-                        movementType: document.movementType === 'TRANSFER' ? 'TRANSFER_IN' : document.movementType,
-                        qtyIn: qty,
-                        qtyOut: 0,
-                        unitCost: receiveUnitCost,
-                        totalValue: receiveTotalValue,
-                        balanceAfter,
-                        referenceType: 'MOVEMENT',
-                        referenceId: document.id,
-                        referenceNo: document.documentNo,
-                        createdBy: userId
-                    }
-                });
+                    // Keep ledger consistency by recording the delta needed to reach target quantity.
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId,
+                            itemId,
+                            locationId: destLoc,
+                            movementType: document.movementType,
+                            qtyIn: isIncreaseDelta ? absDelta : 0,
+                            qtyOut: isIncreaseDelta ? 0 : absDelta,
+                            unitCost: receiveUnitCost,
+                            totalValue: deltaTotalValue,
+                            balanceAfter,
+                            referenceType: 'MOVEMENT',
+                            referenceId: document.id,
+                            referenceNo: document.documentNo,
+                            createdBy: userId
+                        }
+                    });
 
-                // Upsert Stock Balance
-                await tx.stockBalance.upsert({
-                    where: {
-                        tenantId_itemId_locationId: { tenantId, itemId, locationId: destLoc }
-                    },
-                    update: {
-                        qtyOnHand: { increment: qty },
-                        wacUnitCost: newWac
-                    },
-                    create: {
-                        tenantId,
-                        itemId,
-                        locationId: destLoc,
-                        qtyOnHand: qty,
-                        wacUnitCost: receiveUnitCost
-                    }
-                });
+                    await tx.stockBalance.upsert({
+                        where: {
+                            tenantId_itemId_locationId: { tenantId, itemId, locationId: destLoc }
+                        },
+                        update: {
+                            qtyOnHand: targetQty,
+                            wacUnitCost: receiveUnitCost
+                        },
+                        create: {
+                            tenantId,
+                            itemId,
+                            locationId: destLoc,
+                            qtyOnHand: targetQty,
+                            wacUnitCost: receiveUnitCost
+                        }
+                    });
+                } else {
+                    // Calculate new WAC
+                    const totalValueBefore = currentQty * currentWac;
+                    const newTotalQty = currentQty + qty;
+                    const newWac = newTotalQty > 0 ? ((totalValueBefore + receiveTotalValue) / newTotalQty) : 0;
+                    const balanceAfter = currentQty + qty;
+
+                    // Create Ledger Entry for Receipt
+                    await tx.inventoryLedger.create({
+                        data: {
+                            tenantId,
+                            itemId,
+                            locationId: destLoc,
+                            movementType: document.movementType === 'TRANSFER' ? 'TRANSFER_IN' : document.movementType,
+                            qtyIn: qty,
+                            qtyOut: 0,
+                            unitCost: receiveUnitCost,
+                            totalValue: receiveTotalValue,
+                            balanceAfter,
+                            referenceType: 'MOVEMENT',
+                            referenceId: document.id,
+                            referenceNo: document.documentNo,
+                            createdBy: userId
+                        }
+                    });
+
+                    // Upsert Stock Balance
+                    await tx.stockBalance.upsert({
+                        where: {
+                            tenantId_itemId_locationId: { tenantId, itemId, locationId: destLoc }
+                        },
+                        update: {
+                            qtyOnHand: { increment: qty },
+                            wacUnitCost: newWac
+                        },
+                        create: {
+                            tenantId,
+                            itemId,
+                            locationId: destLoc,
+                            qtyOnHand: qty,
+                            wacUnitCost: receiveUnitCost
+                        }
+                    });
+                }
             }
 
             // -- C. Adjustments (Positive or Negative handled dynamically) --

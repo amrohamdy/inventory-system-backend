@@ -158,7 +158,11 @@ const createMovementDraft = async (data, tenantId, userId, db = prisma) => {
                     );
                 }
 
-                const qtyReq = parseFloat(line.qtyRequested) || 0;
+                const qtyInput =
+                    line.qtyRequested !== undefined && line.qtyRequested !== null
+                        ? line.qtyRequested
+                        : line.quantity;
+                const qtyReq = parseFloat(qtyInput) || 0;
                 let unitCost = parseFloat(line.unitCost) || 0;
                 let totalValue = parseFloat(line.totalValue) || 0;
                 if (data.movementType === 'OPENING_BALANCE' && obCatalogPrices) {
@@ -341,7 +345,11 @@ const updateMovementDraft = async (id, data, tenantId) => {
                         );
                     }
 
-                    const qtyReq = parseFloat(line.qtyRequested) || 0;
+                    const qtyInput =
+                        line.qtyRequested !== undefined && line.qtyRequested !== null
+                            ? line.qtyRequested
+                            : line.quantity;
+                    const qtyReq = parseFloat(qtyInput) || 0;
                     let unitCost = parseFloat(line.unitCost) || 0;
                     let totalValue = parseFloat(line.totalValue) || 0;
                     if (obCatalogPrices) {
