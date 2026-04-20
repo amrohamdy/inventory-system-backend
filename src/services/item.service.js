@@ -825,6 +825,21 @@ const updateItem = async (id, data, tenantId, userId = null) => {
             });
 
             if (openingQtyTarget > 0) {
+                // Keep OPEN draft totals in sync with overwrite behavior:
+                // item-level openingQuantity edit is treated as the final total target.
+                // Remove any non-default-store draft lines for this item to avoid stale sums.
+                await tx.movementLine.deleteMany({
+                    where: {
+                        itemId: id,
+                        locationId: { not: locationId },
+                        document: {
+                            tenantId,
+                            movementType: 'OPENING_BALANCE',
+                            status: 'DRAFT',
+                        },
+                    },
+                });
+
                 await upsertOpeningBalanceForItemLocation(
                     tx,
                     {
@@ -839,10 +854,10 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                     movementService
                 );
             } else {
+                // For zero target, ensure no OPEN draft lines remain for this item in any location.
                 await tx.movementLine.deleteMany({
                     where: {
                         itemId: id,
-                        locationId,
                         document: {
                             tenantId,
                             movementType: 'OPENING_BALANCE',
@@ -1254,7 +1269,7 @@ const upsertOpeningBalanceForItemLocation = async (
 
     await checkOpeningBalanceAllowed(tenantId, txDate);
 
-    const existingDraftLine = await tx.movementLine.findFirst({
+    const existingDraftLines = await tx.movementLine.findMany({
         where: {
             itemId,
             locationId,
@@ -1266,33 +1281,11 @@ const upsertOpeningBalanceForItemLocation = async (
         },
         include: {
             document: {
-                select: { id: true, documentNo: true },
+                select: { id: true, documentNo: true, createdAt: true },
             },
         },
-        orderBy: [{ document: { createdAt: 'desc' } }, { id: 'desc' }],
+        orderBy: [{ document: { createdAt: 'asc' } }, { id: 'asc' }],
     });
-
-    if (existingDraftLine) {
-        await tx.movementLine.update({
-            where: { id: existingDraftLine.id },
-            data: {
-                qtyRequested: qty,
-                qtyInBaseUnit: qty,
-                unitCost,
-                totalValue,
-            },
-        });
-
-        await tx.movementDocument.update({
-            where: { id: existingDraftLine.documentId },
-            data: {
-                documentDate: txDate,
-                notes: `Opening Balance import (multi-location) — includes ${itemName}`,
-            },
-        });
-
-        return { kind: 'draft_updated', documentNo: existingDraftLine.document.documentNo };
-    }
 
     const tenantDraftDoc = await tx.movementDocument.findFirst({
         where: {
@@ -1304,10 +1297,28 @@ const upsertOpeningBalanceForItemLocation = async (
         select: { id: true, documentNo: true },
     });
 
-    if (tenantDraftDoc) {
+    // Canonical draft doc for this item+location line.
+    // Preference: earliest draft doc already containing this item+location, otherwise tenant earliest draft doc.
+    const canonicalDoc = existingDraftLines.length > 0
+        ? {
+            id: existingDraftLines[0].document.id,
+            documentNo: existingDraftLines[0].document.documentNo,
+        }
+        : tenantDraftDoc;
+
+    if (canonicalDoc) {
+        if (existingDraftLines.length > 0) {
+            // Dedupe: ensure a single source of truth line for this item+location across OPEN drafts.
+            await tx.movementLine.deleteMany({
+                where: {
+                    id: { in: existingDraftLines.map((ln) => ln.id) },
+                },
+            });
+        }
+
         await tx.movementLine.create({
             data: {
-                documentId: tenantDraftDoc.id,
+                documentId: canonicalDoc.id,
                 itemId,
                 locationId,
                 qtyRequested: qty,
@@ -1318,14 +1329,17 @@ const upsertOpeningBalanceForItemLocation = async (
         });
 
         await tx.movementDocument.update({
-            where: { id: tenantDraftDoc.id },
+            where: { id: canonicalDoc.id },
             data: {
                 documentDate: txDate,
                 notes: `Opening Balance import (multi-location) — includes ${itemName}`,
             },
         });
 
-        return { kind: 'draft_line_added', documentNo: tenantDraftDoc.documentNo };
+        return {
+            kind: existingDraftLines.length > 0 ? 'draft_updated' : 'draft_line_added',
+            documentNo: canonicalDoc.documentNo,
+        };
     }
 
     const obDoc = await movementService.createMovementDraft(
