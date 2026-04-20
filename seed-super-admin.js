@@ -68,17 +68,24 @@ async function seedRolePermissions() {
         if (!role) {
             throw new Error(`Role not found: ${roleCode}`);
         }
-        const permissionCodes = getPermissionsForRole(roleCode);
-        const permissionRows = await prisma.permission.findMany({
-            where: { code: { in: permissionCodes } },
-            select: { id: true, code: true },
-        });
-        const allowedIds = permissionRows.map((p) => p.id);
-        if (permissionRows.length !== permissionCodes.length) {
-            const found = new Set(permissionRows.map((p) => p.code));
-            const missing = permissionCodes.filter((c) => !found.has(c));
-            throw new Error(`Permission(s) missing in DB: ${missing.join(', ')}`);
+        let permissionRows;
+        if (roleCode === 'ORG_MANAGER') {
+            permissionRows = await prisma.permission.findMany({
+                select: { id: true, code: true },
+            });
+        } else {
+            const permissionCodes = getPermissionsForRole(roleCode);
+            permissionRows = await prisma.permission.findMany({
+                where: { code: { in: permissionCodes } },
+                select: { id: true, code: true },
+            });
+            if (permissionRows.length !== permissionCodes.length) {
+                const found = new Set(permissionRows.map((p) => p.code));
+                const missing = permissionCodes.filter((c) => !found.has(c));
+                throw new Error(`Permission(s) missing in DB: ${missing.join(', ')}`);
+            }
         }
+        const allowedIds = permissionRows.map((p) => p.id);
 
         const removed = await prisma.rolePermission.deleteMany({
             where: {

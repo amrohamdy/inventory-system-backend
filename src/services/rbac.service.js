@@ -28,6 +28,13 @@ const loadPermissionCodesForRoleId = async (roleId) => {
     return rows.map((r) => r.permission.code);
 };
 
+const loadAllPermissionCodes = async () => {
+    const rows = await prisma.permission.findMany({
+        select: { code: true },
+    });
+    return rows.map((r) => r.code);
+};
+
 /**
  * Resolve role UUID by stable code (cached).
  */
@@ -40,13 +47,20 @@ const getRoleIdByCode = async (code) => {
 };
 
 /**
- * Permissions for a membership: DB-driven; SUPER_ADMIN/ORG_MANAGER mirror ADMIN in DB.
+ * Permissions for a membership: DB-driven.
+ * ORG_MANAGER is intentionally granted all available permissions.
+ * SUPER_ADMIN keeps legacy ADMIN-mirror fallback when explicit links are missing.
  */
 const getPermissionsForMembership = async ({ roleId, roleCode }) => {
+    const rc = normalizeRole(roleCode);
+    if (rc === 'ORG_MANAGER') {
+        const allCodes = await loadAllPermissionCodes();
+        if (allCodes.length > 0) return allCodes;
+    }
+
     const codes = await loadPermissionCodesForRoleId(roleId);
     if (codes.length > 0) return codes;
-    const rc = normalizeRole(roleCode);
-    if (rc === 'ORG_MANAGER' || rc === 'SUPER_ADMIN') {
+    if (rc === 'SUPER_ADMIN') {
         const adminId = await getRoleIdByCode('ADMIN');
         if (adminId) return loadPermissionCodesForRoleId(adminId);
     }
