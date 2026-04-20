@@ -8,61 +8,62 @@ datasource db {
 }
 
 model Tenant {
-  id                String              @id @default(uuid()) @db.Uuid
-  name              String
-  slug              String              @unique
-  subscriptionTier  String              @default("starter")
-  logoUrl           String?
-  address           String?
-  phone             String?
-  email             String?
-  isActive          Boolean             @default(true)
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  planType          PlanType            @default(BASIC)
-  subStatus         TenantSubStatus     @default(TRIAL)
-  adminStatus       TenantAdminStatus   @default(ACTIVE)
-  licenseStartDate  DateTime            @default(now())
-  licenseEndDate    DateTime?
-  maxUsers          Int                 @default(10)
-  hasBranches       Boolean             @default(false)
-  maxBranches       Int                 @default(0)
-  parentId          String?             @db.Uuid
-  approvalRequests  ApprovalRequest[]
-  auditLogs         AuditLog[]
-  categories        Category[]
-  departments       Department[]
-  DocSequence       DocSequence[]
-  generatedReports  GeneratedReport[]
-  getPasses         GetPass[]
-  grnImports        GrnImport[]
-  importSessions    ImportSession[]
-  inventoryLedger   InventoryLedger[]
-  itemMappings      ItemMapping[]
-  items             Item[]
-  locations         Location[]
-  movementDocuments MovementDocument[]
-  periodCloses      PeriodClose[]
-  savedStockReports SavedStockReport[]
-  stockBalances     StockBalance[]
-  countSessions     StockCountSession[]
-  storeIssues       StoreIssue[]
-  storeRequisitions StoreRequisition[]
-  storeTransfers    StoreTransfer[]
-  subcategories     Subcategory[]
-  subscription      Subscription?
-  superAdminLogs    SuperAdminLog[]     @relation("SuperAdminLogTenant")
-  suppliers         Supplier[]
-  memberships       TenantMember[]
-  roles             Role[]
-  tenantSettings    TenantSetting[]
-  tenantUsage       TenantUsage?
-  parent            Tenant?             @relation("TenantHierarchy", fields: [parentId], references: [id])
-  children          Tenant[]            @relation("TenantHierarchy")
-  units             Unit[]
-  uomMappings       UomMapping[]
-  vendorMappings    VendorMapping[]
-  incomingGetPasses GetPass[]         @relation("GetPassTargetTenant")
+  id                  String               @id @default(uuid()) @db.Uuid
+  name                String
+  slug                String               @unique
+  subscriptionTier    String               @default("starter")
+  logoUrl             String?
+  address             String?
+  phone               String?
+  email               String?
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  planType            PlanType             @default(BASIC)
+  subStatus           TenantSubStatus      @default(TRIAL)
+  adminStatus         TenantAdminStatus    @default(ACTIVE)
+  licenseStartDate    DateTime             @default(now())
+  licenseEndDate      DateTime?
+  maxUsers            Int                  @default(10)
+  hasBranches         Boolean              @default(false)
+  maxBranches         Int                  @default(0)
+  parentId            String?              @db.Uuid
+  approvalRequests    ApprovalRequest[]
+  auditLogs           AuditLog[]
+  categories          Category[]
+  departments         Department[]
+  DocSequence         DocSequence[]
+  emailLogs           EmailLog[]
+  generatedReports    GeneratedReport[]
+  getPasses           GetPass[]
+  grnImports          GrnImport[]
+  importSessions      ImportSession[]
+  inventoryLedger     InventoryLedger[]
+  itemMappings        ItemMapping[]
+  items               Item[]
+  locations           Location[]
+  movementDocuments   MovementDocument[]
+  periodCloses        PeriodClose[]
+  savedStockReports   SavedStockReport[]
+  stockBalances       StockBalance[]
+  countSessions       StockCountSession[]
+  storeIssues         StoreIssue[]
+  storeRequisitions   StoreRequisition[]
+  storeTransfers      StoreTransfer[]
+  subcategories       Subcategory[]
+  subscription        Subscription?
+  superAdminLogs      SuperAdminLog[]      @relation("SuperAdminLogTenant")
+  suppliers           Supplier[]
+  memberships         TenantMember[]
+  roles               Role[]
+  tenantSettings      TenantSetting[]
+  tenantUsage         TenantUsage?
+  parent              Tenant?              @relation("TenantHierarchy", fields: [parentId], references: [id])
+  children            Tenant[]             @relation("TenantHierarchy")
+  units               Unit[]
+  uomMappings         UomMapping[]
+  vendorMappings      VendorMapping[]
+  incomingGetPasses   GetPass[]            @relation("GetPassTargetTenant")
   systemNotifications SystemNotification[]
 
   @@index([parentId])
@@ -71,58 +72,58 @@ model Tenant {
 }
 
 model User {
-  id                 String              @id @default(uuid()) @db.Uuid
-  email              String              @unique
-  passwordHash       String
-  firstName          String
-  lastName           String
-  department         String?
-  phone              String?
-  isActive           Boolean             @default(true)
-  lastLoginAt        DateTime?
-  permissionVersion  Int                 @default(0)
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  approvalStepsActed ApprovalStep[]
-  auditLogs          AuditLog[]
-  generatedReports   GeneratedReport[]   @relation("ReportGeneratedBy")
-  getPassReturnsReg  GetPassReturn[]     @relation("GetPassReturnRegisteredBy")
-  getPassReturnsSec  GetPassReturn[]     @relation("GetPassReturnSecurityBy")
-  getPassesCheckout  GetPass[]           @relation("GetPassCheckedOutBy")
-  getPassesClosed    GetPass[]           @relation("GetPassClosedBy")
-  getPassesCreated   GetPass[]           @relation("GetPassCreatedBy")
-  getPassesDeptApp   GetPass[]           @relation("GetPassDeptApprover")
-  getPassesFinApp    GetPass[]           @relation("GetPassFinanceApprover")
-  getPassesCostCtrlApp GetPass[]         @relation("GetPassCostControlApprover")
-  getPassesGmApp     GetPass[]           @relation("GetPassGmApprover")
-  getPassesSecApp    GetPass[]           @relation("GetPassSecurityApprover")
-  getPassesDestinationSecApp GetPass[] @relation("GetPassDestinationSecurityApprover")
-  getPassesDestinationSecExit GetPass[] @relation("GetPassDestinationSecurityExitBy")
-  getPassesReceived  GetPass[]           @relation("GetPassReceivedAtDestinationBy")
-  getPassesDestinationDeptAccepted GetPass[] @relation("GetPassDestinationDeptAccepter")
-  grnApproved        GrnImport[]         @relation("GrnApprovedBy")
-  grnImported        GrnImport[]         @relation("GrnImportedBy")
-  grnLastEdited      GrnImport[]         @relation("GrnLastEditedBy")
-  grnPosted          GrnImport[]         @relation("GrnPostedBy")
-  grnRejected        GrnImport[]         @relation("GrnRejectedBy")
-  importSessions     ImportSession[]
-  ledgerEntries      InventoryLedger[]   @relation("LedgerCreatedBy")
-  locationUsers      LocationUser[]
-  movementsCreated   MovementDocument[]  @relation("MovementCreatedBy")
-  refreshTokens      RefreshToken[]
-  stockReports       SavedStockReport[]
-  countSessions      StockCountSession[]
-  storeIssues        StoreIssue[]        @relation("IssueIssuedBy")
-  reqApproved        StoreRequisition[]  @relation("ReqApprovedBy")
-  reqRejected        StoreRequisition[]  @relation("ReqRejectedBy")
-  reqRequested       StoreRequisition[]  @relation("ReqRequestedBy")
-  trfApproved        StoreTransfer[]     @relation("TrfApprovedBy")
-  trfReceived        StoreTransfer[]     @relation("TrfReceivedBy")
-  trfRejected        StoreTransfer[]     @relation("TrfRejectedBy")
-  trfRequested       StoreTransfer[]     @relation("TrfRequestedBy")
-  adminLogs          SuperAdminLog[]     @relation("AdminLogUser")
-  memberships        TenantMember[]
-  systemNotifications SystemNotification[]
+  id                               String               @id @default(uuid()) @db.Uuid
+  email                            String               @unique
+  passwordHash                     String
+  firstName                        String
+  lastName                         String
+  department                       String?
+  phone                            String?
+  isActive                         Boolean              @default(true)
+  lastLoginAt                      DateTime?
+  permissionVersion                Int                  @default(0)
+  createdAt                        DateTime             @default(now())
+  updatedAt                        DateTime             @updatedAt
+  approvalStepsActed               ApprovalStep[]
+  auditLogs                        AuditLog[]
+  generatedReports                 GeneratedReport[]    @relation("ReportGeneratedBy")
+  getPassReturnsReg                GetPassReturn[]      @relation("GetPassReturnRegisteredBy")
+  getPassReturnsSec                GetPassReturn[]      @relation("GetPassReturnSecurityBy")
+  getPassesCheckout                GetPass[]            @relation("GetPassCheckedOutBy")
+  getPassesClosed                  GetPass[]            @relation("GetPassClosedBy")
+  getPassesCreated                 GetPass[]            @relation("GetPassCreatedBy")
+  getPassesDeptApp                 GetPass[]            @relation("GetPassDeptApprover")
+  getPassesFinApp                  GetPass[]            @relation("GetPassFinanceApprover")
+  getPassesCostCtrlApp             GetPass[]            @relation("GetPassCostControlApprover")
+  getPassesGmApp                   GetPass[]            @relation("GetPassGmApprover")
+  getPassesSecApp                  GetPass[]            @relation("GetPassSecurityApprover")
+  getPassesDestinationSecApp       GetPass[]            @relation("GetPassDestinationSecurityApprover")
+  getPassesDestinationSecExit      GetPass[]            @relation("GetPassDestinationSecurityExitBy")
+  getPassesReceived                GetPass[]            @relation("GetPassReceivedAtDestinationBy")
+  getPassesDestinationDeptAccepted GetPass[]            @relation("GetPassDestinationDeptAccepter")
+  grnApproved                      GrnImport[]          @relation("GrnApprovedBy")
+  grnImported                      GrnImport[]          @relation("GrnImportedBy")
+  grnLastEdited                    GrnImport[]          @relation("GrnLastEditedBy")
+  grnPosted                        GrnImport[]          @relation("GrnPostedBy")
+  grnRejected                      GrnImport[]          @relation("GrnRejectedBy")
+  importSessions                   ImportSession[]
+  ledgerEntries                    InventoryLedger[]    @relation("LedgerCreatedBy")
+  locationUsers                    LocationUser[]
+  movementsCreated                 MovementDocument[]   @relation("MovementCreatedBy")
+  refreshTokens                    RefreshToken[]
+  stockReports                     SavedStockReport[]
+  countSessions                    StockCountSession[]
+  storeIssues                      StoreIssue[]         @relation("IssueIssuedBy")
+  reqApproved                      StoreRequisition[]   @relation("ReqApprovedBy")
+  reqRejected                      StoreRequisition[]   @relation("ReqRejectedBy")
+  reqRequested                     StoreRequisition[]   @relation("ReqRequestedBy")
+  trfApproved                      StoreTransfer[]      @relation("TrfApprovedBy")
+  trfReceived                      StoreTransfer[]      @relation("TrfReceivedBy")
+  trfRejected                      StoreTransfer[]      @relation("TrfRejectedBy")
+  trfRequested                     StoreTransfer[]      @relation("TrfRequestedBy")
+  adminLogs                        SuperAdminLog[]      @relation("AdminLogUser")
+  memberships                      TenantMember[]
+  systemNotifications              SystemNotification[]
 
   @@map("users")
 }
@@ -136,6 +137,39 @@ model PasswordReset {
 
   @@index([email])
   @@map("password_resets")
+}
+
+/// Durable record of every outgoing email. Used for audit + async retry when SMTP is flaky.
+/// Approval-workflow emails (GRN/Breakage/Transfer/StockReport) are business-critical,
+/// so we never rely on in-memory send; a cron (scheduler.js) re-drives PENDING rows.
+model EmailLog {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String?     @db.Uuid
+  to          String
+  cc          String?
+  subject     String
+  template    String?
+  body        String
+  status      EmailStatus @default(PENDING)
+  attempts    Int         @default(0)
+  lastError   String?
+  nextRetryAt DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextRetryAt])
+  @@index([tenantId])
+  @@map("email_logs")
+}
+
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+  DEAD
 }
 
 /// Stable role codes for memberships; keep in sync with `Role.code` and API validators.
@@ -487,23 +521,23 @@ model InventoryLedger {
 }
 
 model StockBalance {
-  tenantId     String   @db.Uuid
-  itemId       String   @db.Uuid
-  locationId   String   @db.Uuid
-  qtyOnHand    Decimal  @default(0) @db.Decimal(15, 4)
-  qtyBlocked   Decimal  @default(0) @db.Decimal(15, 4)
+  tenantId       String   @db.Uuid
+  itemId         String   @db.Uuid
+  locationId     String   @db.Uuid
+  qtyOnHand      Decimal  @default(0) @db.Decimal(15, 4)
+  qtyBlocked     Decimal  @default(0) @db.Decimal(15, 4)
   /// Cumulative qty exited via finalized LOST documents (GM approval), per item/location.
-  totalQtyLost Decimal  @default(0) @db.Decimal(15, 4)
+  totalQtyLost   Decimal  @default(0) @db.Decimal(15, 4)
   /// Cumulative qty exited via finalized BREAKAGE documents (GM approval), per item/location.
-  totalQtyDamage Decimal @default(0) @db.Decimal(15, 4)
-  wacUnitCost  Decimal  @default(0) @db.Decimal(15, 4)
-  lastUpdated  DateTime @default(now()) @updatedAt
-  maxQty       Decimal  @default(0) @db.Decimal(15, 4)
-  minQty       Decimal  @default(0) @db.Decimal(15, 4)
-  reorderPoint Decimal  @default(0) @db.Decimal(15, 4)
-  item         Item     @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  location     Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  totalQtyDamage Decimal  @default(0) @db.Decimal(15, 4)
+  wacUnitCost    Decimal  @default(0) @db.Decimal(15, 4)
+  lastUpdated    DateTime @default(now()) @updatedAt
+  maxQty         Decimal  @default(0) @db.Decimal(15, 4)
+  minQty         Decimal  @default(0) @db.Decimal(15, 4)
+  reorderPoint   Decimal  @default(0) @db.Decimal(15, 4)
+  item           Item     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location       Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
 
   @@id([tenantId, itemId, locationId])
   @@index([tenantId])
@@ -597,19 +631,19 @@ model ApprovalRequest {
 }
 
 model ApprovalStep {
-  id                   String                       @id @default(uuid()) @db.Uuid
-  requestId            String                       @db.Uuid
-  stepNumber           Int
-  requiredRoleId       String                       @db.Uuid
-  status               ApprovalStepStatus           @default(PENDING)
-  actedBy              String?                      @db.Uuid
-  actedAt              DateTime?
-  comment              String?
+  id                 String                       @id @default(uuid()) @db.Uuid
+  requestId          String                       @db.Uuid
+  stepNumber         Int
+  requiredRoleId     String                       @db.Uuid
+  status             ApprovalStepStatus           @default(PENDING)
+  actedBy            String?                      @db.Uuid
+  actedAt            DateTime?
+  comment            String?
   /// For get-pass return workflows: accountability chosen when this step was approved.
-  accountabilityType   GetPassReturnAccountability?
-  actedByUser          User?                        @relation(fields: [actedBy], references: [id])
-  request              ApprovalRequest              @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  requiredRole         Role                         @relation(fields: [requiredRoleId], references: [id])
+  accountabilityType GetPassReturnAccountability?
+  actedByUser        User?                        @relation(fields: [actedBy], references: [id])
+  request            ApprovalRequest              @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requiredRole       Role                         @relation(fields: [requiredRoleId], references: [id])
 
   @@unique([requestId, stepNumber])
   @@index([requiredRoleId])
@@ -768,35 +802,35 @@ model DocSequence {
 }
 
 model GrnImport {
-  id                 String    @id @default(uuid()) @db.Uuid
-  tenantId           String    @db.Uuid
-  grnNumber          String
-  vendorId           String?   @db.Uuid
-  vendorNameSnapshot String
-  locationId         String    @db.Uuid
-  receivingDate      DateTime
-  pdfAttachmentUrl   String
-  status                   GrnStatus @default(DRAFT)
-  rejectionReason          String?
-  notes                    String?
-  isEditedAfterRejection   Boolean   @default(false)
-  lastEditedBy             String?   @db.Uuid
-  importedBy               String    @db.Uuid
-  approvedBy               String?   @db.Uuid
-  rejectedBy               String?   @db.Uuid
-  postedBy                 String?   @db.Uuid
-  postedAt                 DateTime?
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
-  approvedByUser           User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
-  importedByUser           User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
-  lastEditedByUser         User?     @relation("GrnLastEditedBy", fields: [lastEditedBy], references: [id])
-  location                 Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  postedByUser       User?     @relation("GrnPostedBy", fields: [postedBy], references: [id])
-  rejectedByUser     User?     @relation("GrnRejectedBy", fields: [rejectedBy], references: [id])
-  tenant             Tenant    @relation(fields: [tenantId], references: [id])
-  vendor             Supplier? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
-  lines              GrnLine[]
+  id                     String    @id @default(uuid()) @db.Uuid
+  tenantId               String    @db.Uuid
+  grnNumber              String
+  vendorId               String?   @db.Uuid
+  vendorNameSnapshot     String
+  locationId             String    @db.Uuid
+  receivingDate          DateTime
+  pdfAttachmentUrl       String
+  status                 GrnStatus @default(DRAFT)
+  rejectionReason        String?
+  notes                  String?
+  isEditedAfterRejection Boolean   @default(false)
+  lastEditedBy           String?   @db.Uuid
+  importedBy             String    @db.Uuid
+  approvedBy             String?   @db.Uuid
+  rejectedBy             String?   @db.Uuid
+  postedBy               String?   @db.Uuid
+  postedAt               DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  approvedByUser         User?     @relation("GrnApprovedBy", fields: [approvedBy], references: [id])
+  importedByUser         User      @relation("GrnImportedBy", fields: [importedBy], references: [id])
+  lastEditedByUser       User?     @relation("GrnLastEditedBy", fields: [lastEditedBy], references: [id])
+  location               Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  postedByUser           User?     @relation("GrnPostedBy", fields: [postedBy], references: [id])
+  rejectedByUser         User?     @relation("GrnRejectedBy", fields: [rejectedBy], references: [id])
+  tenant                 Tenant    @relation(fields: [tenantId], references: [id])
+  vendor                 Supplier? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  lines                  GrnLine[]
 
   @@unique([tenantId, grnNumber])
   @@index([tenantId, status])
@@ -1095,74 +1129,74 @@ model TenantSetting {
 }
 
 model GetPass {
-  id                 String        @id @default(uuid()) @db.Uuid
-  tenantId           String        @db.Uuid
-  passNo             String
-  transferType       GetPassType
+  id                            String             @id @default(uuid()) @db.Uuid
+  tenantId                      String             @db.Uuid
+  passNo                        String
+  transferType                  GetPassType
   /// When true, items are sent to another hotel under the same organization (see targetTenantId).
-  isInternalTransfer Boolean       @default(false)
+  isInternalTransfer            Boolean            @default(false)
   /// Receiving hotel (tenant) for internal transfers; must share the same organization root as tenantId.
-  targetTenantId     String?       @db.Uuid
+  targetTenantId                String?            @db.Uuid
   /// Expected return date for temporary transfers (may mirror expectedReturnDate for TEMPORARY).
-  returnDate         DateTime?
-  departmentId       String?       @db.Uuid
-  borrowingEntity    String
-  expectedReturnDate DateTime?
-  status             GetPassStatus @default(DRAFT)
-  deptApprovedBy     String?       @db.Uuid
-  deptApprovedAt     DateTime?
-  costControlApprovedBy String?    @db.Uuid
-  costControlApprovedAt DateTime?
-  financeApprovedBy  String?       @db.Uuid
-  financeApprovedAt  DateTime?
-  gmApprovedBy       String?       @db.Uuid
-  gmApprovedAt       DateTime?
-  securityApprovedBy String?       @db.Uuid
-  securityApprovedAt DateTime?
+  returnDate                    DateTime?
+  departmentId                  String?            @db.Uuid
+  borrowingEntity               String
+  expectedReturnDate            DateTime?
+  status                        GetPassStatus      @default(DRAFT)
+  deptApprovedBy                String?            @db.Uuid
+  deptApprovedAt                DateTime?
+  costControlApprovedBy         String?            @db.Uuid
+  costControlApprovedAt         DateTime?
+  financeApprovedBy             String?            @db.Uuid
+  financeApprovedAt             DateTime?
+  gmApprovedBy                  String?            @db.Uuid
+  gmApprovedAt                  DateTime?
+  securityApprovedBy            String?            @db.Uuid
+  securityApprovedAt            DateTime?
   /// Destination hotel: security verification at entry gate (internal transfers; set on receipt confirmation).
-  destinationSecurityApprovedBy String?       @db.Uuid
+  destinationSecurityApprovedBy String?            @db.Uuid
   destinationSecurityApprovedAt DateTime?
   /// Destination hotel: security confirmation that return shipment physically exited destination gate.
-  destinationSecurityExitBy String?       @db.Uuid
-  destinationSecurityExitAt DateTime?
-  checkedOutBy       String?       @db.Uuid
-  checkedOutAt       DateTime?
-  closedBy           String?       @db.Uuid
-  closedAt           DateTime?
-  receivedById       String?       @db.Uuid
-  receivedAt         DateTime?
-  receivedCondition  String?
-  receivedNotes      String?
+  destinationSecurityExitBy     String?            @db.Uuid
+  destinationSecurityExitAt     DateTime?
+  checkedOutBy                  String?            @db.Uuid
+  checkedOutAt                  DateTime?
+  closedBy                      String?            @db.Uuid
+  closedAt                      DateTime?
+  receivedById                  String?            @db.Uuid
+  receivedAt                    DateTime?
+  receivedCondition             String?
+  receivedNotes                 String?
   /// Destination hotel: department manager final acceptance (internal transfers).
-  destinationDeptAcceptedAt DateTime?
-  destinationDeptAcceptedBy String?       @db.Uuid
+  destinationDeptAcceptedAt     DateTime?
+  destinationDeptAcceptedBy     String?            @db.Uuid
   /// Destination hotel: selected receiving department at final acceptance.
-  destinationDepartmentId   String?       @db.Uuid
+  destinationDepartmentId       String?            @db.Uuid
   /// Destination hotel: selected receiving location/store at final acceptance.
-  destinationLocationId     String?       @db.Uuid
-  reason             String?
-  notes              String?
-  rejectionReason    String?
-  createdBy          String        @db.Uuid
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
-  lines              GetPassLine[]
-  checkoutUser       User?         @relation("GetPassCheckedOutBy", fields: [checkedOutBy], references: [id])
-  closingUser        User?         @relation("GetPassClosedBy", fields: [closedBy], references: [id])
-  createdByUser      User          @relation("GetPassCreatedBy", fields: [createdBy], references: [id])
-  department         Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  deptApprover       User?         @relation("GetPassDeptApprover", fields: [deptApprovedBy], references: [id])
-  costControlApprover User?        @relation("GetPassCostControlApprover", fields: [costControlApprovedBy], references: [id])
-  financeApprover    User?         @relation("GetPassFinanceApprover", fields: [financeApprovedBy], references: [id])
-  gmApprover         User?         @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
-  securityApprover   User?         @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
-  destinationSecurityApprover User? @relation("GetPassDestinationSecurityApprover", fields: [destinationSecurityApprovedBy], references: [id])
-  destinationSecurityExitUser User? @relation("GetPassDestinationSecurityExitBy", fields: [destinationSecurityExitBy], references: [id])
-  receivedBy         User?         @relation("GetPassReceivedAtDestinationBy", fields: [receivedById], references: [id])
-  destinationDeptAccepter User?    @relation("GetPassDestinationDeptAccepter", fields: [destinationDeptAcceptedBy], references: [id])
-  tenant             Tenant        @relation(fields: [tenantId], references: [id])
-  targetTenant       Tenant?       @relation("GetPassTargetTenant", fields: [targetTenantId], references: [id], onDelete: SetNull)
-  movementDocuments  MovementDocument[]
+  destinationLocationId         String?            @db.Uuid
+  reason                        String?
+  notes                         String?
+  rejectionReason               String?
+  createdBy                     String             @db.Uuid
+  createdAt                     DateTime           @default(now())
+  updatedAt                     DateTime           @updatedAt
+  lines                         GetPassLine[]
+  checkoutUser                  User?              @relation("GetPassCheckedOutBy", fields: [checkedOutBy], references: [id])
+  closingUser                   User?              @relation("GetPassClosedBy", fields: [closedBy], references: [id])
+  createdByUser                 User               @relation("GetPassCreatedBy", fields: [createdBy], references: [id])
+  department                    Department?        @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  deptApprover                  User?              @relation("GetPassDeptApprover", fields: [deptApprovedBy], references: [id])
+  costControlApprover           User?              @relation("GetPassCostControlApprover", fields: [costControlApprovedBy], references: [id])
+  financeApprover               User?              @relation("GetPassFinanceApprover", fields: [financeApprovedBy], references: [id])
+  gmApprover                    User?              @relation("GetPassGmApprover", fields: [gmApprovedBy], references: [id])
+  securityApprover              User?              @relation("GetPassSecurityApprover", fields: [securityApprovedBy], references: [id])
+  destinationSecurityApprover   User?              @relation("GetPassDestinationSecurityApprover", fields: [destinationSecurityApprovedBy], references: [id])
+  destinationSecurityExitUser   User?              @relation("GetPassDestinationSecurityExitBy", fields: [destinationSecurityExitBy], references: [id])
+  receivedBy                    User?              @relation("GetPassReceivedAtDestinationBy", fields: [receivedById], references: [id])
+  destinationDeptAccepter       User?              @relation("GetPassDestinationDeptAccepter", fields: [destinationDeptAcceptedBy], references: [id])
+  tenant                        Tenant             @relation(fields: [tenantId], references: [id])
+  targetTenant                  Tenant?            @relation("GetPassTargetTenant", fields: [targetTenantId], references: [id], onDelete: SetNull)
+  movementDocuments             MovementDocument[]
 
   @@unique([tenantId, passNo])
   @@index([tenantId])
@@ -1194,28 +1228,28 @@ model SystemNotification {
 }
 
 model GetPassLine {
-  id           String            @id @default(uuid()) @db.Uuid
-  getPassId    String            @db.Uuid
-  itemId       String            @db.Uuid
-  locationId   String            @db.Uuid
-  qty          Decimal           @db.Decimal(15, 4)
-  qtyReturned  Decimal           @default(0) @db.Decimal(15, 4)
-  returnedGoodQty Decimal        @default(0) @db.Decimal(15, 4)
-  returnedDamagedQty Decimal     @default(0) @db.Decimal(15, 4)
-  returnedLostQty Decimal        @default(0) @db.Decimal(15, 4)
-  damagePhotos Json?
-  qtyReceivedAtDestination Decimal @default(0) @db.Decimal(15, 4)
-  qtyDiscrepancyAtDestination Decimal @default(0) @db.Decimal(15, 4)
-  unitCost     Decimal           @default(0) @db.Decimal(15, 4)
-  conditionOut String?
-  receivedCondition String?
-  discrepancyReason String?
-  status       GetPassLineStatus @default(PENDING)
-  notes        String?
-  getPass      GetPass           @relation(fields: [getPassId], references: [id], onDelete: Cascade)
-  item         Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  location     Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  returns      GetPassReturn[]
+  id                          String            @id @default(uuid()) @db.Uuid
+  getPassId                   String            @db.Uuid
+  itemId                      String            @db.Uuid
+  locationId                  String            @db.Uuid
+  qty                         Decimal           @db.Decimal(15, 4)
+  qtyReturned                 Decimal           @default(0) @db.Decimal(15, 4)
+  returnedGoodQty             Decimal           @default(0) @db.Decimal(15, 4)
+  returnedDamagedQty          Decimal           @default(0) @db.Decimal(15, 4)
+  returnedLostQty             Decimal           @default(0) @db.Decimal(15, 4)
+  damagePhotos                Json?
+  qtyReceivedAtDestination    Decimal           @default(0) @db.Decimal(15, 4)
+  qtyDiscrepancyAtDestination Decimal           @default(0) @db.Decimal(15, 4)
+  unitCost                    Decimal           @default(0) @db.Decimal(15, 4)
+  conditionOut                String?
+  receivedCondition           String?
+  discrepancyReason           String?
+  status                      GetPassLineStatus @default(PENDING)
+  notes                       String?
+  getPass                     GetPass           @relation(fields: [getPassId], references: [id], onDelete: Cascade)
+  item                        Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location                    Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  returns                     GetPassReturn[]
 
   @@index([getPassId])
   @@index([itemId])
@@ -1224,27 +1258,27 @@ model GetPassLine {
 }
 
 model GetPassReturn {
-  id                 String      @id @default(uuid()) @db.Uuid
-  getPassLineId      String      @db.Uuid
+  id                 String                       @id @default(uuid()) @db.Uuid
+  getPassLineId      String                       @db.Uuid
   type               GetPassReturnType?
   accountability     GetPassReturnAccountability?
-  qtyReturned        Decimal     @db.Decimal(15, 4)
+  qtyReturned        Decimal                      @db.Decimal(15, 4)
   /// Quantity received in good condition (restores stock).
-  qtyGood            Decimal     @default(0) @db.Decimal(15, 4)
+  qtyGood            Decimal                      @default(0) @db.Decimal(15, 4)
   /// Written off; does not restore stock.
-  qtyLost            Decimal     @default(0) @db.Decimal(15, 4)
+  qtyLost            Decimal                      @default(0) @db.Decimal(15, 4)
   /// Returned but removed via breakage (GET_PASS_RETURN in + BREAKAGE out).
-  qtyDamaged         Decimal     @default(0) @db.Decimal(15, 4)
-  isLost             Boolean     @default(false)
-  isDamaged          Boolean     @default(false)
+  qtyDamaged         Decimal                      @default(0) @db.Decimal(15, 4)
+  isLost             Boolean                      @default(false)
+  isDamaged          Boolean                      @default(false)
   conditionIn        String?
-  returnDate         DateTime    @default(now())
-  registeredBy       String      @db.Uuid
-  securityVerifiedBy String?     @db.Uuid
+  returnDate         DateTime                     @default(now())
+  registeredBy       String                       @db.Uuid
+  securityVerifiedBy String?                      @db.Uuid
   notes              String?
-  getPassLine        GetPassLine @relation(fields: [getPassLineId], references: [id], onDelete: Cascade)
-  registeredByUser   User        @relation("GetPassReturnRegisteredBy", fields: [registeredBy], references: [id])
-  securityUser       User?       @relation("GetPassReturnSecurityBy", fields: [securityVerifiedBy], references: [id])
+  getPassLine        GetPassLine                  @relation(fields: [getPassLineId], references: [id], onDelete: Cascade)
+  registeredByUser   User                         @relation("GetPassReturnRegisteredBy", fields: [registeredBy], references: [id])
+  securityUser       User?                        @relation("GetPassReturnSecurityBy", fields: [securityVerifiedBy], references: [id])
 
   @@index([getPassLineId])
   @@index([returnDate])

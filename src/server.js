@@ -75,8 +75,15 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // ─── Static Files (uploaded images) ───────────────────────────────────────
+// Only active when STORAGE_DRIVER=local (dev fallback). In production with R2,
+// files are served via short-lived signed URLs from /api/files/signed-url
+// after authenticate + tenant-prefix validation.
 const path = require('path');
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+const { isLocalDriver } = require('./config/storage');
+if (isLocalDriver()) {
+    app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+    logger.info('[storage] serving legacy /uploads via express.static (STORAGE_DRIVER=local)');
+}
 
 // ─── Request Logging ──────────────────────────────────────────────────────
 app.use(morgan('combined', {

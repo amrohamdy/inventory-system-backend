@@ -5,9 +5,11 @@ const { authorize } = require('../middleware/authorize');
 const multer = require('multer');
 const path = require('path');
 
+// Memory-backed multer: bytes flow through the storage abstraction instead of
+// landing on the host filesystem (which is ephemeral on Railway).
 const upload = multer({
-    dest: path.join(__dirname, '../../uploads/stock-report/'),
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         if (['.xlsx', '.xls', '.csv'].includes(ext)) cb(null, true);

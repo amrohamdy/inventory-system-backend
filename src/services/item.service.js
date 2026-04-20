@@ -151,9 +151,6 @@ const ITEM_CATALOG_INCLUDE = {
     itemUnits: { include: { unit: { select: { id: true, name: true, abbreviation: true } } } },
 };
 
-// ── Store relative image path — Vite proxy (/uploads) handles CORS in dev ─────
-const toRelativeImageUrl = (relativePath) => relativePath;
-
 const notFound = (msg = 'Item not found') => {
     const e = new Error(msg);
     e.statusCode = 404;
@@ -766,15 +763,18 @@ function _haveUnitsChanged(existingUnits, newUnits) {
 }
 
 // ── UPDATE IMAGE ───────────────────────────────────────────────────────────────
-const updateItemImage = async (id, tenantId, imageUrl, oldImagePath) => {
+// `newKey` is whatever storage.put produced (legacy `/uploads/...` under local
+// driver, tenant-scoped `tenants/.../...` under r2). `oldKey` is fire-and-forget.
+const updateItemImage = async (id, tenantId, newKey, oldKey) => {
     const { deleteFile } = require('../middleware/upload.middleware');
 
-    // Delete old image if it exists locally
-    if (oldImagePath) deleteFile(oldImagePath);
+    if (oldKey && oldKey !== newKey) {
+        await deleteFile(oldKey);
+    }
 
     const updated = await prisma.item.update({
         where: { id },
-        data: { imageUrl },
+        data: { imageUrl: newKey },
         include: ITEM_INCLUDE,
     });
     return enrichSingleItemForResponse(updated, tenantId);
@@ -851,9 +851,14 @@ const updateItemUnits = async (id, tenantId, itemUnits) => {
  * `openingQuantityTotal` per row = sum of quantities in all columns that resolve to active locations
  * (matches API `openingQuantity` / `displayTotalQty` after import during OPEN phase).
  */
-const parseImportFile = async (filePath, tenantId, options = {}) => {
+const parseImportFile = async (fileBufferOrPath, tenantId, options = {}) => {
     const asOpeningBalance = Boolean(options.asOpeningBalance);
-    const wb = XLSX.readFile(filePath);
+    // Accept either a Buffer (new multer memoryStorage path) or a string filesystem
+    // path (legacy). The test harness in src/services/item.service.test.js passes
+    // `rows` directly and bypasses this branch altogether.
+    const wb = Buffer.isBuffer(fileBufferOrPath)
+        ? XLSX.read(fileBufferOrPath, { type: 'buffer' })
+        : XLSX.readFile(fileBufferOrPath);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
@@ -1380,51 +1385,47 @@ const confirmImport = async (rows, tenantId, createdBy, asOpeningBalance = false
     };
 };
 // ── BULK UPLOAD IMAGES (ZIP) ──────────────────────────────────────────────────
-const bulkUploadImages = async (zipFilePath, tenantId) => {
+// Accepts the raw ZIP bytes (multer.memoryStorage) and pipes each matched image
+// through the storage provider, so the flow is identical whether bytes land on
+// local disk or in R2.
+const bulkUploadImages = async (zipBuffer, tenantId) => {
     const AdmZip = require('adm-zip');
-    const fs = require('fs');
-    const { UPLOADS_DIR } = require('../middleware/upload.middleware');
+    const { putBuffer, buildItemImageKey, deleteFile } = require('../middleware/upload.middleware');
 
-    const zip = new AdmZip(zipFilePath);
+    const zip = new AdmZip(Buffer.isBuffer(zipBuffer) ? zipBuffer : undefined);
     const entries = zip.getEntries();
 
     const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    const MIME_BY_EXT = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
+    };
     const results = { matched: 0, skipped: 0, errors: [], details: [] };
 
-    // Get all items for this tenant (barcode lookup)
     const items = await prisma.item.findMany({
         where: { tenantId },
         select: { id: true, barcode: true, name: true, imageUrl: true },
     });
 
-    // Build barcode → item map
     const barcodeMap = new Map();
     for (const item of items) {
-        if (item.barcode) {
-            barcodeMap.set(item.barcode.toLowerCase(), item);
-        }
+        if (item.barcode) barcodeMap.set(item.barcode.toLowerCase(), item);
     }
 
     for (const entry of entries) {
-        // Skip directories and hidden files
-        if (entry.isDirectory || entry.entryName.startsWith('__MACOSX') || entry.entryName.startsWith('.')) {
-            continue;
-        }
+        if (entry.isDirectory || entry.entryName.startsWith('__MACOSX') || entry.entryName.startsWith('.')) continue;
 
         const filename = path.basename(entry.entryName);
         const ext = path.extname(filename).toLowerCase();
         const nameWithoutExt = path.basename(filename, ext).trim();
 
-        // Only process image files
         if (!IMAGE_EXTS.includes(ext)) {
             results.skipped++;
             results.details.push({ file: filename, status: 'skipped', reason: 'Not an image file' });
             continue;
         }
 
-        // Match by barcode (filename without extension)
         const item = barcodeMap.get(nameWithoutExt.toLowerCase());
-
         if (!item) {
             results.skipped++;
             results.details.push({ file: filename, status: 'skipped', reason: `No item with barcode "${nameWithoutExt}"` });
@@ -1432,16 +1433,23 @@ const bulkUploadImages = async (zipFilePath, tenantId) => {
         }
 
         try {
-            // Extract image to uploads folder
-            const newFilename = `item-${item.id}-${Date.now()}${ext}`;
-            const destPath = path.join(UPLOADS_DIR, newFilename);
-            fs.writeFileSync(destPath, entry.getData());
+            const buffer = entry.getData();
+            const key = buildItemImageKey(tenantId, filename, item.id);
+            await putBuffer(key, {
+                buffer,
+                size: buffer.length,
+                mimetype: MIME_BY_EXT[ext] || 'application/octet-stream',
+                originalname: filename,
+            });
 
-            // Update item imageUrl — store as relative path, Vite proxy serves it in dev
-            const imageUrl = toRelativeImageUrl(`/uploads/items/${newFilename}`);
+            // Delete old image if one was set (best-effort; no-op under r2 for legacy paths).
+            if (item.imageUrl && item.imageUrl !== key) {
+                deleteFile(item.imageUrl).catch(() => { /* ignore */ });
+            }
+
             await prisma.item.update({
                 where: { id: item.id },
-                data: { imageUrl },
+                data: { imageUrl: key },
             });
 
             results.matched++;
@@ -1451,9 +1459,6 @@ const bulkUploadImages = async (zipFilePath, tenantId) => {
             results.details.push({ file: filename, status: 'error', reason: err.message });
         }
     }
-
-    // Cleanup ZIP file
-    try { fs.unlinkSync(zipFilePath); } catch { /* ignore */ }
 
     return results;
 };

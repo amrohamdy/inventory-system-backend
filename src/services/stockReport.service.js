@@ -572,8 +572,10 @@ const exportToExcel = async (tenantId, params, blindCount = false) => {
 
 
 // ── UPLOAD COUNTED EXCEL ──────────────────────────────────────────────────────
-const uploadCountedExcel = async (filePath, tenantId, departmentId, categoryId, year, userId) => {
-    const wb = XLSX.readFile(filePath);
+const uploadCountedExcel = async (fileBufferOrPath, tenantId, departmentId, categoryId, year, userId) => {
+    const wb = Buffer.isBuffer(fileBufferOrPath)
+        ? XLSX.read(fileBufferOrPath, { type: 'buffer' })
+        : XLSX.readFile(fileBufferOrPath);
     const ws = wb.Sheets[wb.SheetNames[0]];
     // New ExcelJS export: row1=title, row2=spacer, row3=headers, row4+=data → use range:2
     // Legacy plain-xlsx export: row1=headers → use range:0
