@@ -6,7 +6,7 @@ const periodGuard = require('../services/periodGuard.service');
 const { normalizeRole } = require('../services/rbac.service');
 
 /** Roles allowed to create GRNs (POST /api/grn). */
-const GRN_CREATE_ROLES = ['COST_CONTROL', 'STOREKEEPER', 'ADMIN', 'SUPER_ADMIN'];
+const GRN_CREATE_ROLES = ['COST_CONTROL', 'STOREKEEPER', 'ADMIN', 'SUPER_ADMIN', 'ORG_MANAGER'];
 
 // ─── Multer: invoice PDF upload ───────────────────────────────────────────────
 const invoiceUpload = multer({
