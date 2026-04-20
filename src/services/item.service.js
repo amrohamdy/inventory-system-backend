@@ -617,22 +617,35 @@ const updateItem = async (id, data, tenantId, userId = null) => {
 
     const {
         itemUnits,
-        openingQuantity: _openingQuantity,
+        openingQuantity,
         displayTotalQty: _displayTotalQty,
         ...bodyRest
     } = data;
 
     const mainData = pickWhitelistedItemPayload(bodyRest);
+    const hasOpeningQtyInPayload = Object.prototype.hasOwnProperty.call(data, 'openingQuantity');
+    const openingQtyTarget = hasOpeningQtyInPayload ? Number(openingQuantity) : null;
 
     if (obStatus === 'FINALIZED') {
         const hasUnitPriceInPayload = Object.prototype.hasOwnProperty.call(data, 'unitPrice');
         const hasItemUnitsInPayload = Object.prototype.hasOwnProperty.call(data, 'itemUnits');
-        const hasOpeningQtyInPayload = Object.prototype.hasOwnProperty.call(data, 'openingQuantity');
         if (hasUnitPriceInPayload || hasItemUnitsInPayload || hasOpeningQtyInPayload) {
             throw badRequest(
                 'Cannot modify unit price, base unit, or opening quantity after Opening Balance finalization. '
                 + 'You can still update descriptive fields.'
             );
+        }
+    }
+
+    if (hasOpeningQtyInPayload) {
+        if (obStatus !== 'OPEN') {
+            throw badRequest('Opening quantity can only be edited while Opening Balance is in OPEN status.');
+        }
+        if (!Number.isFinite(openingQtyTarget) || openingQtyTarget < 0) {
+            throw badRequest('openingQuantity must be a valid number greater than or equal to 0.');
+        }
+        if (!userId) {
+            throw badRequest('User context is required to update opening quantity.');
         }
     }
 
@@ -690,15 +703,18 @@ const updateItem = async (id, data, tenantId, userId = null) => {
     }
 
     const openingQtySetup = Number(existing.openingQuantity ?? 0);
+    const effectiveOpeningQtyForValidation = hasOpeningQtyInPayload ? openingQtyTarget : openingQtySetup;
     const effectiveUnitPrice =
         mainData.unitPrice !== undefined ? Number(mainData.unitPrice) : Number(existing.unitPrice ?? 0);
-    if (obStatus === 'OPEN' && openingQtySetup > 0 && !(effectiveUnitPrice > 0)) {
+    if (obStatus === 'OPEN' && effectiveOpeningQtyForValidation > 0 && !(effectiveUnitPrice > 0)) {
         throw badRequest(
             'Unit price is required while this item has opening balance quantities in setup.'
         );
     }
 
     const result = await prisma.$transaction(async (tx) => {
+        const movementService = hasOpeningQtyInPayload ? require('./movement.service') : null;
+
         // Replace units if provided
         if (itemUnits !== undefined) {
             await tx.itemUnit.deleteMany({ where: { itemId: id } });
@@ -748,6 +764,92 @@ const updateItem = async (id, data, tenantId, userId = null) => {
                         },
                     });
                 }
+            }
+        }
+
+        if (hasOpeningQtyInPayload) {
+            const locationId = row.defaultStoreId;
+            if (!locationId) {
+                throw badRequest('A default store (location) is required to set opening quantity.');
+            }
+
+            const unitCost = Number(row.unitPrice ?? existing.unitPrice ?? 0);
+            if (openingQtyTarget > 0 && !(unitCost > 0)) {
+                throw badRequest('Unit price is required when opening quantity is greater than 0.');
+            }
+
+            const currentStock = await tx.stockBalance.findUnique({
+                where: {
+                    tenantId_itemId_locationId: { tenantId, itemId: id, locationId },
+                },
+                select: { qtyOnHand: true },
+            });
+            const currentQty = Number(currentStock?.qtyOnHand ?? 0);
+            const deltaQty = openingQtyTarget - currentQty;
+            const absDelta = Math.abs(deltaQty);
+
+            if (absDelta > 0) {
+                await tx.inventoryLedger.create({
+                    data: {
+                        tenantId,
+                        itemId: id,
+                        locationId,
+                        movementType: 'OPENING_BALANCE',
+                        qtyIn: deltaQty > 0 ? absDelta : 0,
+                        qtyOut: deltaQty < 0 ? absDelta : 0,
+                        unitCost,
+                        totalValue: absDelta * unitCost,
+                        balanceAfter: openingQtyTarget,
+                        referenceType: 'ITEM_OPENING_EDIT',
+                        notes: 'Opening quantity edited from item update (delta posting).',
+                        createdBy: userId,
+                    },
+                });
+            }
+
+            await tx.stockBalance.upsert({
+                where: {
+                    tenantId_itemId_locationId: { tenantId, itemId: id, locationId },
+                },
+                update: {
+                    qtyOnHand: openingQtyTarget,
+                    ...(unitCost > 0 ? { wacUnitCost: unitCost } : {}),
+                },
+                create: {
+                    tenantId,
+                    itemId: id,
+                    locationId,
+                    qtyOnHand: openingQtyTarget,
+                    wacUnitCost: unitCost > 0 ? unitCost : 0,
+                },
+            });
+
+            if (openingQtyTarget > 0) {
+                await upsertOpeningBalanceForItemLocation(
+                    tx,
+                    {
+                        tenantId,
+                        itemId: id,
+                        locationId,
+                        targetQty: openingQtyTarget,
+                        unitCost,
+                        userId,
+                        itemName: row.name,
+                    },
+                    movementService
+                );
+            } else {
+                await tx.movementLine.deleteMany({
+                    where: {
+                        itemId: id,
+                        locationId,
+                        document: {
+                            tenantId,
+                            movementType: 'OPENING_BALANCE',
+                            status: 'DRAFT',
+                        },
+                    },
+                });
             }
         }
 
