@@ -21,6 +21,38 @@ const ctrl = require('../controllers/stockReport.controller');
 
 router.get('/', authenticate, ctrl.getReport);
 router.get('/export', authenticate, ctrl.exportReport);
+/**
+ * @openapi
+ * /stock-report/upload:
+ *   post:
+ *     tags: [Stock Report]
+ *     summary: Upload a completed count sheet (Excel/CSV) to record counted quantities
+ *     description: >
+ *       Matches rows against the active locations for the given department/
+ *       year and updates counted quantities. File is parsed and discarded.
+ *     security: [ { bearerAuth: [] } ]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [file, departmentId]
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: .xlsx / .xls / .csv, max 10 MB
+ *               departmentId: { type: string, format: uuid }
+ *               categoryId:   { type: string, format: uuid, nullable: true }
+ *               year:         { type: string, example: "2026" }
+ *     responses:
+ *       200:
+ *         description: Count recorded with per-row status
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
 router.post('/upload', authenticate, authorize('ADMIN', 'STOREKEEPER', 'COST_CONTROL'), upload.single('file'), ctrl.uploadCount);
 
 // New workflow routes

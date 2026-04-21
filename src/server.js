@@ -100,6 +100,11 @@ app.get('/health', (req, res) => {
     });
 });
 
+// ─── API Docs (Swagger UI + raw spec) ─────────────────────────────────────
+// Mounted before the API routes so the basicAuth gate in docs.routes.js
+// handles its own 401 without going through the JWT authenticate chain.
+app.use('/', require('./routes/docs.routes'));
+
 // ─── API Routes ───────────────────────────────────────────────────────────
 // Super Admin routes — separate scope, own auth guard inside the router
 app.use('/api/admin', adminRoutes);

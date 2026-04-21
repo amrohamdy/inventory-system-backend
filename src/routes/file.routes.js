@@ -8,18 +8,35 @@ const logger = require('../utils/logger');
 const router = express.Router();
 
 /**
- * GET /api/files/signed-url?key=<object-key>
- *
- * Returns a short-lived, server-side-signed URL for the given storage key.
- * The caller (frontend) uses this URL directly as `<img src>` / `<a href>`.
- *
- * Tenant isolation: the key MUST start with `tenants/{req.user.tenantId}/`.
- * Legacy `/uploads/...` paths are accepted as-is (they pre-date tenant scoping
- * and are served by `express.static` when STORAGE_DRIVER=local).
- *
- * Query params:
- *   - key (required): the object key stored in DB
- *   - ttl (optional): seconds, capped by provider defaults
+ * @openapi
+ * /files/signed-url:
+ *   get:
+ *     tags: [Files]
+ *     summary: Short-lived signed URL for a stored object
+ *     description: >
+ *       Tenant-scoped. The `key` must start with `tenants/{yourTenantId}/` — any
+ *       other prefix returns 403. Legacy `/uploads/...` paths are served as-is.
+ *     security: [ { bearerAuth: [] } ]
+ *     parameters:
+ *       - in: query
+ *         name: key
+ *         required: true
+ *         schema: { type: string }
+ *         description: Object key returned by an upload endpoint
+ *       - in: query
+ *         name: ttl
+ *         required: false
+ *         schema: { type: integer, minimum: 1 }
+ *         description: Seconds until the URL expires (defaults to SIGNED_URL_TTL_SECONDS)
+ *     responses:
+ *       200:
+ *         description: Signed URL ready to use as `<img src>` / `<a href>`
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/SignedUrlResponse' }
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
  */
 router.get('/signed-url', authenticate, async (req, res) => {
     const key = typeof req.query.key === 'string' ? req.query.key.trim() : '';
