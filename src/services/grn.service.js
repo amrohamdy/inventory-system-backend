@@ -6,6 +6,7 @@ const fs = require('fs');
 const prisma = new PrismaClient();
 const emailService = require('./email.service');
 const { normalizeRole } = require('./rbac.service');
+const { getStorage } = require('../config/storage');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const assertStatus = async (grnId, tenantId, expected) => {
@@ -561,7 +562,20 @@ const getGrn = async (grnId, tenantId) => {
         }));
     }
 
-    return grn;
+    let pdfAttachmentDisplayUrl = null;
+    if (grn.pdfAttachmentUrl) {
+        try {
+            const storage = getStorage();
+            pdfAttachmentDisplayUrl = await storage.getSignedUrl(grn.pdfAttachmentUrl);
+        } catch {
+            pdfAttachmentDisplayUrl = null;
+        }
+    }
+
+    return {
+        ...grn,
+        pdfAttachmentDisplayUrl,
+    };
 };
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
