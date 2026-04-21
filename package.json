@@ -48,6 +48,7 @@
         "pdf-parse": "^2.4.5",
         "pdfkit": "^0.17.2",
         "prisma": "^5.10.2",
+        "resend": "^6.12.2",
         "swagger-jsdoc": "^6.2.8",
         "swagger-ui-express": "^5.0.1",
         "uuid": "^9.0.1",

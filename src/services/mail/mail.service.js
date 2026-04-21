@@ -9,6 +9,7 @@ const {
     notificationsEnabled,
     getFromAddress,
 } = require('./transporter');
+const resendProvider = require('./providers/resend.provider');
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_INITIAL_DELAY_SECONDS = 60;
@@ -43,14 +44,22 @@ const buildHtmlAndText = ({ template, vars, html, text }) => {
 };
 
 const attemptTransport = async ({ to, cc, subject, html, text }) => {
+    const from = getFromAddress();
+
+    // Resend (HTTPS API) wins when configured — works on PaaS that block SMTP.
+    if (resendProvider.isResendConfigured()) {
+        return resendProvider.send({ from, to, cc, subject, html, text });
+    }
+
+    // Fallback: nodemailer over SMTP (used on local dev and in envs without Resend).
     const transporter = getTransporter();
     if (!transporter) {
-        const err = new Error('SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASS)');
-        err.code = 'SMTP_NOT_CONFIGURED';
+        const err = new Error('No mail provider configured (set RESEND_API_KEY or SMTP_HOST/USER/PASS)');
+        err.code = 'MAIL_NOT_CONFIGURED';
         throw err;
     }
     const info = await transporter.sendMail({
-        from: getFromAddress(),
+        from,
         to,
         cc,
         subject,
