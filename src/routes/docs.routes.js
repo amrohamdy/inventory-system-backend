@@ -7,10 +7,8 @@ const { swaggerAuth } = require('../middleware/swagger-auth');
 
 const router = express.Router();
 
-router.use(swaggerAuth);
-
 // Raw spec for programmatic consumers (e.g. generating a client SDK).
-router.get('/api-docs.json', (_req, res) => {
+router.get('/api-docs.json', swaggerAuth, (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(spec);
 });
@@ -19,6 +17,7 @@ router.get('/api-docs.json', (_req, res) => {
 // can swap specs; here we only have one so it stays hidden in practice.
 router.use(
     '/api-docs',
+    swaggerAuth,
     swaggerUi.serveFiles(spec, { explorer: false }),
     swaggerUi.setup(spec, {
         explorer: false,
