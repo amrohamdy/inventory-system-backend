@@ -104,11 +104,12 @@ const buildImportKey = (tenantId, originalName) => {
     return `tenants/${tenantId}/imports/${Date.now()}${extOf(originalName)}`;
 };
 
-const buildGrnPdfKey = (tenantId, grnId) => {
+const buildGrnPdfKey = (tenantId, grnId, originalName) => {
+    const ext = extOf(originalName) || '.pdf';
     if (isLocalDriver()) {
-        return `/uploads/attachments/grn-${grnId || 'new'}-${Date.now()}.pdf`;
+        return `/uploads/attachments/grn-${grnId || 'new'}-${Date.now()}${ext}`;
     }
-    return `tenants/${tenantId}/grn/${grnId || uuid()}-${Date.now()}.pdf`;
+    return `tenants/${tenantId}/grn/${grnId || uuid()}-${Date.now()}${ext}`;
 };
 
 const buildDamagePhotoKey = (tenantId, getPassLineId, originalName) => {

@@ -121,7 +121,7 @@ const createGrn = async (req, res) => {
         // Persist the invoice via the storage provider. Under local driver the key
         // looks like `/uploads/attachments/grn-...` (legacy format), under r2 it's
         // `tenants/{tenantId}/grn/...`.
-        const invoiceKey = buildGrnPdfKey(req.user.tenantId, null);
+        const invoiceKey = buildGrnPdfKey(req.user.tenantId, null, invoiceFile.originalname);
         await putBuffer(invoiceKey, invoiceFile);
 
         const created = await grnService.createGrn({
