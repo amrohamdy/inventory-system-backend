@@ -5,6 +5,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.railway
+.env.stage
 
 # Logs
 src/logs/
@@ -25,7 +27,10 @@ uploads/
 temp/
 
 # Local DB dumps and ad-hoc evidence (may contain sensitive data)
+# Do NOT use *.sql here — that would swallow prisma/migrations/**/migration.sql
 inventory_backup.sql
+/backup-*.sql
+*.dump
 evidence-*.json
 evidence-*.pdf
 

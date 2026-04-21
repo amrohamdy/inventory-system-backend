@@ -3,6 +3,7 @@ const prisma = require('../config/database');
 const notificationService = require('../services/notification.service');
 const emailService = require('../services/email.service');
 const getPassService = require('../services/getPass.service');
+const { processMailQueue } = require('../services/mail/queue');
 const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('./logger');
 
@@ -57,6 +58,24 @@ cron.schedule('0 8 * * *', async () => {
         }
     } catch (error) {
         logger.error('[CRON] Failed to run Daily Stock Alert check', { message: error.message, stack: error.stack });
+    }
+});
+
+// Every 2 minutes: re-drive any PENDING EmailLog rows whose nextRetryAt has passed.
+// Ensures approval/password-reset emails survive transient SMTP outages.
+cron.schedule('*/2 * * * *', async () => {
+    try {
+        const result = await processMailQueue();
+        if (result.picked > 0) {
+            logger.info(
+                `[CRON] mail queue: picked=${result.picked} sent=${result.sent} failed=${result.failed}`
+            );
+        }
+    } catch (error) {
+        logger.error('[CRON] mail queue processing failed', {
+            message: error.message,
+            stack: error.stack,
+        });
     }
 });
 

@@ -1,10 +1,10 @@
 const itemService = require('../services/item.service');
 const { success } = require('../utils/response');
-const path = require('path');
-const fs = require('fs');
-
-// ── Always use relative path so frontend proxy (Vite /uploads) handles CORS ────
-const getImageUrl = (_req, filename) => `/uploads/items/${filename}`;
+const {
+    putBuffer,
+    deleteFile,
+    buildItemImageKey,
+} = require('../middleware/upload.middleware');
 
 // ── Item Master prerequisites (canCreateItem vs isOpeningBalanceAllowed) ───────
 const checkItemCreationRequirements = async (req, res, next) => {
@@ -62,24 +62,15 @@ const uploadItemImage = async (req, res, next) => {
             const e = new Error('No image file uploaded.'); e.statusCode = 400; throw e;
         }
 
-        // Fetch current item to get old image path
         const current = await itemService.getItemById(req.params.id, req.user.tenantId);
+        const oldKey = current.imageUrl || null;
 
-        // Derive old absolute path from imageUrl if it was local
-        let oldImagePath = null;
-        if (current.imageUrl && current.imageUrl.includes('/uploads/items/')) {
-            const filename = current.imageUrl.split('/uploads/items/').pop();
-            oldImagePath = path.join(__dirname, '../../uploads/items', filename);
-        }
+        const key = buildItemImageKey(req.user.tenantId, req.file.originalname, req.params.id);
+        await putBuffer(key, req.file);
 
-        const imageUrl = getImageUrl(req, req.file.filename);
-        const item = await itemService.updateItemImage(req.params.id, req.user.tenantId, imageUrl, oldImagePath);
+        const item = await itemService.updateItemImage(req.params.id, req.user.tenantId, key, oldKey);
         return success(res, item, 'Image uploaded successfully');
     } catch (err) {
-        // Clean up uploaded file on error
-        if (req.file?.path && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
-        }
         next(err);
     }
 };
@@ -121,17 +112,18 @@ const updateItemUnits = async (req, res, next) => {
 };
 
 // ── Import: Parse & Preview ───────────────────────────────────────────────────
+// With memory-backed multer the file lives in `req.file.buffer`; the preview
+// step parses it in-memory. The frontend then sends the parsed `rows` to the
+// confirm endpoint (no temp file on disk to clean up).
 const importPreview = async (req, res, next) => {
     try {
         if (!req.file) {
             const e = new Error('No file uploaded.'); e.statusCode = 400; throw e;
         }
         const asOpeningBalance = String(req.body?.asOpeningBalance ?? req.query?.asOpeningBalance ?? '').toLowerCase() === 'true';
-        const result = await itemService.parseImportFile(req.file.path, req.user.tenantId, { asOpeningBalance });
-        // Store file path in session-like manner via response for confirm step
-        return success(res, { ...result, filePath: req.file.path }, 'File parsed successfully');
+        const result = await itemService.parseImportFile(req.file.buffer, req.user.tenantId, { asOpeningBalance });
+        return success(res, result, 'File parsed successfully');
     } catch (err) {
-        if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         next(err);
     }
 };
@@ -139,16 +131,12 @@ const importPreview = async (req, res, next) => {
 // ── Import: Confirm ───────────────────────────────────────────────────────────
 const importConfirm = async (req, res, next) => {
     try {
-        const { rows, filePath, asOpeningBalance } = req.body;
+        const { rows, asOpeningBalance } = req.body;
         if (!rows || !Array.isArray(rows)) {
             const e = new Error('Invalid import payload.'); e.statusCode = 400; throw e;
         }
 
         const result = await itemService.confirmImport(rows, req.user.tenantId, req.user.id, !!asOpeningBalance);
-
-        // Cleanup temp file
-        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
         return success(res, result, `Import complete: ${result.inserted} inserted, ${result.updated} updated, ${result.failed} failed`);
     } catch (err) { next(err); }
 };
@@ -158,12 +146,9 @@ const bulkUploadImages = async (req, res, next) => {
         if (!req.file) {
             const e = new Error('No ZIP file uploaded.'); e.statusCode = 400; throw e;
         }
-        const result = await itemService.bulkUploadImages(req.file.path, req.user.tenantId);
+        const result = await itemService.bulkUploadImages(req.file.buffer, req.user.tenantId);
         return success(res, result, `Bulk upload complete: ${result.matched} matched, ${result.skipped} skipped`);
     } catch (err) {
-        if (req.file?.path && fs.existsSync(req.file.path)) {
-            try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
-        }
         next(err);
     }
 };

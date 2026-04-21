@@ -5,9 +5,11 @@ const { authorize } = require('../middleware/authorize');
 const multer = require('multer');
 const path = require('path');
 
+// Memory-backed multer: bytes flow through the storage abstraction instead of
+// landing on the host filesystem (which is ephemeral on Railway).
 const upload = multer({
-    dest: path.join(__dirname, '../../uploads/stock-report/'),
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         if (['.xlsx', '.xls', '.csv'].includes(ext)) cb(null, true);
@@ -19,6 +21,38 @@ const ctrl = require('../controllers/stockReport.controller');
 
 router.get('/', authenticate, ctrl.getReport);
 router.get('/export', authenticate, ctrl.exportReport);
+/**
+ * @openapi
+ * /stock-report/upload:
+ *   post:
+ *     tags: [Stock Report]
+ *     summary: Upload a completed count sheet (Excel/CSV) to record counted quantities
+ *     description: >
+ *       Matches rows against the active locations for the given department/
+ *       year and updates counted quantities. File is parsed and discarded.
+ *     security: [ { bearerAuth: [] } ]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [file, departmentId]
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: .xlsx / .xls / .csv, max 10 MB
+ *               departmentId: { type: string, format: uuid }
+ *               categoryId:   { type: string, format: uuid, nullable: true }
+ *               year:         { type: string, example: "2026" }
+ *     responses:
+ *       200:
+ *         description: Count recorded with per-row status
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
 router.post('/upload', authenticate, authorize('ADMIN', 'STOREKEEPER', 'COST_CONTROL'), upload.single('file'), ctrl.uploadCount);
 
 // New workflow routes

@@ -25,7 +25,41 @@ router.post('/:id/approve', requirePermission('APPROVE_BREAKAGE'), ctrl.approveB
 router.post('/:id/reject', requirePermission('APPROVE_BREAKAGE'), ctrl.rejectBreakage);
 router.post('/:id/void', requirePermission('MANAGE_INVENTORY'), ctrl.voidBreakage);
 
-// ── Attachments ───────────────────────────────────────────────────────────────
+/**
+ * @openapi
+ * /breakage/{id}/attachment:
+ *   post:
+ *     tags: [Breakage]
+ *     summary: Attach a file (photo / PDF / Office doc) to a breakage document
+ *     description: >
+ *       Appended to the JSON array stored in `MovementDocument.attachmentUrl`.
+ *       Blocked once the document is APPROVED or VOID.
+ *     security: [ { bearerAuth: [] } ]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [file]
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: .jpg/.png/.webp/.pdf/.doc(x)/.xls(x), max 10 MB
+ *     responses:
+ *       200:
+ *         description: Document with the new attachment appended
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
 router.post('/:id/attachment', requirePermission('MANAGE_INVENTORY'), uploadAttachment.single('file'), ctrl.uploadAttachment);
 
 // ── Evidence ──────────────────────────────────────────────────────────────────
