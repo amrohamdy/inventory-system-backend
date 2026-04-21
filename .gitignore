@@ -34,6 +34,9 @@ inventory_backup.sql
 evidence-*.json
 evidence-*.pdf
 
+# Re-include Prisma migration SQL in case a global ~/.gitignore_global has *.sql
+!prisma/migrations/**/migration.sql
+
 # Build / coverage
 dist/
 coverage/
