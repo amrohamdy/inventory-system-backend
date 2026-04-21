@@ -10,7 +10,7 @@ const {
 const { getSignedUrl: presign } = require('@aws-sdk/s3-request-presigner');
 const logger = require('../../utils/logger');
 
-const DEFAULT_TTL_SECONDS = 900; // 15 min
+const DEFAULT_TTL_SECONDS = 604800; // 7 days (S3 SigV4 hard cap)
 
 const getTtl = () => {
     const n = parseInt(process.env.SIGNED_URL_TTL_SECONDS, 10);

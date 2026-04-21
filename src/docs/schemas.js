@@ -122,7 +122,7 @@
  *               properties:
  *                 url:
  *                   type: string
- *                   description: "Short-lived URL valid for SIGNED_URL_TTL_SECONDS (default 900s)."
+ *                   description: "URL valid for SIGNED_URL_TTL_SECONDS (default 7 days, max allowed by S3 SigV4)."
  *                 expiresAt:
  *                   type: string
  *                   format: date-time
