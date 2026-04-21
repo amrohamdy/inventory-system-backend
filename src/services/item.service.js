@@ -21,6 +21,7 @@ const path = require('path');
 const auditService = require('./audit.service');
 const settingService = require('./setting.service');
 const { checkOpeningBalanceAllowed } = require('./periodGuard.service');
+const { getStorage } = require('../config/storage');
 
 /**
  * Per-item opening qty from live data: sum of `qtyInBaseUnit` on all MovementLine rows whose
@@ -83,7 +84,57 @@ const sumStockBalances = (item) => {
 const enrichSingleItemForResponse = async (item, tenantId) => {
     if (!item || typeof item !== 'object') return item;
     const ctx = await buildItemEnrichmentCtx(tenantId, [item.id]);
-    return enrichItemWithOpeningFields(item, ctx);
+    const enriched = enrichItemWithOpeningFields(item, ctx);
+    return attachDisplayImageUrl(enriched);
+};
+
+const toStorageKeyFromUrlPath = (pathname) => {
+    if (typeof pathname !== 'string' || !pathname) return null;
+    if (pathname.startsWith('/uploads/')) return pathname;
+
+    const marker = '/tenants/';
+    const idx = pathname.indexOf(marker);
+    if (idx >= 0) {
+        return pathname.slice(idx + 1);
+    }
+
+    if (pathname.startsWith('/tenants/')) {
+        return pathname.slice(1);
+    }
+
+    return null;
+};
+
+const normalizeIncomingImageUrl = (value) => {
+    if (value == null) return value;
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('/uploads/') || trimmed.startsWith('tenants/')) {
+        return trimmed;
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        try {
+            const parsed = new URL(trimmed);
+            const key = toStorageKeyFromUrlPath(parsed.pathname);
+            return key || trimmed;
+        } catch {
+            return trimmed;
+        }
+    }
+    return trimmed;
+};
+
+const attachDisplayImageUrl = async (item) => {
+    if (!item || typeof item !== 'object') return item;
+    if (!item.imageUrl) return { ...item, imageDisplayUrl: null };
+    try {
+        const storage = getStorage();
+        const imageDisplayUrl = await storage.getSignedUrl(item.imageUrl);
+        return { ...item, imageDisplayUrl };
+    } catch {
+        return { ...item, imageDisplayUrl: null };
+    }
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -270,7 +321,11 @@ const pickWhitelistedItemPayload = (source) => {
     if (!source || typeof source !== 'object') return out;
     for (const key of Object.keys(source)) {
         if (ITEM_INPUT_WHITELIST.has(key)) {
-            out[key] = source[key];
+            if (key === 'imageUrl') {
+                out[key] = normalizeIncomingImageUrl(source[key]);
+            } else {
+                out[key] = source[key];
+            }
         }
     }
     return out;
@@ -454,8 +509,12 @@ const getItems = async (tenantId, query = {}) => {
             : new Map();
     const enrichCtx = { obStatus, draftAgg };
 
+    const enrichedItems = await Promise.all(
+        items.map(async (it) => attachDisplayImageUrl(enrichItemWithOpeningFields(it, enrichCtx)))
+    );
+
     return {
-        items: items.map((it) => enrichItemWithOpeningFields(it, enrichCtx)),
+        items: enrichedItems,
         total,
         skip,
         take,
@@ -609,7 +668,7 @@ const getItemById = async (id, tenantId) => {
     });
     if (!item) throw notFound();
     const ctx = await buildItemEnrichmentCtx(tenantId, [id]);
-    return enrichItemWithOpeningFields(item, ctx);
+    return attachDisplayImageUrl(enrichItemWithOpeningFields(item, ctx));
 };
 
 // ── UPDATE ─────────────────────────────────────────────────────────────────────
