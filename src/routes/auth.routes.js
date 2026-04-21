@@ -53,12 +53,11 @@ router.post('/forgot-password', forgotPasswordValidator, authController.forgotPa
  *         application/json:
  *           schema:
  *             type: object
- *             required: [email, code, newPassword]
+ *             required: [email, otp, newPassword]
  *             properties:
  *               email: { type: string, format: email }
- *               code: { type: string, description: "6-digit OTP from the reset email" }
+ *               otp: { type: string, pattern: "^\\d{6}$", description: "6-digit code from the reset email" }
  *               newPassword: { type: string, format: password, minLength: 8 }
- *               tenantSlug: { type: string }
  *     responses:
  *       200:
  *         description: Password updated; existing sessions are invalidated

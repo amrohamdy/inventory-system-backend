@@ -65,7 +65,12 @@ router.get('/signed-url', authenticate, async (req, res) => {
     try {
         const storage = getStorage();
         const url = await storage.getSignedUrl(key, ttl);
-        const expiresAt = new Date(Date.now() + (ttl || 900) * 1000).toISOString();
+        // Must match whatever TTL the provider actually used — fall back to the
+        // env default (604800 / 7 days) so `expiresAt` doesn't lie to the frontend
+        // when the caller didn't pass a `ttl` query param.
+        const envTtl = parseInt(process.env.SIGNED_URL_TTL_SECONDS, 10);
+        const effectiveTtl = ttl || (Number.isFinite(envTtl) && envTtl > 0 ? envTtl : 604800);
+        const expiresAt = new Date(Date.now() + effectiveTtl * 1000).toISOString();
         return res.json({ success: true, data: { url, expiresAt } });
     } catch (err) {
         logger.error(`[file.routes] signed-url failed key=${key} reason=${err.message}`);
