@@ -43,6 +43,9 @@ const getTransporter = () => {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
         },
+        // Railway's networking blocks IPv6 SMTP egress; force IPv4 so nodemailer
+        // doesn't resolve smtp.gmail.com to an AAAA record and then ENETUNREACH.
+        family: 4,
     });
 
     logger.info(`[mail] SMTP transporter initialized host=${process.env.SMTP_HOST} port=${port} secure=${secure}`);
