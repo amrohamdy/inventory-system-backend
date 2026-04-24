@@ -212,7 +212,7 @@ const getBreakageReport = async (tenantId, filters = {}) => {
     let reasonMap = {};
     if (referenceIds.length > 0) {
         const docs = await prisma.movementDocument.findMany({
-            where: { id: { in: referenceIds }, tenantId, status: 'POSTED' },
+            where: { id: { in: referenceIds }, tenantId, status: { in: ['APPROVED', 'POSTED'] } },
             select: { id: true, reason: true },
         });
         reasonMap = Object.fromEntries(docs.map(d => [d.id, d.reason]));
@@ -491,14 +491,36 @@ const getOmcReport = async (tenantId, { dateFrom, dateTo, locationId, categoryId
  * All inter-store transfers filterable by date, source, destination, item.
  */
 const getTransferHistoryReport = async (tenantId, { dateFrom, dateTo, sourceLocationId, destLocationId, itemId, status } = {}) => {
-    const where = { tenantId };
+    const where = {
+        tenantId,
+        // Transfers impact stock only after receipt/closure.
+        status: status || { in: ['RECEIVED', 'CLOSED'] },
+    };
     if (sourceLocationId) where.sourceLocationId = sourceLocationId;
     if (destLocationId) where.destLocationId = destLocationId;
-    if (status) where.status = status;
     if (dateFrom || dateTo) {
-        where.transferDate = {};
-        if (dateFrom) where.transferDate.gte = new Date(dateFrom);
-        if (dateTo) where.transferDate.lte = new Date(dateTo);
+        const fromDate = dateFrom ? new Date(dateFrom) : null;
+        const toDate = dateTo ? new Date(dateTo) : null;
+        if (toDate) toDate.setHours(23, 59, 59, 999);
+        where.AND = [
+            {
+                OR: [
+                    {
+                        receivedAt: {
+                            ...(fromDate ? { gte: fromDate } : {}),
+                            ...(toDate ? { lte: toDate } : {}),
+                        },
+                    },
+                    {
+                        receivedAt: null,
+                        transferDate: {
+                            ...(fromDate ? { gte: fromDate } : {}),
+                            ...(toDate ? { lte: toDate } : {}),
+                        },
+                    },
+                ],
+            },
+        ];
     }
 
     const transfers = await prisma.storeTransfer.findMany({
@@ -514,7 +536,7 @@ const getTransferHistoryReport = async (tenantId, { dateFrom, dateTo, sourceLoca
                 },
             },
         },
-        orderBy: { transferDate: 'desc' },
+        orderBy: [{ receivedAt: 'asc' }, { transferDate: 'asc' }],
     });
 
     // Filter by itemId if given
@@ -529,6 +551,8 @@ const getTransferHistoryReport = async (tenantId, { dateFrom, dateTo, sourceLoca
             rows.push({
                 transferNo: t.transferNo,
                 transferDate: t.transferDate,
+                postedAt: t.receivedAt || null,
+                date: t.receivedAt || t.transferDate,
                 status: t.status,
                 sourceLocation: t.sourceLocation?.name,
                 destLocation: t.destLocation?.name,
@@ -556,14 +580,29 @@ const getBreakagePLReport = async (tenantId, { dateFrom, dateTo, locationId, doc
     const where = {
         tenantId,
         movementType: 'BREAKAGE',
-        status: 'POSTED',
+        status: { in: ['APPROVED', 'POSTED'] },
     };
     if (locationId) where.sourceLocationId = locationId;
     if (documentSubtype) where.documentSubtype = documentSubtype;
     if (dateFrom || dateTo) {
-        where.postedAt = {};
-        if (dateFrom) where.postedAt.gte = new Date(dateFrom);
-        if (dateTo) where.postedAt.lte = new Date(dateTo);
+        const fromDate = dateFrom ? new Date(dateFrom) : null;
+        const toDate = dateTo ? new Date(dateTo) : null;
+        if (toDate) toDate.setHours(23, 59, 59, 999);
+        where.OR = [
+            {
+                postedAt: {
+                    ...(fromDate ? { gte: fromDate } : {}),
+                    ...(toDate ? { lte: toDate } : {}),
+                },
+            },
+            {
+                postedAt: null,
+                documentDate: {
+                    ...(fromDate ? { gte: fromDate } : {}),
+                    ...(toDate ? { lte: toDate } : {}),
+                },
+            },
+        ];
     }
 
     const docs = await prisma.movementDocument.findMany({
@@ -571,7 +610,7 @@ const getBreakagePLReport = async (tenantId, { dateFrom, dateTo, locationId, doc
         include: {
             lines: true,
         },
-        orderBy: { postedAt: 'desc' },
+        orderBy: [{ postedAt: 'asc' }, { documentDate: 'asc' }],
     });
 
     // Build a location map for resolving names
@@ -589,7 +628,7 @@ const getBreakagePLReport = async (tenantId, { dateFrom, dateTo, locationId, doc
     for (const doc of docs) {
         const month = doc.postedAt
             ? doc.postedAt.toISOString().slice(0, 7)
-            : doc.createdAt.toISOString().slice(0, 7);
+            : doc.documentDate.toISOString().slice(0, 7);
 
         const ledgerEntries = await prisma.inventoryLedger.findMany({
             where: { tenantId, ...OFFICIAL_LEDGER_WHERE, referenceId: doc.id },

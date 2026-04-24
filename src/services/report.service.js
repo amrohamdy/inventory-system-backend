@@ -2,6 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
+const { getStorage } = require('../config/storage');
 
 const OFFICIAL_LEDGER_WHERE = { affectsValuation: true };
 
@@ -380,12 +381,17 @@ const generateVarianceReport = async (
  */
 const generateBreakageReport = async (tenantId, locationIds, start, end, categoryId, options = {}) => {
     const includeSupplier = Boolean(options.includeSupplier);
+    const storage = getStorage();
     const breakages = await prisma.movementDocument.findMany({
         where: {
             tenantId,
             movementType: { in: ['BREAKAGE', 'LOST', 'LOAN_WRITE_OFF'] },
-            status: 'POSTED',
-            documentDate: { gte: start, lte: end },
+            status: { in: ['APPROVED', 'POSTED'] },
+            OR: [
+                { postedAt: { gte: start, lte: end } },
+                // Legacy fallback: old posted docs may miss postedAt.
+                { postedAt: null, documentDate: { gte: start, lte: end } },
+            ],
             sourceLocationId: locationIds.length > 0 ? { in: locationIds } : undefined
         },
         include: {
@@ -394,7 +400,7 @@ const generateBreakageReport = async (tenantId, locationIds, start, end, categor
             },
             createdByUser: true
         },
-        orderBy: { documentDate: 'asc' }
+        orderBy: [{ postedAt: 'asc' }, { documentDate: 'asc' }]
     });
 
     // Get location and department names separately
@@ -414,12 +420,22 @@ const generateBreakageReport = async (tenantId, locationIds, start, end, categor
         });
     }
 
-    let rows = [];
-    breakages.forEach(doc => {
-        doc.lines.forEach(line => {
+    const rows = [];
+    for (const doc of breakages) {
+        let photoUrl = null;
+        if (doc.photoKey) {
+            try {
+                photoUrl = await storage.getSignedUrl(doc.photoKey);
+            } catch {
+                photoUrl = null;
+            }
+        }
+
+        doc.lines.forEach((line) => {
             if (categoryId && line.item.categoryId !== categoryId) return;
+            const effectiveDate = doc.postedAt || doc.documentDate;
             rows.push({
-                date: doc.documentDate.toISOString().split('T')[0],
+                date: effectiveDate.toISOString().split('T')[0],
                 documentNo: doc.documentNo,
                 movementType: doc.movementType,
                 department: locationMap[doc.sourceLocationId]?.departmentName || 'N/A',
@@ -431,10 +447,17 @@ const generateBreakageReport = async (tenantId, locationIds, start, end, categor
                 ...(includeSupplier ? { supplier: line.item.supplier?.name || '' } : {}),
                 qty: Number(line.qtyInBaseUnit) || 0,
                 value: Number(line.totalValue) || (Number(line.qtyInBaseUnit) * Number(line.item.unitPrice || 0)),
-                reason: doc.reason || ''
+                reason: doc.reason || '',
+                photoKey: doc.photoKey || null,
+                photoUrl,
+                suggestedAction: doc.suggestedAction || null,
+                postedAt: doc.postedAt || null,
+                // No dedicated responsible user relation in schema yet; expose available owner fields.
+                responsibleUserId: doc.createdBy || null,
+                responsibleUserName: doc.responsibleEmployeeName || null,
             });
         });
-    });
+    }
 
     return { rows };
 };
@@ -644,11 +667,21 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
         where: {
             tenantId,
             status: { in: ['RECEIVED', 'CLOSED'] },
-            transferDate: { gte: start, lte: end },
-            OR: [
-                { sourceLocationId: { in: locationIds } },
-                { destLocationId: { in: locationIds } }
-            ]
+            AND: [
+                {
+                    OR: [
+                        { receivedAt: { gte: start, lte: end } },
+                        // Legacy fallback: some historical rows were not stamped with receivedAt.
+                        { receivedAt: null, transferDate: { gte: start, lte: end } },
+                    ],
+                },
+                {
+                    OR: [
+                        { sourceLocationId: { in: locationIds } },
+                        { destLocationId: { in: locationIds } }
+                    ],
+                },
+            ],
         },
         include: {
             sourceLocation: true,
@@ -656,7 +689,7 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
             requestedByUser: true,
             lines: { include: { item: { include: { ...(includeSupplier ? { supplier: true } : {}) } } } }
         },
-        orderBy: { transferDate: 'asc' }
+        orderBy: [{ receivedAt: 'asc' }, { transferDate: 'asc' }]
     });
 
     let rows = [];
@@ -665,13 +698,14 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
             if (categoryId && line.item.categoryId !== categoryId) return;
             const isOut = locationIds.includes(doc.sourceLocationId);
             const isIn = locationIds.includes(doc.destLocationId);
+            const effectiveDate = doc.receivedAt || doc.transferDate;
 
             let type = 'Internal';
             if (isOut && !isIn) type = 'Transfer Out';
             if (!isOut && isIn) type = 'Transfer In';
 
             rows.push({
-                date: doc.transferDate.toISOString().split('T')[0],
+                date: effectiveDate.toISOString().split('T')[0],
                 documentNo: doc.transferNo,
                 type,
                 fromLocation: doc.sourceLocation?.name || '',
@@ -685,6 +719,7 @@ const generateTransfersReport = async (tenantId, locationIds, start, end, catego
                 qty: Number(line.receivedQty || line.requestedQty),
                 value: Number(line.totalValue),
                 requestedBy: doc.requestedByUser?.firstName + ' ' + doc.requestedByUser?.lastName,
+                postedAt: doc.receivedAt || null,
                 ...(includeLocationQtys
                     ? {
                         locationQtys: {
