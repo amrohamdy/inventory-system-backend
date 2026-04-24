@@ -1,10 +1,38 @@
 const itemService = require('../services/item.service');
 const { success } = require('../utils/response');
+const { randomUUID } = require('crypto');
 const {
     putBuffer,
     deleteFile,
     buildItemImageKey,
 } = require('../middleware/upload.middleware');
+
+const IMPORT_PREVIEW_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const importPreviewCache = new Map();
+
+const buildImportPreviewToken = () => `import-preview://${randomUUID()}`;
+
+const storeImportPreview = ({ tenantId, rows, asOpeningBalance }) => {
+    const filePath = buildImportPreviewToken();
+    importPreviewCache.set(filePath, {
+        tenantId,
+        rows,
+        asOpeningBalance: !!asOpeningBalance,
+        createdAt: Date.now(),
+    });
+    return filePath;
+};
+
+const resolveImportPreview = ({ filePath, tenantId }) => {
+    const cached = importPreviewCache.get(filePath);
+    if (!cached) return null;
+    if (cached.tenantId !== tenantId) return null;
+    if (Date.now() - cached.createdAt > IMPORT_PREVIEW_TTL_MS) {
+        importPreviewCache.delete(filePath);
+        return null;
+    }
+    return cached;
+};
 
 // ── Item Master prerequisites (canCreateItem vs isOpeningBalanceAllowed) ───────
 const checkItemCreationRequirements = async (req, res, next) => {
@@ -113,8 +141,8 @@ const updateItemUnits = async (req, res, next) => {
 
 // ── Import: Parse & Preview ───────────────────────────────────────────────────
 // With memory-backed multer the file lives in `req.file.buffer`; the preview
-// step parses it in-memory. The frontend then sends the parsed `rows` to the
-// confirm endpoint (no temp file on disk to clean up).
+// step parses it in-memory. We cache parsed rows behind a temporary `filePath`
+// token so V2 clients can confirm using { filePath }.
 const importPreview = async (req, res, next) => {
     try {
         if (!req.file) {
@@ -122,6 +150,12 @@ const importPreview = async (req, res, next) => {
         }
         const asOpeningBalance = String(req.body?.asOpeningBalance ?? req.query?.asOpeningBalance ?? '').toLowerCase() === 'true';
         const result = await itemService.parseImportFile(req.file.buffer, req.user.tenantId, { asOpeningBalance });
+        const filePath = storeImportPreview({
+            tenantId: req.user.tenantId,
+            rows: result.preview,
+            asOpeningBalance,
+        });
+        result.filePath = filePath;
         return success(res, result, 'File parsed successfully');
     } catch (err) {
         next(err);
@@ -131,12 +165,31 @@ const importPreview = async (req, res, next) => {
 // ── Import: Confirm ───────────────────────────────────────────────────────────
 const importConfirm = async (req, res, next) => {
     try {
-        const { rows, asOpeningBalance } = req.body;
-        if (!rows || !Array.isArray(rows)) {
-            const e = new Error('Invalid import payload.'); e.statusCode = 400; throw e;
+        const { rows, filePath, asOpeningBalance } = req.body || {};
+
+        let rowsToConfirm = Array.isArray(rows) ? rows : null;
+        let asOpeningBalanceFinal = !!asOpeningBalance;
+
+        if (!rowsToConfirm && filePath) {
+            const cached = resolveImportPreview({ filePath, tenantId: req.user.tenantId });
+            if (!cached) {
+                const e = new Error('Import preview has expired or is invalid. Please upload the file again.');
+                e.statusCode = 400;
+                throw e;
+            }
+            rowsToConfirm = cached.rows;
+            if (asOpeningBalance === undefined || asOpeningBalance === null) {
+                asOpeningBalanceFinal = !!cached.asOpeningBalance;
+            }
         }
 
-        const result = await itemService.confirmImport(rows, req.user.tenantId, req.user.id, !!asOpeningBalance);
+        if (!rowsToConfirm || !Array.isArray(rowsToConfirm)) {
+            const e = new Error('Invalid import payload. Provide either rows or filePath.');
+            e.statusCode = 400;
+            throw e;
+        }
+
+        const result = await itemService.confirmImport(rowsToConfirm, req.user.tenantId, req.user.id, asOpeningBalanceFinal);
         return success(res, result, `Import complete: ${result.inserted} inserted, ${result.updated} updated, ${result.failed} failed`);
     } catch (err) { next(err); }
 };
