@@ -563,6 +563,8 @@ model MovementDocument {
   notes            String?
   attachmentUrl    String?
   photoKey         String?
+  suggestedAction         SuggestedAction?
+  responsibleEmployeeName String?
   createdBy        String              @db.Uuid
   postedAt         DateTime?
   voidedAt         DateTime?
@@ -583,6 +585,7 @@ model MovementDocument {
   @@index([tenantId, supplierId])
   @@index([tenantId, sourceType])
   @@index([tenantId, getPassId])
+  @@index([tenantId, suggestedAction])
   @@map("movement_documents")
 }
 
@@ -1458,6 +1461,11 @@ enum GetPassReturnAccountability {
   EMPLOYEE_DEDUCTION
   COMPANY_LOSS
   TARGET_HOTEL_COMPENSATION
+}
+
+enum SuggestedAction {
+  EMPLOYEE
+  HOTEL
 }
 
 enum MovementStatus {

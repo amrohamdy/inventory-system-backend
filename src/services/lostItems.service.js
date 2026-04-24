@@ -144,6 +144,7 @@ const GET_PASS_ACCOUNTABILITY = new Set([
     'COMPANY_LOSS',
     'TARGET_HOTEL_COMPENSATION',
 ]);
+const SUGGESTED_ACTIONS = new Set(['EMPLOYEE', 'HOTEL']);
 
 const AUTO_APPROVAL_NOTE = 'Auto-approved on creation';
 
@@ -268,10 +269,24 @@ const listLostItems = async (tenantId, query = {}, user = null) => {
 };
 
 const createLost = async (tenantId, userId, _userRole, body = {}) => {
-    const { lines = [], reason, notes, sourceLocationId, documentDate, accountabilityType, accountability } = body;
+    const {
+        lines = [],
+        reason,
+        notes,
+        sourceLocationId,
+        documentDate,
+        accountabilityType,
+        accountability,
+        suggestedAction,
+        responsibleEmployeeName,
+    } = body;
     if (!reason?.trim()) throw err('Reason is required.');
     if (!sourceLocationId) throw err('Location is required.');
     if (!Array.isArray(lines) || lines.length === 0) throw err('At least one line is required.');
+    if (!suggestedAction || !SUGGESTED_ACTIONS.has(String(suggestedAction).trim().toUpperCase())) {
+        throw err('Suggested action is required and must be EMPLOYEE or HOTEL.');
+    }
+    const normalizedSuggestedAction = String(suggestedAction).trim().toUpperCase();
 
     const location = await prisma.location.findFirst({ where: { id: sourceLocationId, tenantId } });
     if (!location) throw err('Location not found.', 404);
@@ -296,6 +311,11 @@ const createLost = async (tenantId, userId, _userRole, body = {}) => {
                 sourceLocationId,
                 reason: reason.trim(),
                 notes: notes?.trim() || null,
+                suggestedAction: normalizedSuggestedAction,
+                responsibleEmployeeName:
+                    typeof responsibleEmployeeName === 'string' && responsibleEmployeeName.trim()
+                        ? responsibleEmployeeName.trim()
+                        : null,
                 documentDate: documentDate ? new Date(documentDate) : new Date(),
                 createdBy: userId,
                 lines: {

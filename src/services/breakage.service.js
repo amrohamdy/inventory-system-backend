@@ -31,6 +31,7 @@ const GET_PASS_ACCOUNTABILITY = new Set([
     'COMPANY_LOSS',
     'TARGET_HOTEL_COMPENSATION',
 ]);
+const SUGGESTED_ACTIONS = new Set(['EMPLOYEE', 'HOTEL']);
 
 /**
  * Same 4-step chain as manual breakage, with step 1 pre-approved (e.g. dept manager accepted get-pass return).
@@ -234,11 +235,25 @@ const getApproval = (doc) => doc.approvalRequests || null;
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
 const createBreakage = async (data, tenantId, userId, _userRole, photoFile = null) => {
-    const { lines = [], reason, notes, sourceLocationId, documentDate, accountabilityType, accountability } = data;
+    const {
+        lines = [],
+        reason,
+        notes,
+        sourceLocationId,
+        documentDate,
+        accountabilityType,
+        accountability,
+        suggestedAction,
+        responsibleEmployeeName,
+    } = data;
 
     if (!reason?.trim()) throw err('Reason is required for breakage documents.');
     if (lines.length === 0) throw err('At least one line item is required.');
     if (!sourceLocationId) throw err('Source location is required.');
+    if (!suggestedAction || !SUGGESTED_ACTIONS.has(String(suggestedAction).trim().toUpperCase())) {
+        throw err('Suggested action is required and must be EMPLOYEE or HOTEL.');
+    }
+    const normalizedSuggestedAction = String(suggestedAction).trim().toUpperCase();
 
     // Validate location
     const location = await prisma.location.findFirst({ where: { id: sourceLocationId, tenantId } });
@@ -269,7 +284,6 @@ const createBreakage = async (data, tenantId, userId, _userRole, photoFile = nul
         if (!item) throw err(`Item ${line.itemId} not found.`, 404);
         if (!line.qty || parseFloat(line.qty) <= 0) throw err(`Quantity for item ${item.name} must be positive.`);
     }
-
     const firstStepAccountabilityType =
         typeof accountabilityType === 'string' && accountabilityType.trim()
             ? accountabilityType.trim()
@@ -291,6 +305,11 @@ const createBreakage = async (data, tenantId, userId, _userRole, photoFile = nul
                 reason: reason.trim(),
                 notes: notes?.trim() || null,
                 photoKey,
+                suggestedAction: normalizedSuggestedAction,
+                responsibleEmployeeName:
+                    typeof responsibleEmployeeName === 'string' && responsibleEmployeeName.trim()
+                        ? responsibleEmployeeName.trim()
+                        : null,
                 documentDate: documentDate ? new Date(documentDate) : new Date(),
                 createdBy: userId,
                 lines: {
