@@ -7,11 +7,25 @@ const { putBuffer, buildAttachmentKey } = require('../middleware/upload.middlewa
 /** POST /api/breakage */
 const createBreakage = async (req, res, next) => {
     try {
+        if (req.file) {
+            const allowedMimes = new Set(['image/jpeg', 'image/png']);
+            if (!allowedMimes.has(req.file.mimetype)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Breakage photo must be JPEG or PNG.',
+                });
+            }
+        }
+        const payload = {
+            ...req.body,
+            lines: typeof req.body.lines === 'string' ? JSON.parse(req.body.lines) : req.body.lines,
+        };
         const doc = await breakageService.createBreakage(
-            req.body,
+            payload,
             req.user.tenantId,
             req.user.id,
             req.user.role,
+            req.file || null,
         );
         return success(res, doc, 'Breakage document created.', 201);
     } catch (e) { next(e); }

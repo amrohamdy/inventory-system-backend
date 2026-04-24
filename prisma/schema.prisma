@@ -562,6 +562,7 @@ model MovementDocument {
   reason           String?
   notes            String?
   attachmentUrl    String?
+  photoKey         String?
   createdBy        String              @db.Uuid
   postedAt         DateTime?
   voidedAt         DateTime?

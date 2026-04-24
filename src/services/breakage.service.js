@@ -5,6 +5,9 @@ const { connectRole, normalizeRole } = require('./rbac.service');
 const { checkPeriodLock } = require('./periodGuard.service');
 const { formatStructuredMovementNotes } = require('../utils/formatMovementNotes');
 const { incrementTotalQtyDamage } = require('./stockCumulative.service');
+const { getStorage, isLocalDriver } = require('../config/storage');
+const path = require('path');
+const crypto = require('crypto');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -184,6 +187,26 @@ const breakageListInclude = (user) => {
 
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
 
+const buildBreakagePhotoKey = (tenantId, originalName, documentNo) => {
+    const ext = path.extname(originalName || '').toLowerCase() || '.jpg';
+    if (isLocalDriver()) {
+        return `/uploads/attachments/breakage-photo-${documentNo || Date.now()}${ext}`;
+    }
+    return `tenants/${tenantId}/breakages/${crypto.randomUUID()}${ext}`;
+};
+
+const withBreakagePhotoUrl = async (doc) => {
+    if (!doc || typeof doc !== 'object') return doc;
+    if (!doc.photoKey) return { ...doc, photoUrl: null };
+    try {
+        const storage = getStorage();
+        const photoUrl = await storage.getSignedUrl(doc.photoKey);
+        return { ...doc, photoUrl };
+    } catch {
+        return { ...doc, photoUrl: null };
+    }
+};
+
 // ── Full include for breakage document ───────────────────────────────────────
 const BREAKAGE_INCLUDE = {
     createdByUser: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -210,7 +233,7 @@ const BREAKAGE_INCLUDE = {
 const getApproval = (doc) => doc.approvalRequests || null;
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createBreakage = async (data, tenantId, userId, _userRole) => {
+const createBreakage = async (data, tenantId, userId, _userRole, photoFile = null) => {
     const { lines = [], reason, notes, sourceLocationId, documentDate, accountabilityType, accountability } = data;
 
     if (!reason?.trim()) throw err('Reason is required for breakage documents.');
@@ -230,6 +253,15 @@ const createBreakage = async (data, tenantId, userId, _userRole) => {
     });
     const seq = lastDoc ? (parseInt(lastDoc.documentNo.split('-').pop()) + 1) : 1;
     const documentNo = `${prefix}${seq.toString().padStart(4, '0')}`;
+    let photoKey = null;
+    if (photoFile) {
+        const storage = getStorage();
+        photoKey = buildBreakagePhotoKey(tenantId, photoFile.originalname, documentNo);
+        await storage.put(photoKey, photoFile.buffer, {
+            contentType: photoFile.mimetype,
+            originalName: photoFile.originalname,
+        });
+    }
 
     // Validate line items exist
     for (const line of lines) {
@@ -258,6 +290,7 @@ const createBreakage = async (data, tenantId, userId, _userRole) => {
                 sourceLocationId,
                 reason: reason.trim(),
                 notes: notes?.trim() || null,
+                photoKey,
                 documentDate: documentDate ? new Date(documentDate) : new Date(),
                 createdBy: userId,
                 lines: {
@@ -284,7 +317,8 @@ const createBreakage = async (data, tenantId, userId, _userRole) => {
             firstStepAccountabilityType,
         });
 
-        return tx.movementDocument.findFirst({ where: { id: doc.id }, include: BREAKAGE_INCLUDE });
+        const created = await tx.movementDocument.findFirst({ where: { id: doc.id }, include: BREAKAGE_INCLUDE });
+        return withBreakagePhotoUrl(created);
     });
 };
 
@@ -341,7 +375,7 @@ const getBreakages = async (tenantId, query = {}, user = null) => {
         prisma.movementDocument.count({ where }),
     ]);
 
-    const documents = rawDocuments.map((d) => {
+    const documents = await Promise.all(rawDocuments.map(async (d) => {
         const totalQtyDamaged = (d.lines ?? []).reduce(
             (sum, line) => sum + Number(line.qtyInBaseUnit || 0),
             0,
@@ -349,10 +383,10 @@ const getBreakages = async (tenantId, query = {}, user = null) => {
         const { lines: _lines, ...rest } = d;
         const ar = d.approvalRequests;
         if (!ar) {
-            return { ...rest, totalQtyDamaged, approvalRequests: [] };
+            return withBreakagePhotoUrl({ ...rest, totalQtyDamaged, approvalRequests: [] });
         }
         if (ar.steps) {
-            return {
+            return withBreakagePhotoUrl({
                 ...rest,
                 totalQtyDamaged,
                 approvalRequests: [
@@ -365,9 +399,9 @@ const getBreakages = async (tenantId, query = {}, user = null) => {
                         steps: ar.steps,
                     },
                 ],
-            };
+            });
         }
-        return {
+        return withBreakagePhotoUrl({
             ...rest,
             totalQtyDamaged,
             approvalRequests: [
@@ -379,8 +413,8 @@ const getBreakages = async (tenantId, query = {}, user = null) => {
                     createdAt: ar.createdAt,
                 },
             ],
-        };
-    });
+        });
+    }));
 
     return { documents, total };
 };
@@ -392,7 +426,7 @@ const getBreakageById = async (id, tenantId) => {
         include: BREAKAGE_INCLUDE,
     });
     if (!doc) throw err('Breakage document not found.', 404);
-    return doc;
+    return withBreakagePhotoUrl(doc);
 };
 
 // ── SUBMIT FOR APPROVAL ───────────────────────────────────────────────────────
